@@ -1,0 +1,28 @@
+[package]
+name = "agentcore-cli"
+description = "The `agentcore` command line: server, policy and audit tooling."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "agentcore"
+path = "src/main.rs"
+
+[dependencies]
+agentcore-audit.workspace = true
+agentcore-core.workspace = true
+agentcore-policy.workspace = true
+agentcore-server.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

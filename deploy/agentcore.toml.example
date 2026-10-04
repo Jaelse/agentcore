@@ -1,0 +1,49 @@
+# Configuration for docker-compose.yml. Copy to deploy/agentcore.toml.
+
+[server]
+bind = "0.0.0.0:8080"
+# How sandboxes reach agentcore over the internal network.
+gateway_url = "http://agentcore:8080"
+ui_dir = "/opt/agentcore/web/dist"
+
+# Required when binding to a non-loopback address.
+# Generate with: docker compose run --rm agentcore hash-token '<token>'
+[[server.operators]]
+name = "admin"
+token_sha256 = "REPLACE_WITH_64_HEX_CHARS_000000000000000000000000000000000000000"
+role = "operator"
+
+[storage]
+# Must equal $AGENTCORE_DATA (see docker-compose.yml).
+data_dir = "/srv/agentcore/data"
+audit_fsync = true
+audit_retention_days = 183
+
+[policies]
+dir = "/etc/agentcore/policies"
+default = "default"
+
+[sandbox]
+backend = "docker"
+
+[sandbox.docker]
+image = "agentcore-sandbox:latest"
+network = "agentcore-sandbox"
+# runtime = "runsc"   # install gVisor on the host and enable for untrusted agents
+memory = "4g"
+cpus = "2"
+pids_limit = 512
+
+[transparency]
+system_name = "agentcore"
+provider = "Your organisation"
+contact = "ai-oversight@example.com"
+intended_purpose = "AI coding agents working as supervised collaborators on our repositories."
+
+[[agents]]
+name = "opencode"
+adapter = "opencode"
+description = "opencode with all side effects routed through agentcore."
+policy = "default"
+[agents.env]
+ANTHROPIC_API_KEY = "{env:ANTHROPIC_API_KEY}"

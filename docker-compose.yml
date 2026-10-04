@@ -1,0 +1,36 @@
+# Self-hosted agentcore.
+#
+#   1. cp deploy/agentcore.toml.example deploy/agentcore.toml  (add operators)
+#   2. docker build -t agentcore-sandbox:latest sandbox-image
+#   3. AGENTCORE_DATA=$PWD/data docker compose up -d
+#
+# Agents run in sibling containers on the `agentcore-sandbox` network, which is
+# `internal`: they can reach the agentcore gateway and nothing else.
+#
+# SECURITY: mounting the Docker socket gives agentcore root-equivalent power
+# over the host. Run it on a dedicated VM, or use rootless Docker / Podman.
+
+services:
+  agentcore:
+    build: .
+    image: agentcore:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./deploy/agentcore.toml:/etc/agentcore/agentcore.toml:ro
+      - ./policies:/etc/agentcore/policies:ro
+      # Workspaces are bind-mounted into sandboxes by the host's Docker daemon,
+      # so the data directory must have the same path inside and outside.
+      - ${AGENTCORE_DATA:?set AGENTCORE_DATA to an absolute path}:${AGENTCORE_DATA}
+    networks:
+      - default
+      - sandbox
+
+networks:
+  sandbox:
+    name: agentcore-sandbox
+    internal: true
