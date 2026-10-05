@@ -69,6 +69,28 @@ Put a TLS-terminating reverse proxy in front of port 8080. Read
 [SECURITY.md](SECURITY.md) before exposing it; in particular, the Docker
 socket gives agentcore root-equivalent access to its host.
 
+## Running opencode
+
+The `opencode` agent is defined in `agentcore.example.toml` and
+`deploy/agentcore.toml.example`. agentcore launches `opencode run "<task>"`
+inside the sandbox. It turns off opencode's own file, shell and web tools and
+registers the agentcore MCP gateway, so every read, write and command goes
+through your policy.
+
+1. Make `opencode` available where the agent runs: the sandbox image installs it
+   (`docker build -t agentcore-sandbox:latest sandbox-image`). With the dev
+   `process` backend, install it on your machine (`npm i -g opencode-ai`).
+2. Export your model provider key before starting agentcore, e.g.
+   `export ANTHROPIC_API_KEY=...`. The agent's `[agents.env]` passes it in with
+   `{env:ANTHROPIC_API_KEY}`.
+3. In the web UI, pick **opencode** under *New task*, choose a policy, describe
+   the task and click **Start agent**.
+
+**Network caveat:** opencode must reach its model provider. The default Docker
+setup (`network = "none"` or the internal compose network) blocks that, so for
+now attach sandboxes to a network with egress to the provider. The planned
+model gateway will remove this need.
+
 ## CLI
 
 ```sh

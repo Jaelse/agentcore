@@ -85,14 +85,28 @@ impl AgentAdapter for CommandAdapter {
 pub struct OpenCodeAdapter;
 
 impl OpenCodeAdapter {
-    /// Inline opencode configuration. Native tools that cause side effects are
-    /// denied so the model has to use the policy-checked gateway tools.
+    /// Inline opencode configuration. Every native tool that touches files,
+    /// runs commands or reaches the network is denied, so the model has to use
+    /// the policy-checked gateway tools. Read-only tools are included: left
+    /// enabled they would bypass path rules such as `deny-secrets`. Verified
+    /// against opencode 1.18 with `opencode debug agent build`.
     pub fn config(ctx: &LaunchContext) -> serde_json::Value {
         serde_json::json!({
             "$schema": "https://opencode.ai/config.json",
             "autoupdate": false,
             "share": "disabled",
-            "permission": { "edit": "deny", "bash": "deny", "webfetch": "deny" },
+            "permission": {
+                "read": "deny",
+                "glob": "deny",
+                "grep": "deny",
+                "list": "deny",
+                "edit": "deny",
+                "bash": "deny",
+                "webfetch": "deny",
+                "websearch": "deny",
+                "codesearch": "deny",
+                "external_directory": "deny"
+            },
             "mcp": {
                 "agentcore": {
                     "type": "remote",
@@ -174,7 +188,9 @@ mod tests {
         assert_eq!(plan.args, ["run", "fix the bug"]);
         let config: serde_json::Value =
             serde_json::from_str(&plan.env["OPENCODE_CONFIG_CONTENT"]).unwrap();
-        assert_eq!(config["permission"]["bash"], "deny");
+        for tool in ["read", "glob", "grep", "edit", "bash", "webfetch"] {
+            assert_eq!(config["permission"][tool], "deny", "{tool}");
+        }
         assert_eq!(config["mcp"]["agentcore"]["url"], "http://gw/mcp/x");
     }
 }

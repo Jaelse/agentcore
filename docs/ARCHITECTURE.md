@@ -85,7 +85,8 @@ Adding a new agent:
 * **any CLI agent**: use the `command` adapter and point the agent's MCP
   client at `$AGENTCORE_GATEWAY_URL`;
 * **deeper integration**: implement `AgentAdapter` (see `OpenCodeAdapter`,
-  which disables opencode's native edit/bash/web tools so the model has to
+  which disables all of opencode's native file, shell and web tools (including
+  read/grep/glob, which would bypass path rules) so the model has to
   use the policy-checked gateway tools) and register it in `AdapterRegistry`.
 
 Agents with built-in tools that bypass the gateway are still confined by the
