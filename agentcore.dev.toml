@@ -6,6 +6,10 @@
 bind = "127.0.0.1:8080"
 ui_dir = "web/dist"
 
+[database]
+# Start one with: docker compose up -d postgres
+url = "postgres://agentcore:agentcore@127.0.0.1:5432/agentcore"
+
 [storage]
 data_dir = "data"
 audit_fsync = false

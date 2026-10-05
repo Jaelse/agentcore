@@ -8,9 +8,11 @@ interface Props {
   onStopAll: () => Promise<void>;
   onShowCard: () => void;
   onSignOut: () => void;
+  view: "sessions" | "settings";
+  onView: (v: "sessions" | "settings") => void;
 }
 
-export function TopBar({ me, card, liveSessions, onStopAll, onShowCard, onSignOut }: Props) {
+export function TopBar({ me, card, liveSessions, onStopAll, onShowCard, onSignOut, view, onView }: Props) {
   const [stopping, setStopping] = useState(false);
   return (
     <header className="topbar">
@@ -22,6 +24,16 @@ export function TopBar({ me, card, liveSessions, onStopAll, onShowCard, onSignOu
         <button className="badge ai" onClick={onShowCard} title="This is an AI system. Click for details.">
           AI system
         </button>
+        <nav className="nav">
+          <button className={`nav-item ${view === "sessions" ? "active" : ""}`} onClick={() => onView("sessions")}>
+            Sessions
+          </button>
+          {me.role !== "viewer" && (
+            <button className={`nav-item ${view === "settings" ? "active" : ""}`} onClick={() => onView("settings")}>
+              Settings
+            </button>
+          )}
+        </nav>
       </div>
       <div className="topbar-right">
         <span className="muted small">

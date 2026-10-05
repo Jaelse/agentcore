@@ -1,23 +1,28 @@
 //! HTTP surface of agentcore:
 //!
-//! * `/api/v1/...`: operator API (sessions, approvals, stop, audit).
+//! * `/api/v1/...`: operator API (sessions, approvals, stop, audit, settings).
 //! * `/mcp/{session}`: MCP tool gateway used by agents inside sandboxes.
+//! * `/llm/{session}/{provider}/...`: model gateway (LLM API reverse proxy).
 //! * everything else: the React web UI (static files from `server.ui_dir`).
 
 pub mod api;
 pub mod auth;
 pub mod config;
 mod error;
+pub mod llm;
 pub mod mcp;
+pub mod sessions;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use agentcore_core::Principal;
 use agentcore_policy::PolicySet;
 use agentcore_runtime::{AdapterRegistry, RuntimeConfig, SessionManager};
+use agentcore_store::{Cipher, Store};
 use anyhow::Context;
 use axum::Router;
-use axum::routing::{get, post};
+use axum::routing::{any, get, patch, post};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
@@ -28,13 +33,23 @@ pub use config::Config;
 pub struct AppState {
     pub manager: Arc<SessionManager>,
     pub config: Arc<Config>,
+    pub store: Store,
+    /// Client for upstream model providers.
+    pub http: reqwest::Client,
 }
 
 impl AppState {
-    pub fn new(config: Config) -> anyhow::Result<Self> {
+    /// Load policies, connect to PostgreSQL (running migrations), and recover
+    /// from a previous unclean shutdown.
+    pub async fn new(config: Config) -> anyhow::Result<Self> {
         let policies = PolicySet::load_dir(&config.policies.dir)
             .with_context(|| format!("loading policies from {}", config.policies.dir.display()))?;
         let provider = config.sandbox.provider()?;
+        let cipher = Cipher::load_or_create(&config.master_key_file())?;
+        let store = Store::connect(&config.database_url()?, cipher)
+            .await
+            .context("connecting to PostgreSQL")?;
+        sessions::recover(&store, provider.as_ref()).await;
         let manager = SessionManager::new(
             RuntimeConfig {
                 data_dir: config.storage.data_dir.clone(),
@@ -47,9 +62,19 @@ impl AppState {
             AdapterRegistry::default(),
             provider,
         )?;
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .read_timeout(Duration::from_secs(
+                config.model_gateway.upstream_read_timeout_secs,
+            ))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .context("building HTTP client")?;
         Ok(Self {
             manager: Arc::new(manager),
             config: Arc::new(config),
+            store,
+            http,
         })
     }
 }
@@ -73,8 +98,18 @@ pub fn router(state: AppState) -> Router {
             "/sessions/{id}/approvals/{approval_id}",
             post(api::decide_approval),
         )
+        .route("/sessions/{id}/model-calls/{call_id}", get(api::model_call))
         .route("/sessions/{id}/audit", get(api::download_audit))
-        .route("/sessions/{id}/audit/verify", get(api::verify_audit));
+        .route("/sessions/{id}/audit/verify", get(api::verify_audit))
+        .route(
+            "/providers",
+            get(api::list_providers).post(api::create_provider),
+        )
+        .route(
+            "/providers/{name}",
+            patch(api::update_provider).delete(api::delete_provider),
+        )
+        .route("/admin-events", get(api::admin_events));
 
     let ui_dir = &state.config.server.ui_dir;
     let ui = ServeDir::new(ui_dir).fallback(ServeFile::new(ui_dir.join("index.html")));
@@ -82,8 +117,9 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .nest("/api/v1", api)
         .route("/mcp/{id}", post(mcp::handle).get(mcp::method_not_allowed))
+        .route("/llm/{id}/{provider}/{*rest}", any(llm::proxy))
         .fallback_service(ui)
-        .layer(RequestBodyLimitLayer::new(16 * 1024 * 1024))
+        .layer(RequestBodyLimitLayer::new(32 * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -97,18 +133,30 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
             "web UI not built; run `npm ci && npm run build` in web/"
         );
     }
-    let state = AppState::new(config)?;
+    let state = AppState::new(config).await?;
     let manager = state.manager.clone();
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .with_context(|| format!("binding {bind}"))?;
     tracing::info!(%bind, backend = manager.sandbox_backend(), "agentcore listening");
-    axum::serve(listener, router(state))
+    axum::serve(listener, router(state.clone()))
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     let stopped = manager
         .stop_all(Principal::System, "server shutting down")
         .await;
+    // Give session tasks a moment to record their end and sync to the database.
+    for _ in 0..50 {
+        if manager.list().iter().all(|s| s.status.is_terminal()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    for info in manager.list() {
+        if let Ok(session) = manager.get(info.id) {
+            state.persist(&session).await;
+        }
+    }
     tracing::info!(stopped, "shutdown complete");
     Ok(())
 }

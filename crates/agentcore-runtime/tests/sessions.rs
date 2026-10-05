@@ -90,6 +90,7 @@ fn create(manager: &SessionManager, agent: &str) -> Arc<Session> {
                 policy: None,
             },
             Principal::human("alice"),
+            Vec::new(),
         )
         .unwrap()
 }

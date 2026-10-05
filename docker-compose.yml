@@ -1,34 +1,65 @@
 # Self-hosted agentcore.
 #
-#   1. cp deploy/agentcore.toml.example deploy/agentcore.toml  (add operators)
+#   1. cp deploy/agentcore.toml.example deploy/agentcore.toml  (add an admin operator)
 #   2. docker build -t agentcore-sandbox:latest sandbox-image
-#   3. AGENTCORE_DATA=$PWD/data docker compose up -d
+#   3. export AGENTCORE_DATA=$PWD/data POSTGRES_PASSWORD=<random>
+#   4. docker compose up -d
+#   5. open http://localhost:8080 → Settings → add a model provider
 #
 # Agents run in sibling containers on the `agentcore-sandbox` network, which is
-# `internal`: they can reach the agentcore gateway and nothing else.
+# `internal`: they can reach agentcore (tool + model gateways) and nothing else.
+# Model API keys live encrypted in PostgreSQL and never enter a sandbox.
 #
 # SECURITY: mounting the Docker socket gives agentcore root-equivalent power
 # over the host. Run it on a dedicated VM, or use rootless Docker / Podman.
+#
+# For local development, `docker compose up -d postgres` starts only the
+# database on 127.0.0.1:5432 (user/password/db: agentcore).
 
 services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: agentcore
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentcore}
+      POSTGRES_DB: agentcore
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentcore"]
+      interval: 5s
+      retries: 20
+
   agentcore:
     build: .
     image: agentcore:latest
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "8080:8080"
     environment:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENTCORE_DATABASE_URL: postgres://agentcore:${POSTGRES_PASSWORD:-agentcore}@postgres/agentcore
+      # Optional: provide the master key instead of letting agentcore generate
+      # $AGENTCORE_DATA/master.key on first start.
+      AGENTCORE_MASTER_KEY: ${AGENTCORE_MASTER_KEY:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./deploy/agentcore.toml:/etc/agentcore/agentcore.toml:ro
       - ./policies:/etc/agentcore/policies:ro
       # Workspaces are bind-mounted into sandboxes by the host's Docker daemon,
       # so the data directory must have the same path inside and outside.
-      - ${AGENTCORE_DATA:?set AGENTCORE_DATA to an absolute path}:${AGENTCORE_DATA}
+      - ${AGENTCORE_DATA:-/srv/agentcore/data}:${AGENTCORE_DATA:-/srv/agentcore/data}
     networks:
       - default
       - sandbox
+
+volumes:
+  pgdata:
 
 networks:
   sandbox:

@@ -12,15 +12,18 @@ and an append-only, tamper-evident log records what happened.
 ```
 ┌────────────── Web UI (React) ──────────────┐
 │ live timeline · approvals · STOP · audit   │
+│ settings: model providers & API keys       │
 └──────────────────┬─────────────────────────┘
                    │ REST + SSE (/api/v1)
-┌──────────────────▼─────────────────────────┐       ┌─────────── sandbox ───────────┐
-│ agentcore server                           │       │ container (no caps, ro rootfs,│
-│  session supervisor ─ policy engine        │◄──────┤ non-root, no network but the  │
-│  HITL approvals ─ kill switch              │  MCP  │ gateway; optional gVisor)     │
-│  hash-chained audit log ─ tracing          │       │   agent (opencode, …)         │
-└────────────────────────────────────────────┘       │   /workspace                  │
-                                                     └───────────────────────────────┘
+┌──────────────────▼─────────────────────────┐  tools (MCP)  ┌───────── sandbox ─────────┐
+│ agentcore server                           │◄──────────────┤ container: no caps, ro    │
+│  session supervisor ─ policy engine        │               │ rootfs, non-root, internal│
+│  HITL approvals ─ kill switch              │◄──────────────┤ network only, opt. gVisor │
+│  model gateway ─ hash-chained audit log    │  LLM calls    │   agent (opencode, …)     │
+└───────┬────────────────────────┬───────────┘               │   /workspace              │
+        │ real API keys          │                           └───────────────────────────┘
+        ▼                        ▼
+  Anthropic / OpenAI        PostgreSQL (sessions, providers, model calls)
 ```
 
 ## Features
@@ -29,24 +32,29 @@ and an append-only, tamper-evident log records what happened.
 |---|---|
 | Run open code securely | Per-session container: `--cap-drop=ALL`, `no-new-privileges`, read-only root fs, non-root user, pid/memory/cpu limits, `--network=none` or an internal-only network, optional gVisor/Kata runtime. |
 | Coworker for developers | Agents get a workspace plus MCP tools (`run_command`, `read_file`, `write_file`, `list_files`) that are checked against policy on every call. |
-| Hostable | Single binary + static UI, Docker image, docker-compose with an isolated sandbox network, token auth with operator/viewer roles. |
+| Hostable | Single binary + static UI, PostgreSQL, Docker image, docker-compose with an isolated sandbox network, token auth with admin/operator/viewer roles. |
+| Model gateway | Agents call LLMs through agentcore with a per-session token. Real API keys are stored AES-256-GCM encrypted in PostgreSQL and never enter a sandbox; per-provider model allow-lists and per-session call limits apply. Every call is logged with token usage and full request/response. **Stop** aborts calls that are still streaming. Providers are managed in the web UI. |
 | See what the agent does | Live timeline of every action, policy verdict, approval and outcome, plus raw agent output, streamed over SSE. |
 | One-click stop | **STOP AGENT** per session and **Stop all agents** globally: kills the sandbox, denies pending approvals, and records who pressed it. Also enforced by time and action budgets. |
 | Any agent | `AgentAdapter` trait; built-in `command` (any CLI) and `opencode` adapters. |
 | User policies | TOML policies with allow / deny / require-approval rules over commands, paths, hosts and tools; deny-overrides semantics; limits. |
 | HITL | Approve or reject with a comment from the UI; timeouts count as rejection. |
-| Logging & tracing | Hash-chained JSONL audit log per session (fail-closed), structured `tracing` logs (JSON), integrity check and export from the UI/CLI. |
+| Logging & tracing | Hash-chained JSONL audit log per session (fail-closed), including every model call with request/response hashes; full LLM traffic and configuration changes in PostgreSQL; structured `tracing` logs (JSON); integrity check and export from the UI/CLI. |
 | EU AI Act | See [docs/EU_AI_ACT.md](docs/EU_AI_ACT.md) for the article-by-article mapping. |
 
 ## Quick start (local development)
 
-Requires Rust ≥ 1.88 and Node ≥ 20.
+Requires Rust ≥ 1.94, Node ≥ 20 and PostgreSQL (≥ 14).
 
 ```sh
+docker compose up -d postgres                 # or point [database].url at your own
 (cd web && npm ci && npm run build)
 cargo run -p agentcore-cli -- serve --config agentcore.dev.toml
 # open http://127.0.0.1:8080 and start the "demo" agent
 ```
+
+Migrations run automatically at startup. On first start agentcore generates
+`data/master.key`, which encrypts model API keys in the database. Back it up.
 
 `agentcore.dev.toml` uses the `process` backend, which runs agents **directly on
 your machine without isolation**. Use it only to develop agentcore itself.
@@ -60,10 +68,14 @@ in `web/` (Vite proxies `/api` to `127.0.0.1:8080`).
 docker build -t agentcore-sandbox:latest sandbox-image   # image agents run in
 cp deploy/agentcore.toml.example deploy/agentcore.toml
 docker compose run --rm agentcore hash-token 'a-long-random-token'
-# put the hash into [[server.operators]] in deploy/agentcore.toml
-export AGENTCORE_DATA=/srv/agentcore/data ANTHROPIC_API_KEY=...
+# put the hash into [[server.operators]] (role = "admin") in deploy/agentcore.toml
+export AGENTCORE_DATA=/srv/agentcore/data POSTGRES_PASSWORD=$(openssl rand -hex 16)
 docker compose up -d
+# open http://<host>:8080 → Settings → add your model provider (API key)
 ```
+
+Everything after that happens in the web UI: provider keys, starting agents,
+approvals, stopping, audit.
 
 Put a TLS-terminating reverse proxy in front of port 8080. Read
 [SECURITY.md](SECURITY.md) before exposing it; in particular, the Docker
@@ -80,16 +92,15 @@ through your policy.
 1. Make `opencode` available where the agent runs: the sandbox image installs it
    (`docker build -t agentcore-sandbox:latest sandbox-image`). With the dev
    `process` backend, install it on your machine (`npm i -g opencode-ai`).
-2. Export your model provider key before starting agentcore, e.g.
-   `export ANTHROPIC_API_KEY=...`. The agent's `[agents.env]` passes it in with
-   `{env:ANTHROPIC_API_KEY}`.
-3. In the web UI, pick **opencode** under *New task*, choose a policy, describe
-   the task and click **Start agent**.
+2. In the web UI, open **Settings** and add a model provider (e.g. Anthropic
+   with your API key). Only admins can do this.
+3. Go back to **Sessions**, pick **opencode**, choose a policy, describe the
+   task and click **Start agent**.
 
-**Network caveat:** opencode must reach its model provider. The default Docker
-setup (`network = "none"` or the internal compose network) blocks that, so for
-now attach sandboxes to a network with egress to the provider. The planned
-model gateway will remove this need.
+opencode's `anthropic` / `openai` providers are pointed at the model gateway,
+so it works on the internal-only sandbox network: the sandbox needs no
+internet access. Each LLM call shows up in the session's activity timeline
+with tokens, timing and the full request and response.
 
 ## CLI
 
@@ -111,7 +122,8 @@ agentcore hash-token '<token>'
 | `crates/agentcore-audit` | Hash-chained audit log |
 | `crates/agentcore-sandbox` | `Sandbox` trait; Docker and (dev-only) process backends |
 | `crates/agentcore-runtime` | Session supervisor, approvals, kill switch, adapters |
-| `crates/agentcore-server` | REST/SSE API, MCP gateway, auth, config, UI hosting |
+| `crates/agentcore-store` | PostgreSQL: sessions, model providers (encrypted keys), model calls, admin log |
+| `crates/agentcore-server` | REST/SSE API, MCP tool gateway, model gateway, auth, config, UI hosting |
 | `crates/agentcore-cli` | The `agentcore` binary |
 | `web/` | React + TypeScript web UI (Vite) |
 | `policies/` | Bundled policies: `default`, `read-only`, `supervised` |
@@ -127,10 +139,13 @@ agentcore hash-token '<token>'
 ## Testing
 
 ```sh
-cargo test                       # unit + integration tests (uses the process backend)
+export AGENTCORE_TEST_DATABASE_URL=postgres://postgres@localhost/postgres  # superuser; tests create throwaway databases
+cargo test                       # unit + integration tests (process backend, mock LLM upstream)
 cargo test -p agentcore-sandbox --test docker -- --ignored   # needs a Docker daemon
 (cd web && npm run build)        # type-checks the UI
 ```
+
+Without `AGENTCORE_TEST_DATABASE_URL`, the PostgreSQL tests are skipped.
 
 ## License
 

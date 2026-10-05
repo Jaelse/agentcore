@@ -27,6 +27,12 @@ Trust boundaries:
 * Operator tokens are stored only as SHA-256 hashes and compared in constant time.
 * Without operators configured, the server refuses to bind to a non-loopback address.
 * Audit logging is fail-closed: if an event cannot be recorded, the session is stopped.
+* Model API keys never enter a sandbox. They are stored AES-256-GCM encrypted
+  in PostgreSQL (with the provider name bound as associated data) and added by
+  the model gateway on the way out. Agents only hold a session token that stops
+  working when the session ends.
+* Only the `admin` role can add, rotate or delete provider keys; keys are never
+  returned by the API, and every change is logged with its actor.
 * Secrets passed to agents (`{env:NAME}`) go into the environment, which is
   never audited, and never into the audited command line.
 
@@ -36,10 +42,14 @@ Trust boundaries:
 - [ ] Run agentcore on a dedicated VM. **Access to the Docker socket is root-equivalent.** Prefer rootless Docker or Podman.
 - [ ] Terminate TLS in front of agentcore; never expose port 8080 directly.
 - [ ] Use long random operator tokens; give most people the `viewer` role.
-- [ ] Keep `network = "none"` or an `internal` network. Agents that need model
-      access require an egress path; restrict it to the model provider's hosts.
-- [ ] Provide model API keys with minimal scope and spending limits. Anything
-      in the sandbox environment can be read by the agent.
+- [ ] Keep sandboxes on `network = "none"` or an `internal` network. With the
+      model gateway they need no egress at all.
+- [ ] Back up the master key (`data/master.key` or `$AGENTCORE_MASTER_KEY`)
+      separately from the database backups. Losing it makes stored provider
+      keys unrecoverable; leaking it together with a DB dump exposes them.
+- [ ] Use provider API keys with spending limits, and set `allowed_models`.
+- [ ] Use a dedicated PostgreSQL role and TLS (`?sslmode=require`) for remote databases.
+- [ ] Restrict access to the `model_calls` table: it contains prompts and responses.
 - [ ] Store `data/` on an encrypted volume with backups; restrict who can read audit logs.
 - [ ] Never use the `process` backend outside local development.
 

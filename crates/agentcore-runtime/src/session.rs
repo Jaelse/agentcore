@@ -6,7 +6,8 @@ use std::time::Duration;
 use agentcore_audit::AuditLog;
 use agentcore_core::{
     AI_GENERATED_MARKER, Action, ActionOutcome, AgentAdapter, AgentSpec, Event, EventKind,
-    LaunchContext, OutputStream, Principal, SessionId, SessionInfo, SessionStatus, Verdict,
+    LaunchContext, ModelEndpoint, OutputStream, Principal, SessionId, SessionInfo, SessionStatus,
+    Verdict,
 };
 use agentcore_policy::{CompiledPolicy, normalize_action};
 use agentcore_sandbox::{ExecRequest, Sandbox, SandboxProvider, SandboxRequest, WORKSPACE};
@@ -48,6 +49,8 @@ pub struct Session {
     sandbox: Mutex<Option<Arc<dyn Sandbox>>>,
     cancel: CancellationToken,
     actions: AtomicU64,
+    model_calls: AtomicU64,
+    models: Vec<ModelEndpoint>,
 }
 
 pub(crate) struct SessionParams {
@@ -57,6 +60,7 @@ pub(crate) struct SessionParams {
     pub created_by: Principal,
     pub policy: Arc<CompiledPolicy>,
     pub audit: AuditLog,
+    pub models: Vec<ModelEndpoint>,
 }
 
 impl Session {
@@ -82,6 +86,8 @@ impl Session {
             sandbox: Mutex::new(None),
             cancel: CancellationToken::new(),
             actions: AtomicU64::new(0),
+            model_calls: AtomicU64::new(0),
+            models: params.models,
         });
         session.emit(EventKind::SessionCreated {
             agent: session.spec.name.clone(),
@@ -132,6 +138,7 @@ impl Session {
             ended_at: state.ended_at,
             pending_approvals: self.approvals.len(),
             actions: self.actions.load(Ordering::SeqCst),
+            model_calls: self.model_calls.load(Ordering::SeqCst),
         }
     }
 
@@ -143,6 +150,41 @@ impl Session {
             state.history.iter().cloned().collect(),
             self.events.subscribe(),
         )
+    }
+
+    pub fn policy_digest(&self) -> &str {
+        self.policy.digest()
+    }
+
+    /// Model providers this session may use.
+    pub fn models(&self) -> &[ModelEndpoint] {
+        &self.models
+    }
+
+    /// Fires when the session is stopped; used to abort in-flight model calls.
+    pub fn cancellation(&self) -> CancellationToken {
+        self.cancel.clone()
+    }
+
+    /// Admit one model call: the session must be live and under its
+    /// `max_model_calls` limit. Every admitted or refused call must then be
+    /// reported with [`Session::record_model_call`].
+    pub fn admit_model_call(&self) -> Result<(), String> {
+        if self.cancel.is_cancelled() || self.status().is_terminal() {
+            return Err("the session has been stopped".into());
+        }
+        let limit = self.policy.limits().max_model_calls;
+        let n = self.model_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if n > limit {
+            return Err(format!("model call limit of {limit} reached"));
+        }
+        Ok(())
+    }
+
+    /// Record a completed (or refused) model call in the audit log.
+    pub fn record_model_call(&self, event: EventKind) -> Result<(), RuntimeError> {
+        debug_assert!(matches!(event, EventKind::ModelCall { .. }));
+        self.emit(event).map(|_| ())
     }
 
     pub fn pending_approvals(&self) -> Vec<PendingApproval> {
@@ -310,8 +352,17 @@ impl Session {
                 self.id
             ),
             gateway_token: self.gateway_token.clone(),
+            model_gateway_url: format!(
+                "{}/llm/{}",
+                config.gateway_url.trim_end_matches('/'),
+                self.id
+            ),
+            models: self.models.clone(),
         };
         let mut plan = adapter.plan(&self.spec, &ctx)?;
+        // Gateway variables win over anything the agent spec sets, so real
+        // provider keys configured the old way can never leak in.
+        plan.env.extend(ctx.model_env());
         plan.env.extend([
             ("AGENTCORE_SESSION_ID".into(), self.id.to_string()),
             ("AGENTCORE_GATEWAY_URL".into(), ctx.gateway_url.clone()),

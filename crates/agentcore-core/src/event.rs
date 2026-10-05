@@ -2,7 +2,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{Action, ActionOutcome, Principal, SessionId, SessionStatus, Verdict};
+use crate::{
+    Action, ActionOutcome, ModelCallOutcome, Principal, SessionId, SessionStatus, Verdict,
+};
 
 /// A single, immutable fact about a session. Events are numbered per session
 /// (`seq`) so consumers can detect gaps and resume streams.
@@ -72,6 +74,22 @@ pub enum EventKind {
         action_id: Uuid,
         outcome: ActionOutcome,
     },
+    /// A call to an LLM through the model gateway. Full request and response
+    /// bodies are kept in the database; the audit chain holds their hashes.
+    ModelCall {
+        call_id: Uuid,
+        provider: String,
+        model: Option<String>,
+        path: String,
+        http_status: Option<u16>,
+        outcome: ModelCallOutcome,
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+        duration_ms: u64,
+        request_sha256: String,
+        response_sha256: Option<String>,
+        detail: Option<String>,
+    },
     StatusChanged {
         status: SessionStatus,
     },
@@ -99,6 +117,7 @@ impl EventKind {
             Self::ApprovalRequested { .. } => "approval_requested",
             Self::ApprovalResolved { .. } => "approval_resolved",
             Self::ActionCompleted { .. } => "action_completed",
+            Self::ModelCall { .. } => "model_call",
             Self::StatusChanged { .. } => "status_changed",
             Self::StopRequested { .. } => "stop_requested",
             Self::SessionEnded { .. } => "session_ended",

@@ -56,8 +56,11 @@ export interface ActionRecord {
   outcome?: ActionOutcome;
 }
 
+export type ModelCallEvent = Extract<AgentEvent, { event: "model_call" }>;
+
 export type TimelineItem =
   | { type: "action"; record: ActionRecord }
+  | { type: "model"; call: ModelCallEvent }
   | { type: "event"; event: AgentEvent };
 
 /** Fold the raw event log into a timeline, pending approvals and output. */
@@ -108,6 +111,9 @@ export function useSessionModel(events: AgentEvent[]) {
           if (r) r.outcome = e.outcome;
           break;
         }
+        case "model_call":
+          timeline.push({ type: "model", call: e });
+          break;
         case "status_changed":
           break;
         default:

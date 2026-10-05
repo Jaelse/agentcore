@@ -3,8 +3,9 @@
 use std::convert::Infallible;
 use std::time::Duration;
 
-use agentcore_core::{Event, SessionId};
+use agentcore_core::{Event, SessionId, SessionInfo};
 use agentcore_runtime::{ApprovalDecision, CreateSession};
+use agentcore_store::{NewProvider, ProviderUpdate};
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -19,6 +20,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::auth::Caller;
 use crate::error::ApiError;
+use crate::sessions::SessionRef;
 
 type ApiResult<T> = Result<T, ApiError>;
 
@@ -68,13 +70,36 @@ pub async fn system_card(State(state): State<AppState>, _caller: Caller) -> Json
         "sandbox_backend": state.manager.sandbox_backend(),
         "default_policy": config.policies.default,
         "audit_retention_days": config.storage.audit_retention_days,
+        "model_gateway": {
+            "log_bodies": config.model_gateway.log_bodies,
+            "max_logged_body_bytes": config.model_gateway.max_logged_body_bytes,
+        },
         "agents": agents,
         "policies": policies,
     }))
 }
 
-pub async fn list_sessions(State(state): State<AppState>, _caller: Caller) -> Json<Value> {
-    Json(json!(state.manager.list()))
+pub async fn list_sessions(
+    State(state): State<AppState>,
+    _caller: Caller,
+) -> ApiResult<Json<Value>> {
+    // Archived sessions come from the database; live ones from memory, which
+    // has fresher state (pending approvals, counters).
+    let mut sessions: Vec<SessionInfo> = state
+        .store
+        .list_sessions(200)
+        .await?
+        .into_iter()
+        .map(|r| r.info)
+        .collect();
+    for live in state.manager.list() {
+        match sessions.iter_mut().find(|s| s.id == live.id) {
+            Some(slot) => *slot = live,
+            None => sessions.push(live),
+        }
+    }
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.created_at));
+    Ok(Json(json!(sessions)))
 }
 
 pub async fn create_session(
@@ -89,7 +114,10 @@ pub async fn create_session(
             "task must not be empty",
         ));
     }
-    let session = state.manager.create(request, caller.principal())?;
+    let models = state.store.enabled_endpoints().await?;
+    let session = state.manager.create(request, caller.principal(), models)?;
+    state.persist(&session).await;
+    state.follow(session.clone());
     Ok((StatusCode::CREATED, Json(json!(session.info()))))
 }
 
@@ -98,14 +126,17 @@ pub async fn get_session(
     _caller: Caller,
     Path(id): Path<SessionId>,
 ) -> ApiResult<Json<Value>> {
-    let session = state.manager.get(id)?;
+    let session = state.lookup(id).await?;
+    let info = session.info();
+    let approvals = match &session {
+        SessionRef::Live(s) => json!(s.pending_approvals()),
+        SessionRef::Archived(_) => json!([]),
+    };
     Ok(Json(json!({
-        "session": session.info(),
-        "policy": {
-            "name": session.policy().name(),
-            "digest": session.policy().digest(),
-        },
-        "approvals": session.pending_approvals(),
+        "session": info,
+        "live": matches!(session, SessionRef::Live(_)),
+        "policy": { "name": info.policy, "digest": session.policy_digest() },
+        "approvals": approvals,
     })))
 }
 
@@ -122,7 +153,11 @@ pub async fn stop_session(
     body: Option<Json<StopRequest>>,
 ) -> ApiResult<Json<Value>> {
     caller.require_operator()?;
-    let session = state.manager.get(id)?;
+    let session = state.lookup(id).await?;
+    let SessionRef::Live(session) = session else {
+        // Already over: stopping is a no-op.
+        return Ok(Json(json!(session.info())));
+    };
     let reason = body
         .and_then(|Json(b)| b.reason)
         .unwrap_or_else(|| "stopped by operator".into());
@@ -148,7 +183,10 @@ pub async fn list_approvals(
     _caller: Caller,
     Path(id): Path<SessionId>,
 ) -> ApiResult<Json<Value>> {
-    Ok(Json(json!(state.manager.get(id)?.pending_approvals())))
+    Ok(Json(match state.lookup(id).await? {
+        SessionRef::Live(s) => json!(s.pending_approvals()),
+        SessionRef::Archived(_) => json!([]),
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,7 +203,7 @@ pub async fn decide_approval(
     Json(decision): Json<DecisionRequest>,
 ) -> ApiResult<StatusCode> {
     caller.require_operator()?;
-    state.manager.get(id)?.resolve_approval(
+    state.lookup(id).await?.live()?.resolve_approval(
         approval_id,
         ApprovalDecision {
             approved: decision.approved,
@@ -193,26 +231,36 @@ pub async fn events(
     Path(id): Path<SessionId>,
     Query(query): Query<EventsQuery>,
 ) -> ApiResult<Json<Vec<Event>>> {
-    let (history, _) = state.manager.get(id)?.subscribe();
+    let events = state.lookup(id).await?.events().await?;
     Ok(Json(
-        history.into_iter().filter(is_new(query.after)).collect(),
+        events.into_iter().filter(is_new(query.after)).collect(),
     ))
 }
 
 /// Server-sent events: replays history then streams live events. If the
 /// client falls too far behind, a `lagged` event is sent and the stream ends;
-/// clients reconnect with `?after=<last seq>`.
+/// clients reconnect with `?after=<last seq>`. For archived sessions the
+/// stream replays the audit log and then stays idle.
 pub async fn stream(
     State(state): State<AppState>,
     _caller: Caller,
     Path(id): Path<SessionId>,
     Query(query): Query<EventsQuery>,
 ) -> ApiResult<Sse<impl Stream<Item = Result<sse::Event, Infallible>>>> {
-    let (history, rx) = state.manager.get(id)?.subscribe();
     let keep = is_new(query.after);
+    let (history, live) = match state.lookup(id).await? {
+        SessionRef::Live(session) => {
+            let (history, rx) = session.subscribe();
+            (history, Some(rx))
+        }
+        archived @ SessionRef::Archived(_) => (archived.events().await?, None),
+    };
     let history: Vec<_> = history.into_iter().filter(keep).collect();
     let replay = stream::iter(history.into_iter().map(Ok));
-    let live = BroadcastStream::new(rx).map(|r| r.map_err(|_| ()));
+    let live = match live {
+        Some(rx) => BroadcastStream::new(rx).map(|r| r.map_err(|_| ())).boxed(),
+        None => stream::pending().boxed(),
+    };
     let events = replay.chain(live).scan(false, |ended, item| {
         if *ended {
             return futures::future::ready(None);
@@ -239,7 +287,7 @@ pub async fn verify_audit(
     _caller: Caller,
     Path(id): Path<SessionId>,
 ) -> ApiResult<Json<Value>> {
-    let path = state.manager.get(id)?.audit_path().to_path_buf();
+    let path = state.lookup(id).await?.audit_path();
     let result = tokio::task::spawn_blocking(move || agentcore_audit::verify_file(&path))
         .await
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -255,7 +303,7 @@ pub async fn download_audit(
     _caller: Caller,
     Path(id): Path<SessionId>,
 ) -> ApiResult<impl IntoResponse> {
-    let path = state.manager.get(id)?.audit_path().to_path_buf();
+    let path = state.lookup(id).await?.audit_path();
     let body = tokio::fs::read(&path)
         .await
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -272,4 +320,67 @@ pub async fn download_audit(
         ],
         body,
     ))
+}
+
+/// Full request and response of one model call.
+pub async fn model_call(
+    State(state): State<AppState>,
+    _caller: Caller,
+    Path((id, call_id)): Path<(SessionId, Uuid)>,
+) -> ApiResult<Json<Value>> {
+    match state.store.get_model_call(id, call_id).await? {
+        Some(call) => Ok(Json(json!(call))),
+        None => Err(ApiError::new(StatusCode::NOT_FOUND, "model call not found")),
+    }
+}
+
+// ---- settings: model providers ------------------------------------------------
+
+pub async fn list_providers(
+    State(state): State<AppState>,
+    caller: Caller,
+) -> ApiResult<Json<Value>> {
+    caller.require_operator()?;
+    Ok(Json(json!(state.store.list_providers().await?)))
+}
+
+pub async fn create_provider(
+    State(state): State<AppState>,
+    caller: Caller,
+    Json(provider): Json<NewProvider>,
+) -> ApiResult<impl IntoResponse> {
+    caller.require_admin()?;
+    let created = state.store.create_provider(provider, &caller.name).await?;
+    Ok((StatusCode::CREATED, Json(json!(created))))
+}
+
+pub async fn update_provider(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(name): Path<String>,
+    Json(update): Json<ProviderUpdate>,
+) -> ApiResult<Json<Value>> {
+    caller.require_admin()?;
+    Ok(Json(json!(
+        state
+            .store
+            .update_provider(&name, update, &caller.name)
+            .await?
+    )))
+}
+
+pub async fn delete_provider(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(name): Path<String>,
+) -> ApiResult<StatusCode> {
+    caller.require_admin()?;
+    state.store.delete_provider(&name, &caller.name).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Configuration change history.
+pub async fn admin_events(State(state): State<AppState>, caller: Caller) -> ApiResult<Json<Value>> {
+    caller.require_admin()?;
+    Ok(Json(json!(state.store.admin_events(200).await?)))
 }

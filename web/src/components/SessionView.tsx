@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { useEventStream, useSessionModel } from "../hooks";
-import type { ActionRecord, TimelineItem } from "../hooks";
-import type { AgentEvent, Me, PendingApproval, SessionInfo } from "../types";
+import type { ActionRecord, ModelCallEvent, TimelineItem } from "../hooks";
+import type { AgentEvent, Me, ModelCallRecord, PendingApproval, SessionInfo } from "../types";
 import { TERMINAL, actionSummary, principalLabel } from "../types";
 import { StatusPill } from "./StatusPill";
 
@@ -21,7 +21,7 @@ export function SessionView({ info, me, onChanged, onError }: Props) {
   const [tab, setTab] = useState<Tab>("activity");
   const [stopping, setStopping] = useState(false);
   const ended = TERMINAL.includes(info.status);
-  const canAct = me.role === "operator";
+  const canAct = me.role !== "viewer";
 
   const stop = async () => {
     setStopping(true);
@@ -63,6 +63,10 @@ export function SessionView({ info, me, onChanged, onError }: Props) {
               <dd>{info.actions}</dd>
             </div>
             <div>
+              <dt>Model calls</dt>
+              <dd>{info.model_calls ?? 0}</dd>
+            </div>
+            <div>
               <dt>Session</dt>
               <dd className="mono small">{info.id}</dd>
             </div>
@@ -95,7 +99,7 @@ export function SessionView({ info, me, onChanged, onError }: Props) {
       <nav className="tabs" role="tablist">
         {(
           [
-            ["activity", `Activity (${timeline.filter((t) => t.type === "action").length})`],
+            ["activity", `Activity (${timeline.filter((t) => t.type !== "event").length})`],
             ["output", `Output (${output.length})`],
             ["audit", "Audit"],
           ] as [Tab, string][]
@@ -112,7 +116,7 @@ export function SessionView({ info, me, onChanged, onError }: Props) {
         ))}
       </nav>
 
-      {tab === "activity" && <Timeline items={timeline} />}
+      {tab === "activity" && <Timeline items={timeline} sessionId={info.id} onError={onError} />}
       {tab === "output" && <Output lines={output} />}
       {tab === "audit" && <Audit sessionId={info.id} events={events} onError={onError} />}
     </div>
@@ -169,19 +173,107 @@ function ApprovalCard({
   );
 }
 
-function Timeline({ items }: { items: TimelineItem[] }) {
+function Timeline({
+  items,
+  sessionId,
+  onError,
+}: {
+  items: TimelineItem[];
+  sessionId: string;
+  onError: (err: unknown) => void;
+}) {
   if (items.length === 0) return <p className="muted pad">Nothing has happened yet.</p>;
   return (
     <ol className="timeline">
       {items.map((item) =>
         item.type === "action" ? (
           <ActionRow key={item.record.actionId} record={item.record} />
+        ) : item.type === "model" ? (
+          <ModelCallRow key={item.call.call_id} call={item.call} sessionId={sessionId} onError={onError} />
         ) : (
           <LifecycleRow key={item.event.id} event={item.event} />
         ),
       )}
     </ol>
   );
+}
+
+const OUTCOME_TONE: Record<string, string> = {
+  completed: "ok",
+  rejected: "bad",
+  upstream_error: "bad",
+  aborted: "bad",
+};
+
+function ModelCallRow({
+  call,
+  sessionId,
+  onError,
+}: {
+  call: ModelCallEvent;
+  sessionId: string;
+  onError: (err: unknown) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [detail, setDetail] = useState<ModelCallRecord | null>(null);
+  const failed = call.outcome === "completed" && call.http_status !== null && call.http_status >= 400;
+  const tone = failed ? "bad" : OUTCOME_TONE[call.outcome];
+  const tokens =
+    call.input_tokens !== null || call.output_tokens !== null
+      ? `${call.input_tokens ?? "?"} → ${call.output_tokens ?? "?"} tokens`
+      : null;
+  const toggle = () => {
+    if (!open && !detail) api.modelCall(sessionId, call.call_id).then(setDetail).catch(onError);
+    setOpen(!open);
+  };
+  return (
+    <li className={`timeline-item action model tone-${tone}`}>
+      <button className="timeline-row" onClick={toggle} aria-expanded={open}>
+        <time>{new Date(call.timestamp).toLocaleTimeString()}</time>
+        <span className="kind">model</span>
+        <code className="summary">
+          {call.provider} · {call.model ?? "unknown model"}
+          {tokens && ` · ${tokens}`} · {(call.duration_ms / 1000).toFixed(1)}s
+        </code>
+        <span className={`tag tone-${tone}`}>
+          {failed ? `HTTP ${call.http_status}` : call.outcome.replace("_", " ")}
+        </span>
+      </button>
+      {open && (
+        <div className="timeline-detail">
+          {call.detail && <p>{call.detail}</p>}
+          <p className="muted small mono">
+            request sha256 {call.request_sha256.slice(0, 16)}…
+            {call.response_sha256 && <> · response sha256 {call.response_sha256.slice(0, 16)}…</>}
+          </p>
+          {!detail ? (
+            <p className="muted small">Loading…</p>
+          ) : (
+            <>
+              {detail.bodies_truncated && <p className="muted small">Bodies were truncated for storage.</p>}
+              <details>
+                <summary>Request</summary>
+                <pre className="out">{pretty(detail.request_body)}</pre>
+              </details>
+              <details open>
+                <summary>Response</summary>
+                <pre className="out">{pretty(detail.response_body)}</pre>
+              </details>
+            </>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function pretty(body: string | null): string {
+  if (body === null) return "(not stored)";
+  try {
+    return JSON.stringify(JSON.parse(body), null, 2);
+  } catch {
+    return body;
+  }
 }
 
 function actionState(r: ActionRecord): { label: string; tone: string } {

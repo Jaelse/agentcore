@@ -7,6 +7,7 @@ import { TopBar } from "./components/TopBar";
 import { Sidebar } from "./components/Sidebar";
 import { SessionView } from "./components/SessionView";
 import { SystemCardDialog } from "./components/SystemCardDialog";
+import { Settings } from "./components/Settings";
 
 export default function App() {
   const [me, setMe] = useState<Me | null>(null);
@@ -15,6 +16,8 @@ export default function App() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [selected, setSelected] = useState<string | null>(() => location.hash.slice(1) || null);
   const [showCard, setShowCard] = useState(false);
+  const [view, setView] = useState<"sessions" | "settings">("sessions");
+  const [providerCount, setProviderCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const handleError = useCallback((err: unknown) => {
@@ -47,6 +50,14 @@ export default function App() {
   }, [me, handleError]);
 
   useInterval(refresh, 2000);
+
+  useEffect(() => {
+    if (!me || me.role === "viewer") return;
+    api
+      .providers()
+      .then((p) => setProviderCount(p.filter((x) => x.enabled).length))
+      .catch(() => setProviderCount(null));
+  }, [me, view]);
   useEffect(refresh, [refresh]);
 
   useEffect(() => {
@@ -84,6 +95,8 @@ export default function App() {
           }
         }}
         onShowCard={() => setShowCard(true)}
+        view={view}
+        onView={setView}
         onSignOut={() => {
           setToken(null);
           setMe(null);
@@ -98,8 +111,15 @@ export default function App() {
           </button>
         </div>
       )}
+      {view === "settings" ? (
+        <main className="main settings-main">
+          <Settings me={me} onError={handleError} />
+        </main>
+      ) : (
       <div className={`layout ${current ? "has-session" : ""}`}>
         <Sidebar
+          providerCount={providerCount}
+          onOpenSettings={() => setView("settings")}
           me={me}
           card={card}
           sessions={sessions}
@@ -122,6 +142,7 @@ export default function App() {
           )}
         </main>
       </div>
+      )}
       <footer className="footer">
         You are interacting with an AI system. Agent output may be incorrect and must be reviewed by a person.{" "}
         <button className="link" onClick={() => setShowCard(true)}>

@@ -140,6 +140,25 @@ impl SandboxProvider for DockerProvider {
         "docker"
     }
 
+    async fn cleanup_orphans(&self) -> Result<usize> {
+        let ids = self
+            .cli(&[
+                "ps",
+                "--all",
+                "--quiet",
+                "--filter",
+                "label=agentcore.session",
+            ])
+            .await?;
+        let ids: Vec<&str> = ids.split_whitespace().collect();
+        if !ids.is_empty() {
+            let mut args = vec!["rm", "--force", "--volumes"];
+            args.extend(&ids);
+            self.cli(&args).await?;
+        }
+        Ok(ids.len())
+    }
+
     async fn create(&self, request: &SandboxRequest) -> Result<Arc<dyn Sandbox>> {
         let fresh = !request.workspace_dir.exists();
         tokio::fs::create_dir_all(&request.workspace_dir)
@@ -174,6 +193,23 @@ impl SandboxProvider for DockerProvider {
             }),
             killed: AtomicBool::new(false),
         }))
+    }
+}
+
+impl DockerProvider {
+    async fn cli(&self, args: &[&str]) -> Result<String> {
+        let output = Command::new(&self.config.cli)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .map_err(SandboxError::io(format!("run `{}`", self.config.cli)))?;
+        if !output.status.success() {
+            return Err(SandboxError::Command(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 }
 

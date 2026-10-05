@@ -70,6 +70,8 @@ pub struct Limits {
     pub max_session_secs: u64,
     /// Maximum number of actions an agent may request.
     pub max_actions: u64,
+    /// Maximum number of LLM calls through the model gateway.
+    pub max_model_calls: u64,
     /// How long to wait for a human before treating an approval as denied.
     pub approval_timeout_secs: u64,
     /// Truncate tool output returned to the agent beyond this size.
@@ -81,6 +83,7 @@ impl Default for Limits {
         Self {
             max_session_secs: 3600,
             max_actions: 1000,
+            max_model_calls: 2000,
             approval_timeout_secs: 900,
             max_output_bytes: 64 * 1024,
         }

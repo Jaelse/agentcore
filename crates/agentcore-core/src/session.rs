@@ -34,4 +34,6 @@ pub struct SessionInfo {
     pub ended_at: Option<DateTime<Utc>>,
     pub pending_approvals: usize,
     pub actions: u64,
+    #[serde(default)]
+    pub model_calls: u64,
 }

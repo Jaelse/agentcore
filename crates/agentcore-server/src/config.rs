@@ -14,6 +14,12 @@ pub struct Config {
     #[serde(default)]
     pub server: ServerConfig,
     #[serde(default)]
+    pub database: DatabaseConfig,
+    #[serde(default)]
+    pub secrets: SecretsConfig,
+    #[serde(default)]
+    pub model_gateway: ModelGatewayConfig,
+    #[serde(default)]
     pub storage: StorageConfig,
     #[serde(default)]
     pub policies: PoliciesConfig,
@@ -50,7 +56,7 @@ impl Default for ServerConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     /// May watch sessions and read audit logs.
@@ -58,6 +64,47 @@ pub enum Role {
     /// May also start sessions, approve/reject actions and stop agents.
     #[default]
     Operator,
+    /// May also manage configuration: model providers and their API keys.
+    Admin,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DatabaseConfig {
+    /// PostgreSQL URL. `$AGENTCORE_DATABASE_URL` or `$DATABASE_URL` take
+    /// precedence, so the password need not live in the file.
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SecretsConfig {
+    /// File holding the base64 master key used to encrypt provider API keys.
+    /// Generated on first start. `$AGENTCORE_MASTER_KEY` takes precedence.
+    /// Defaults to `<data_dir>/master.key`.
+    pub master_key_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ModelGatewayConfig {
+    /// Store full request and response bodies of model calls (EU AI Act
+    /// Art. 12 record-keeping). Hashes are always recorded.
+    pub log_bodies: bool,
+    /// Bodies are stored up to this size; the rest is cut (hashes cover all).
+    pub max_logged_body_bytes: usize,
+    /// Give up on an upstream response that sends nothing for this long.
+    pub upstream_read_timeout_secs: u64,
+}
+
+impl Default for ModelGatewayConfig {
+    fn default() -> Self {
+        Self {
+            log_bodies: true,
+            max_logged_body_bytes: 1024 * 1024,
+            upstream_read_timeout_secs: 300,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +195,11 @@ impl Config {
             toml::from_str(&src).with_context(|| format!("parsing config {}", path.display()))?;
         // Relative paths are relative to the config file.
         let base = path.parent().unwrap_or(Path::new("."));
+        if let Some(p) = &mut config.secrets.master_key_file
+            && p.is_relative()
+        {
+            *p = base.join(&*p);
+        }
         for p in [
             &mut config.storage.data_dir,
             &mut config.policies.dir,
@@ -178,6 +230,26 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    pub fn database_url(&self) -> anyhow::Result<String> {
+        ["AGENTCORE_DATABASE_URL", "DATABASE_URL"]
+            .iter()
+            .find_map(|var| std::env::var(var).ok().filter(|v| !v.is_empty()))
+            .or_else(|| self.database.url.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no database configured: set [database].url or $AGENTCORE_DATABASE_URL \
+                     (e.g. postgres://agentcore:secret@localhost/agentcore)"
+                )
+            })
+    }
+
+    pub fn master_key_file(&self) -> PathBuf {
+        self.secrets
+            .master_key_file
+            .clone()
+            .unwrap_or_else(|| self.storage.data_dir.join("master.key"))
     }
 
     pub fn gateway_url(&self) -> String {

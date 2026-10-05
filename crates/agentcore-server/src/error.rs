@@ -40,6 +40,19 @@ impl From<agentcore_audit::AuditError> for ApiError {
     }
 }
 
+impl From<agentcore_store::StoreError> for ApiError {
+    fn from(err: agentcore_store::StoreError) -> Self {
+        use agentcore_store::StoreError as E;
+        let status = match &err {
+            E::Invalid(_) => StatusCode::BAD_REQUEST,
+            E::NotFound(_) => StatusCode::NOT_FOUND,
+            E::Conflict(_) => StatusCode::CONFLICT,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        Self::new(status, err.to_string())
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         if self.status.is_server_error() {

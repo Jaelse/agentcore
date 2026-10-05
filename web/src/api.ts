@@ -1,4 +1,14 @@
-import type { AgentEvent, Me, PendingApproval, SessionInfo, SystemCard } from "./types";
+import type {
+  AdminEvent,
+  AgentEvent,
+  Me,
+  ModelCallRecord,
+  PendingApproval,
+  ProviderInfo,
+  ProviderKind,
+  SessionInfo,
+  SystemCard,
+} from "./types";
 
 const TOKEN_KEY = "agentcore.token";
 
@@ -68,6 +78,22 @@ export const api = {
       "GET",
       `/sessions/${id}/audit/verify`,
     ),
+  modelCall: (sessionId: string, callId: string) =>
+    request<ModelCallRecord>("GET", `/sessions/${sessionId}/model-calls/${callId}`),
+  providers: () => request<ProviderInfo[]>("GET", "/providers"),
+  createProvider: (p: {
+    name: string;
+    kind: ProviderKind;
+    base_url?: string;
+    api_key: string;
+    allowed_models: string[];
+  }) => request<ProviderInfo>("POST", "/providers", p),
+  updateProvider: (
+    name: string,
+    update: Partial<{ base_url: string; api_key: string; allowed_models: string[]; enabled: boolean }>,
+  ) => request<ProviderInfo>("PATCH", `/providers/${encodeURIComponent(name)}`, update),
+  deleteProvider: (name: string) => request<void>("DELETE", `/providers/${encodeURIComponent(name)}`),
+  adminEvents: () => request<AdminEvent[]>("GET", "/admin-events"),
   async downloadAudit(id: string) {
     const res = await fetch(`/api/v1/sessions/${id}/audit`, { headers: headers() });
     if (!res.ok) throw new ApiError(res.status, res.statusText);

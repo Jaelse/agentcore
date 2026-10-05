@@ -28,7 +28,7 @@ the high-risk dates.
 |---|---|---|---|
 | **Art. 9** Risk management | Identify, evaluate and mitigate risks throughout the lifecycle. | Policies encode risk decisions per action type; sandbox limits blast radius; limits on time and number of actions. | Run and document a risk assessment for your use cases; review policies regularly. |
 | **Art. 11 / Annex IV** Technical documentation | Describe the system, its components and its logic. | `docs/ARCHITECTURE.md`, `docs/POLICIES.md`, the system card (`/api/v1/system-card`), policy digests. | Add your deployment details, models used and intended purpose. |
-| **Art. 12** Record-keeping | Automatic logging of events over the system's lifetime, enabling traceability and post-market monitoring. | Every session event (task, initiator, policy + SHA-256 digest, sandbox details, each action, verdict, approval, outcome, output, stop, end) goes to a **hash-chained, append-only** log before anything else happens. Logging is fail-closed. Logs can be verified (`agentcore audit verify`, UI "Verify integrity") and exported (JSONL). | Store `data/audit` on durable storage; back it up; ship chain heads to WORM storage if you need truncation evidence. |
+| **Art. 12** Record-keeping | Automatic logging of events over the system's lifetime, enabling traceability and post-market monitoring. | Every session event (task, initiator, policy + SHA-256 digest, sandbox details, each action, verdict, approval, outcome, **every LLM call with model, token usage and SHA-256 of request and response**, output, stop, end) goes to a **hash-chained, append-only** log before anything else happens. The model gateway stores full prompts and responses in PostgreSQL (`model_gateway.log_bodies`); provider configuration changes are logged with the actor. Logging is fail-closed. Logs can be verified (`agentcore audit verify`, UI "Verify integrity") and exported (JSONL). | Store `data/audit` on durable storage; back it up; ship chain heads to WORM storage if you need truncation evidence. |
 | **Art. 13** Transparency to deployers | Instructions for use: purpose, capabilities, limitations, human oversight measures, logging. | `[transparency]` config, published in the UI ("About this system") and at `/api/v1/system-card`; this documentation. | Fill in provider, contact, intended purpose and limitations accurately. |
 | **Art. 14** Human oversight | Humans can understand and monitor the system, avoid automation bias, decide not to use, override, and *"interrupt the system through a 'stop' button or a similar procedure"* (Art. 14(4)(e)). | Live timeline and output; **STOP AGENT** and **Stop all agents** buttons that kill the sandbox immediately; approval gates with comments; rejection by default on timeout; `supervised` policy for full step-by-step control; the agent is told when it was denied. All interventions are attributed to an authenticated person. | Assign oversight to trained people with the authority to stop agents (Art. 26(2)); define when approvals are required. |
 | **Art. 15** Accuracy, robustness, cybersecurity | Resilience against errors, faults and attempts to alter use or behaviour (e.g. prompt injection). | Defence in depth: hardened container sandbox (no capabilities, read-only rootfs, non-root, resource limits, no network), optional gVisor; policy engine with path normalisation and deny-overrides; per-session gateway tokens; secrets never in audited arguments; fail-closed audit. | Keep images patched; enable gVisor for untrusted code; restrict the network; protect the host (see SECURITY.md). |
@@ -50,10 +50,11 @@ verification at that line.
 
 ## Gaps and roadmap
 
-* LLM prompts and responses are not yet captured, because agents call the model
-  provider directly. The planned model gateway will log them (Art. 12) and keep
-  API keys out of the sandbox.
-* The session index is in memory; audit files persist across restarts, but the
-  UI only lists sessions from the current process.
+* LLM traffic is only captured when agents use the model gateway. With the
+  Docker backend on an internal network they have no other route, but with the
+  dev `process` backend an agent could call a provider directly.
+* Stored prompts and responses can contain personal data from the code base
+  or tasks: set retention and access rules for the `model_calls` table that
+  are consistent with GDPR.
 * Operator identity is token based; OIDC/SSO is planned to tie interventions to
   corporate identities.

@@ -11,12 +11,22 @@ interface Props {
   onSelect: (id: string) => void;
   onCreated: (s: SessionInfo) => void;
   onError: (err: unknown) => void;
+  providerCount: number | null;
+  onOpenSettings: () => void;
 }
 
-export function Sidebar({ me, card, sessions, selected, onSelect, onCreated, onError }: Props) {
+export function Sidebar({ me, card, sessions, selected, onSelect, onCreated, onError, providerCount, onOpenSettings }: Props) {
   return (
     <aside className="sidebar">
-      {me.role === "operator" && <NewSession card={card} onCreated={onCreated} onError={onError} />}
+      {me.role !== "viewer" && providerCount === 0 && (
+        <div className="banner warn-banner small">
+          No model provider is configured, so agents cannot reach an LLM.{" "}
+          <button className="link" onClick={onOpenSettings}>
+            Open settings
+          </button>
+        </div>
+      )}
+      {me.role !== "viewer" && <NewSession card={card} onCreated={onCreated} onError={onError} />}
       <h3 className="section-title">Sessions</h3>
       {sessions.length === 0 && <p className="muted small">No sessions yet.</p>}
       <ul className="session-list">
@@ -29,7 +39,7 @@ export function Sidebar({ me, card, sessions, selected, onSelect, onCreated, onE
               </div>
               <div className="session-task">{s.task}</div>
               <div className="muted small">
-                {new Date(s.created_at).toLocaleString()} · {s.actions} actions
+                {new Date(s.created_at).toLocaleString()} · {s.actions} actions · {s.model_calls ?? 0} model calls
                 {s.pending_approvals > 0 && <span className="badge attention">{s.pending_approvals} to approve</span>}
               </div>
             </button>

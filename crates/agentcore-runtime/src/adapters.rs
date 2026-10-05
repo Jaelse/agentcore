@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use agentcore_core::agent::AdapterError;
-use agentcore_core::{AgentAdapter, AgentSpec, LaunchContext, LaunchPlan};
+use agentcore_core::{AgentAdapter, AgentSpec, LaunchContext, LaunchPlan, ProviderKind};
 
 pub struct AdapterRegistry {
     adapters: HashMap<&'static str, Arc<dyn AgentAdapter>>,
@@ -90,8 +90,26 @@ impl OpenCodeAdapter {
     /// the policy-checked gateway tools. Read-only tools are included: left
     /// enabled they would bypass path rules such as `deny-secrets`. Verified
     /// against opencode 1.18 with `opencode debug agent build`.
+    ///
+    /// opencode's `anthropic` and `openai` providers are pointed at the model
+    /// gateway with the session token as API key, so the real keys stay in
+    /// agentcore and every model call is logged.
     pub fn config(ctx: &LaunchContext) -> serde_json::Value {
+        let mut providers = serde_json::Map::new();
+        for kind in [ProviderKind::Anthropic, ProviderKind::Openai] {
+            if let Some(endpoint) = ctx.model(kind) {
+                providers.insert(
+                    kind.as_str().into(),
+                    serde_json::json!({ "options": {
+                        // The AI SDK expects the version prefix in baseURL.
+                        "baseURL": format!("{}/v1", ctx.model_base_url(&endpoint.name)),
+                        "apiKey": ctx.gateway_token,
+                    }}),
+                );
+            }
+        }
         serde_json::json!({
+            "provider": providers,
             "$schema": "https://opencode.ai/config.json",
             "autoupdate": false,
             "share": "disabled",
@@ -154,6 +172,11 @@ mod tests {
             workspace: "/workspace".into(),
             gateway_url: "http://gw/mcp/x".into(),
             gateway_token: "secret".into(),
+            model_gateway_url: "http://gw/llm/x".into(),
+            models: vec![agentcore_core::ModelEndpoint {
+                name: "claude".into(),
+                kind: ProviderKind::Anthropic,
+            }],
         }
     }
 
@@ -192,5 +215,14 @@ mod tests {
             assert_eq!(config["permission"][tool], "deny", "{tool}");
         }
         assert_eq!(config["mcp"]["agentcore"]["url"], "http://gw/mcp/x");
+        let anthropic = &config["provider"]["anthropic"]["options"];
+        assert_eq!(anthropic["baseURL"], "http://gw/llm/x/claude/v1");
+        assert_eq!(anthropic["apiKey"], "secret");
+        assert!(config["provider"].get("openai").is_none());
+
+        let env = ctx().model_env();
+        assert_eq!(env["ANTHROPIC_BASE_URL"], "http://gw/llm/x/claude");
+        assert_eq!(env["ANTHROPIC_API_KEY"], "secret");
+        assert!(!env.contains_key("OPENAI_API_KEY"));
     }
 }

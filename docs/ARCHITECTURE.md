@@ -7,6 +7,7 @@ agentcore-cli ──► agentcore-server ──► agentcore-runtime ──► a
                        │                    │   │                (docker | process)
                        │                    │   └──► agentcore-policy
                        │                    └──────► agentcore-audit
+                       ├── agentcore-store ──► PostgreSQL
                        └── web/ (React UI, served as static files)
                  all crates share agentcore-core (types)
 ```
@@ -22,8 +23,50 @@ agentcore-cli ──► agentcore-server ──► agentcore-runtime ──► a
   agent, run tool commands, read and write workspace files, and `kill()` everything.
 * **runtime**: `SessionManager` and `Session`. A session drives the agent
   process, gates every action through policy and approvals, and emits events.
+* **store**: PostgreSQL via sqlx (migrations run at startup). Holds the
+  session index, model providers (API keys AES-256-GCM encrypted with the
+  master key, provider name bound as associated data), every model call, and
+  the configuration change log.
 * **server**: axum HTTP server with the operator API, an SSE event stream, the
-  MCP gateway, bearer-token auth and the UI.
+  MCP tool gateway, the model gateway, bearer-token auth and the UI.
+
+## Persistence
+
+| Data | Where | Why |
+|---|---|---|
+| Session events | `data/audit/<session>.jsonl` | Tamper-evident hash chain; the authoritative record |
+| Session index | `sessions` table | List and search sessions; survives restarts |
+| Model providers | `model_providers` table | Keys encrypted at rest; managed from the UI |
+| LLM requests/responses | `model_calls` table | Full bodies (hashes are also in the audit chain) |
+| Configuration changes | `admin_events` table | Who changed which provider, when |
+| Master key | `data/master.key` or `$AGENTCORE_MASTER_KEY` | Decrypts provider keys; back it up |
+
+On startup agentcore marks sessions that were running when it last stopped as
+`failed`, appends a closing `session_ended` event to their audit logs, and
+removes any sandbox containers left behind.
+
+## Model gateway
+
+```
+agent ──POST /llm/{session}/{provider}/v1/messages──► agentcore
+        x-api-key: <session token>
+          1. token must belong to the live session          → 401
+          2. session running, under max_model_calls           → 403 / 429
+          3. provider configured and enabled                 → 404 / 403
+          4. model matches the provider's allowed_models     → 403
+          5. swap in the decrypted real key, strip the token
+        ──► upstream (Anthropic / OpenAI-compatible)
+        ◄── response streamed back chunk by chunk; aborted if the session stops
+          6. audit event `model_call` (model, status, tokens, duration,
+             SHA-256 of request and response) + full bodies in `model_calls`
+```
+
+agentcore gives every agent `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` and
+`OPENAI_BASE_URL` / `OPENAI_API_KEY` that point at the gateway, using the session
+token as the key, for the first enabled provider of each kind. The opencode
+adapter also writes these into opencode's provider config. Refused calls are
+recorded too. Because LLM traffic goes through agentcore, sandboxes can run on
+an internal network with no route to the internet.
 
 ## Event pipeline
 
@@ -100,13 +143,12 @@ microVMs, Kubernetes pods (one per session), and remote sandboxes.
 
 ## Roadmap
 
-* **Model gateway**: proxy LLM API calls through agentcore so API keys never
-  enter the sandbox and prompts/responses are logged (Art. 12).
 * **Egress proxy**: allow network access per policy `network` rules, instead
   of all-or-nothing.
 * **Git integration**: clone a repository into the workspace and deliver
   results as a branch / pull request.
 * **OpenTelemetry export** of traces and events; SIEM forwarding of audit logs.
 * **SSO (OIDC)** for operators; per-team policies.
-* **Persistent session index** (survive restarts; archived sessions in the UI).
+* **Spend limits**: per-session and per-provider token/cost budgets.
+* **More from the UI**: operator management, agent definitions and a policy editor.
 * **External anchoring** of audit chain heads (WORM storage / transparency log).

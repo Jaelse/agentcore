@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use agentcore_audit::AuditLog;
-use agentcore_core::{AgentSpec, Principal, SessionId, SessionInfo};
+use agentcore_core::{AgentSpec, ModelEndpoint, Principal, SessionId, SessionInfo};
 use agentcore_policy::PolicySet;
 use agentcore_sandbox::SandboxProvider;
 use serde::{Deserialize, Serialize};
@@ -84,15 +84,21 @@ impl SessionManager {
         self.agents.values()
     }
 
+    pub fn sandbox_provider(&self) -> Arc<dyn SandboxProvider> {
+        self.provider.clone()
+    }
+
     pub fn sandbox_backend(&self) -> &'static str {
         self.provider.name()
     }
 
-    /// Create a session and start it in the background.
+    /// Create a session and start it in the background. `models` are the
+    /// providers the agent may reach through the model gateway.
     pub fn create(
         &self,
         request: CreateSession,
         by: Principal,
+        models: Vec<ModelEndpoint>,
     ) -> Result<Arc<Session>, RuntimeError> {
         let spec = self
             .agents
@@ -127,6 +133,7 @@ impl SessionManager {
             created_by: by,
             policy,
             audit,
+            models,
         })?;
         self.sessions
             .write()

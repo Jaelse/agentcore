@@ -115,4 +115,17 @@ async fn docker_sandbox_lifecycle() {
             .await,
         Err(SandboxError::Killed)
     ));
+
+    // A sandbox left behind by a crashed agentcore is removed on startup.
+    let orphan = provider
+        .create(&SandboxRequest {
+            session_id: uuid::Uuid::new_v4(),
+            workspace_dir: dir.path().to_path_buf(),
+            image: None,
+        })
+        .await
+        .unwrap();
+    drop(orphan);
+    assert!(provider.cleanup_orphans().await.unwrap() >= 1);
+    assert_eq!(provider.cleanup_orphans().await.unwrap(), 0);
 }

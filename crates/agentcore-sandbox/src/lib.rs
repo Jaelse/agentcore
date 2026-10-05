@@ -113,6 +113,12 @@ pub trait SandboxProvider: Send + Sync {
     fn name(&self) -> &'static str;
 
     async fn create(&self, request: &SandboxRequest) -> Result<Arc<dyn Sandbox>>;
+
+    /// Remove sandboxes left behind by a previous agentcore process (crash,
+    /// restart). Returns how many were removed.
+    async fn cleanup_orphans(&self) -> Result<usize> {
+        Ok(0)
+    }
 }
 
 #[async_trait]

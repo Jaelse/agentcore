@@ -43,6 +43,7 @@ export interface SessionInfo {
   ended_at: string | null;
   pending_approvals: number;
   actions: number;
+  model_calls: number;
 }
 
 export interface PendingApproval {
@@ -71,21 +72,84 @@ export type EventKind =
   | { event: "approval_requested"; approval_id: string; action_id: string; action: Action; reason: string }
   | { event: "approval_resolved"; approval_id: string; action_id: string; approved: boolean; by: Principal; comment: string | null }
   | { event: "action_completed"; action_id: string; outcome: ActionOutcome }
+  | {
+      event: "model_call";
+      call_id: string;
+      provider: string;
+      model: string | null;
+      path: string;
+      http_status: number | null;
+      outcome: ModelCallOutcome;
+      input_tokens: number | null;
+      output_tokens: number | null;
+      duration_ms: number;
+      request_sha256: string;
+      response_sha256: string | null;
+      detail: string | null;
+    }
   | { event: "status_changed"; status: SessionStatus }
   | { event: "stop_requested"; by: Principal; reason: string }
   | { event: "session_ended"; status: SessionStatus; exit_code: number | null; reason: string | null };
 
 export type AgentEvent = EventBase & EventKind;
 
+export type ModelCallOutcome = "completed" | "rejected" | "upstream_error" | "aborted";
+
+export type Role = "viewer" | "operator" | "admin";
+
 export interface Me {
   name: string;
-  role: "operator" | "viewer";
+  role: Role;
+}
+
+export type ProviderKind = "anthropic" | "openai";
+
+export interface ProviderInfo {
+  name: string;
+  kind: ProviderKind;
+  base_url: string;
+  api_key_hint: string;
+  allowed_models: string[];
+  enabled: boolean;
+  updated_at: string;
+  updated_by: string;
+}
+
+export interface ModelCallRecord {
+  id: string;
+  session_id: string;
+  provider: string;
+  model: string | null;
+  method: string;
+  path: string;
+  http_status: number | null;
+  outcome: ModelCallOutcome;
+  detail: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  started_at: string;
+  duration_ms: number;
+  request_body: string | null;
+  response_body: string | null;
+  bodies_truncated: boolean;
+  request_sha256: string;
+  response_sha256: string | null;
+}
+
+export interface AdminEvent {
+  id: number;
+  at: string;
+  actor: string;
+  action: string;
+  target: string;
+  details: Record<string, unknown>;
 }
 
 export interface SystemCard {
   ai_system: boolean;
   version: string;
   sandbox_backend: string;
+  model_gateway: { log_bodies: boolean; max_logged_body_bytes: number };
   default_policy: string;
   audit_retention_days: number;
   transparency: {

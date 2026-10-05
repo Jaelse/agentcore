@@ -23,12 +23,21 @@ impl Caller {
     }
 
     pub fn require_operator(&self) -> Result<(), ApiError> {
-        match self.role {
-            Role::Operator => Ok(()),
-            Role::Viewer => Err(ApiError::new(
+        self.require(Role::Operator)
+    }
+
+    pub fn require_admin(&self) -> Result<(), ApiError> {
+        self.require(Role::Admin)
+    }
+
+    fn require(&self, role: Role) -> Result<(), ApiError> {
+        if self.role >= role {
+            Ok(())
+        } else {
+            Err(ApiError::new(
                 StatusCode::FORBIDDEN,
-                "this action requires the operator role",
-            )),
+                format!("this action requires the {role:?} role").to_lowercase(),
+            ))
         }
     }
 }
@@ -60,7 +69,7 @@ impl FromRequestParts<AppState> for Caller {
             // Only reachable on loopback; see `Config::validate`.
             return Ok(Self {
                 name: "local".into(),
-                role: Role::Operator,
+                role: Role::Admin,
             });
         }
         let unauthorized = || ApiError::new(StatusCode::UNAUTHORIZED, "missing or invalid token");
