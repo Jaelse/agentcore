@@ -179,9 +179,10 @@ impl SandboxProvider for DockerProvider {
             .await
             .map_err(SandboxError::io(format!("run `{}`", self.config.cli)))?;
         if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             return Err(SandboxError::Command(format!(
-                "failed to start container: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
+                "failed to start container: {stderr}{}",
+                mount_hint(&stderr, &workspace.to_string_lossy())
             )));
         }
         Ok(Arc::new(DockerSandbox {
@@ -211,6 +212,25 @@ impl DockerProvider {
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
+}
+
+/// Extra guidance when Docker cannot bind-mount the workspace.
+fn mount_hint(stderr: &str, workspace: &str) -> String {
+    let lower = stderr.to_ascii_lowercase();
+    let mount_problem = lower.contains("mounts denied")
+        || lower.contains("not shared from the host")
+        || (lower.contains("bind source path does not exist"));
+    if !mount_problem {
+        return String::new();
+    }
+    format!(
+        "\n\nHint: the Docker daemon could not find {workspace} on the host. Workspaces are \
+         bind-mounted by the daemon, so agentcore's data directory must exist at the same \
+         path on the host and (when agentcore runs in a container) inside agentcore's \
+         container. With docker-compose, set AGENTCORE_DATA to an absolute host path \
+         (on macOS / Docker Desktop one under /Users, e.g. $HOME/agentcore-data) and \
+         recreate the agentcore container."
+    )
 }
 
 pub struct DockerSandbox {
@@ -394,6 +414,13 @@ impl Sandbox for DockerSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explains_mount_errors() {
+        let mac = "docker: Error response from daemon: Mounts denied: The path /srv/x is not shared from the host and is not known to Docker.";
+        assert!(mount_hint(mac, "/srv/x").contains("AGENTCORE_DATA"));
+        assert!(mount_hint("no such image", "/srv/x").is_empty());
+    }
 
     #[test]
     fn run_args_are_hardened() {

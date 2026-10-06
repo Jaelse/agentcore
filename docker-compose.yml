@@ -2,7 +2,9 @@
 #
 #   1. cp deploy/agentcore.toml.example deploy/agentcore.toml  (add an admin operator)
 #   2. docker build -t agentcore-sandbox:latest sandbox-image
-#   3. export AGENTCORE_DATA=$PWD/data POSTGRES_PASSWORD=<random>
+#   3. export AGENTCORE_DATA=$HOME/agentcore-data POSTGRES_PASSWORD=<random>
+#      (absolute host path; on macOS it must be under a folder Docker Desktop
+#      shares, e.g. /Users/...)
 #   4. docker compose up -d
 #   5. open http://localhost:8080 → Settings → add a model provider
 #
@@ -43,6 +45,8 @@ services:
     ports:
       - "8080:8080"
     environment:
+      # Overrides [storage].data_dir, so the config cannot point elsewhere.
+      AGENTCORE_DATA: ${AGENTCORE_DATA:?set AGENTCORE_DATA to an absolute host path, e.g. $HOME/agentcore-data}
       AGENTCORE_DATABASE_URL: postgres://agentcore:${POSTGRES_PASSWORD:-agentcore}@postgres/agentcore
       # Optional: provide the master key instead of letting agentcore generate
       # $AGENTCORE_DATA/master.key on first start.
@@ -53,7 +57,7 @@ services:
       - ./policies:/etc/agentcore/policies:ro
       # Workspaces are bind-mounted into sandboxes by the host's Docker daemon,
       # so the data directory must have the same path inside and outside.
-      - ${AGENTCORE_DATA:-/srv/agentcore/data}:${AGENTCORE_DATA:-/srv/agentcore/data}
+      - ${AGENTCORE_DATA}:${AGENTCORE_DATA}
     networks:
       - default
       - sandbox

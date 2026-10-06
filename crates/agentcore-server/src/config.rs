@@ -193,6 +193,13 @@ impl Config {
             .with_context(|| format!("reading config {}", path.display()))?;
         let mut config: Self =
             toml::from_str(&src).with_context(|| format!("parsing config {}", path.display()))?;
+        // `$AGENTCORE_DATA` wins over the file. docker-compose sets it to the
+        // directory it shares with the host, so the two cannot drift apart.
+        if let Ok(dir) = std::env::var("AGENTCORE_DATA")
+            && !dir.trim().is_empty()
+        {
+            config.storage.data_dir = dir.trim().into();
+        }
         // Relative paths are relative to the config file.
         let base = path.parent().unwrap_or(Path::new("."));
         if let Some(p) = &mut config.secrets.master_key_file
