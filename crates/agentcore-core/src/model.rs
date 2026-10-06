@@ -11,6 +11,9 @@ pub enum ProviderKind {
     Anthropic,
     /// OpenAI and OpenAI-compatible APIs (`Authorization: Bearer`).
     Openai,
+    /// OpenCode Zen, opencode's hosted model service (OpenAI-compatible).
+    /// Its free models (e.g. Big Pickle) accept the API key `public`.
+    OpencodeZen,
 }
 
 impl ProviderKind {
@@ -18,6 +21,7 @@ impl ProviderKind {
         match self {
             Self::Anthropic => "anthropic",
             Self::Openai => "openai",
+            Self::OpencodeZen => "opencode_zen",
         }
     }
 
@@ -25,6 +29,17 @@ impl ProviderKind {
         match self {
             Self::Anthropic => "https://api.anthropic.com",
             Self::Openai => "https://api.openai.com",
+            Self::OpencodeZen => "https://opencode.ai/zen",
+        }
+    }
+}
+
+impl ProviderKind {
+    /// API key used when none is given: OpenCode Zen's free tier is keyless.
+    pub fn default_api_key(self) -> Option<&'static str> {
+        match self {
+            Self::OpencodeZen => Some("public"),
+            Self::Anthropic | Self::Openai => None,
         }
     }
 }
@@ -36,6 +51,7 @@ impl std::str::FromStr for ProviderKind {
         match s {
             "anthropic" => Ok(Self::Anthropic),
             "openai" => Ok(Self::Openai),
+            "opencode_zen" => Ok(Self::OpencodeZen),
             other => Err(format!("unknown provider kind `{other}`")),
         }
     }

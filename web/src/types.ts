@@ -102,7 +102,7 @@ export interface Me {
   role: Role;
 }
 
-export type ProviderKind = "anthropic" | "openai";
+export type ProviderKind = "anthropic" | "openai" | "opencode_zen";
 
 export interface ProviderInfo {
   name: string;

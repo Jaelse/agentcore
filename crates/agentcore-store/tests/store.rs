@@ -193,3 +193,45 @@ async fn model_calls_roundtrip() {
             .is_none()
     );
 }
+
+#[tokio::test]
+async fn opencode_zen_defaults_to_the_free_public_key() {
+    let Some((store, _)) = fresh_store().await else {
+        return;
+    };
+    let zen = store
+        .create_provider(
+            NewProvider {
+                name: "opencode".into(),
+                kind: ProviderKind::OpencodeZen,
+                base_url: None,
+                api_key: String::new(),
+                allowed_models: vec![],
+                enabled: true,
+            },
+            "alice",
+        )
+        .await
+        .unwrap();
+    assert_eq!(zen.base_url, "https://opencode.ai/zen");
+    let (_, key) = store
+        .provider_credentials("opencode")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(key, "public");
+
+    // Other kinds still require a key.
+    let anthropic = NewProvider {
+        name: "anthropic".into(),
+        kind: ProviderKind::Anthropic,
+        base_url: None,
+        api_key: " ".into(),
+        allowed_models: vec![],
+        enabled: true,
+    };
+    assert!(matches!(
+        store.create_provider(anthropic, "alice").await,
+        Err(StoreError::Invalid(_))
+    ));
+}

@@ -94,8 +94,23 @@ impl OpenCodeAdapter {
     /// opencode's `anthropic` and `openai` providers are pointed at the model
     /// gateway with the session token as API key, so the real keys stay in
     /// agentcore and every model call is logged.
+    ///
+    /// opencode's own `opencode` provider (OpenCode Zen, e.g. Big Pickle) is
+    /// pointed at the gateway too, but *without* an `apiKey`: opencode then
+    /// stays on Zen's free tier, sends `Bearer public`, and picks a free
+    /// default model. The session token travels in `x-agentcore-token`.
+    /// Verified against opencode 1.18.
     pub fn config(ctx: &LaunchContext) -> serde_json::Value {
         let mut providers = serde_json::Map::new();
+        if let Some(zen) = ctx.model(ProviderKind::OpencodeZen) {
+            providers.insert(
+                "opencode".into(),
+                serde_json::json!({ "options": {
+                    "baseURL": format!("{}/v1", ctx.model_base_url(&zen.name)),
+                    "headers": { "x-agentcore-token": ctx.gateway_token },
+                }}),
+            );
+        }
         for kind in [ProviderKind::Anthropic, ProviderKind::Openai] {
             if let Some(endpoint) = ctx.model(kind) {
                 providers.insert(
@@ -219,6 +234,20 @@ mod tests {
         assert_eq!(anthropic["baseURL"], "http://gw/llm/x/claude/v1");
         assert_eq!(anthropic["apiKey"], "secret");
         assert!(config["provider"].get("openai").is_none());
+        assert!(config["provider"].get("opencode").is_none());
+
+        let mut zen_ctx = ctx();
+        zen_ctx.models = vec![agentcore_core::ModelEndpoint {
+            name: "zen".into(),
+            kind: ProviderKind::OpencodeZen,
+        }];
+        let zen = &OpenCodeAdapter::config(&zen_ctx)["provider"]["opencode"]["options"];
+        assert_eq!(zen["baseURL"], "http://gw/llm/x/zen/v1");
+        assert_eq!(zen["headers"]["x-agentcore-token"], "secret");
+        assert!(
+            zen.get("apiKey").is_none(),
+            "an apiKey would unlock paid models"
+        );
 
         let env = ctx().model_env();
         assert_eq!(env["ANTHROPIC_BASE_URL"], "http://gw/llm/x/claude");

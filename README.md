@@ -92,15 +92,22 @@ through your policy.
 1. Make `opencode` available where the agent runs: the sandbox image installs it
    (`docker build -t agentcore-sandbox:latest sandbox-image`). With the dev
    `process` backend, install it on your machine (`npm i -g opencode-ai`).
-2. In the web UI, open **Settings** and add a model provider (e.g. Anthropic
-   with your API key). Only admins can do this.
+2. In the web UI, open **Settings** and add a model provider. Only admins can
+   do this. Either:
+   - **OpenCode Zen** (name `opencode`, leave the API key empty): opencode's
+     free models such as **Big Pickle**, no account needed; or
+   - **Anthropic** / **OpenAI** with your API key.
 3. Go back to **Sessions**, pick **opencode**, choose a policy, describe the
    task and click **Start agent**.
 
-opencode's `anthropic` / `openai` providers are pointed at the model gateway,
+opencode's `anthropic`, `openai` and `opencode` (Zen) providers are pointed at the model gateway,
 so it works on the internal-only sandbox network: the sandbox needs no
 internet access. Each LLM call shows up in the session's activity timeline
 with tokens, timing and the full request and response.
+
+With OpenCode Zen, agentcore keeps opencode on Zen's free tier (it picks Big
+Pickle by default; force it with `args = ["run", "--model", "opencode/big-pickle", "{task}"]`).
+Paid Zen models are not offered to opencode, even with a paid Zen key.
 
 ## CLI
 

@@ -5,6 +5,19 @@ import type { AdminEvent, Me, ProviderInfo, ProviderKind } from "../types";
 const DEFAULT_URL: Record<ProviderKind, string> = {
   anthropic: "https://api.anthropic.com",
   openai: "https://api.openai.com",
+  opencode_zen: "https://opencode.ai/zen",
+};
+
+const DEFAULT_NAME: Record<ProviderKind, string> = {
+  anthropic: "anthropic",
+  openai: "openai",
+  opencode_zen: "opencode",
+};
+
+const KIND_LABEL: Record<ProviderKind, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  opencode_zen: "OpenCode Zen",
 };
 
 const splitModels = (text: string) =>
@@ -109,7 +122,7 @@ function ProviderCard({
     <div className={`card provider ${p.enabled ? "" : "disabled"}`}>
       <div className="provider-top">
         <div>
-          <strong className="provider-name">{p.name}</strong> <span className="tag">{p.kind}</span>{" "}
+          <strong className="provider-name">{p.name}</strong> <span className="tag">{KIND_LABEL[p.kind] ?? p.kind}</span>{" "}
           {!p.enabled && <span className="tag tone-bad">disabled</span>}
         </div>
         {canEdit && (
@@ -246,12 +259,13 @@ function AddProvider({
             value={kind}
             onChange={(e) => {
               const k = e.target.value as ProviderKind;
-              if (name === kind) setName(k);
+              if (name === DEFAULT_NAME[kind]) setName(DEFAULT_NAME[k]);
               setKind(k);
             }}
           >
             <option value="anthropic">Anthropic</option>
             <option value="openai">OpenAI or OpenAI-compatible</option>
+            <option value="opencode_zen">OpenCode Zen (free models such as Big Pickle)</option>
           </select>
         </label>
         <label>
@@ -268,19 +282,22 @@ function AddProvider({
           <input
             value={models}
             onChange={(e) => setModels(e.target.value)}
-            placeholder={kind === "anthropic" ? "claude-*" : "gpt-*"}
+            placeholder={kind === "anthropic" ? "claude-*" : kind === "openai" ? "gpt-*" : "big-pickle"}
           />
         </label>
       </div>
       <label>
-        API key
+        API key{kind === "opencode_zen" && " (optional: leave empty for Zen's free models)"}
         <input type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} />
       </label>
       <p className="muted small">
         The key is encrypted with the agentcore master key before it is stored, and is never shown again.
         {" "}Agents use the first enabled provider of each type.
       </p>
-      <button className="btn primary" disabled={busy || !key.trim() || !name.trim() || taken}>
+      <button
+        className="btn primary"
+        disabled={busy || (!key.trim() && kind !== "opencode_zen") || !name.trim() || taken}
+      >
         {busy ? "Saving…" : "Add provider"}
       </button>
     </form>

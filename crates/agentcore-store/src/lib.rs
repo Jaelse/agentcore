@@ -166,6 +166,8 @@ pub struct NewProvider {
     pub kind: ProviderKind,
     #[serde(default)]
     pub base_url: Option<String>,
+    /// May be empty for kinds with a default key (OpenCode Zen: `public`).
+    #[serde(default)]
     pub api_key: String,
     #[serde(default)]
     pub allowed_models: Vec<String>,
@@ -390,10 +392,13 @@ impl Store {
                 "name must be 1-63 characters of a-z, 0-9, - or _".into(),
             ));
         }
-        let api_key = new.api_key.trim();
-        if api_key.is_empty() {
-            return Err(StoreError::Invalid("api_key must not be empty".into()));
-        }
+        let api_key = match new.api_key.trim() {
+            "" => new
+                .kind
+                .default_api_key()
+                .ok_or_else(|| StoreError::Invalid("api_key must not be empty".into()))?,
+            key => key,
+        };
         let base_url = validate_url(
             new.base_url
                 .as_deref()

@@ -48,9 +48,15 @@ fn error_response(status: StatusCode, kind: &str, message: impl Into<String>) ->
     (status, axum::Json(body)).into_response()
 }
 
+/// Header that carries the session token when the client's own API-key
+/// header must hold something else (opencode sends `Bearer public` to Zen).
+pub const TOKEN_HEADER: &str = "x-agentcore-token";
+
 fn presented_token(headers: &HeaderMap) -> Option<&str> {
-    if let Some(key) = headers.get("x-api-key").and_then(|v| v.to_str().ok()) {
-        return Some(key.trim());
+    for name in [TOKEN_HEADER, "x-api-key"] {
+        if let Some(key) = headers.get(name).and_then(|v| v.to_str().ok()) {
+            return Some(key.trim());
+        }
     }
     headers
         .get(header::AUTHORIZATION)?
@@ -80,7 +86,13 @@ fn forward_request_headers(headers: &HeaderMap) -> HeaderMap {
         let drop = HOP_BY_HOP.contains(&n)
             || matches!(
                 n,
-                "host" | "authorization" | "x-api-key" | "cookie" | "accept-encoding" | "forwarded"
+                "host"
+                    | "authorization"
+                    | "x-api-key"
+                    | TOKEN_HEADER
+                    | "cookie"
+                    | "accept-encoding"
+                    | "forwarded"
             )
             || n.starts_with("x-forwarded-");
         if !drop {
@@ -362,7 +374,7 @@ pub async fn proxy(
             HeaderName::from_static("x-api-key"),
             HeaderValue::from_str(&api_key),
         ),
-        ProviderKind::Openai => (
+        ProviderKind::Openai | ProviderKind::OpencodeZen => (
             header::AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {api_key}")),
         ),
@@ -521,7 +533,10 @@ mod tests {
         );
         headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
         headers.insert(header::HOST, HeaderValue::from_static("agentcore:8080"));
+        headers.insert(TOKEN_HEADER, HeaderValue::from_static("session-token"));
+        assert_eq!(presented_token(&headers), Some("session-token"));
         let out = forward_request_headers(&headers);
+        assert!(out.get(TOKEN_HEADER).is_none());
         assert!(out.get("x-api-key").is_none());
         assert!(out.get(header::AUTHORIZATION).is_none());
         assert!(out.get(header::HOST).is_none());
