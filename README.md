@@ -18,7 +18,7 @@ flowchart LR
     subgraph AC["agentcore"]
         RO["Role<br/>playbook + team conventions"] --> AG["Agent in a sandbox<br/>repo checkout"]
         AG -- "every action" --> GR["Guardrails +<br/>human approval"]
-        YOU["You, in the web UI<br/>watch · chat · STOP"] <--> AG
+        YOU["You, in the web UI<br/>watch live · chat · pause · STOP"] <--> AG
         GR --> CH["Checks"]
     end
     CH -- "Deliver" --> PR["Pull request<br/>card → In Review"]
@@ -35,8 +35,8 @@ flowchart LR
 | Review & delivery | *Changes* tab with commits and diff. *Deliver* runs the checks, pushes the agent's branch with agentcore's credentials, opens/updates the PR (issue link, AI disclosure) and moves the card to *In review*. |
 | Hostable | Single binary + static UI, PostgreSQL, Docker image, docker-compose with an isolated sandbox network, token auth with admin/operator/viewer roles. |
 | Model gateway | Agents call LLMs through agentcore with a per-session token. Real API keys are stored AES-256-GCM encrypted in PostgreSQL and never enter a sandbox; per-provider model allow-lists and per-session call limits apply. Every call is logged with token usage and full request/response. **Stop** aborts calls that are still streaming. Providers are managed in the web UI. |
-| See what the agent does | Live timeline of every action, policy verdict, approval and outcome, plus raw agent output, streamed over SSE. |
-| One-click stop | **STOP AGENT** per session and **Stop all agents** globally: kills the sandbox, denies pending approvals, and records who pressed it. Also enforced by time and action budgets. |
+| See what the agent does | **Live view**, like a screen share: the agent's own terminal, the command it is running with its output, the model's reasoning, text and tool calls as they stream, the files it changes and the processes in its sandbox. Finished sessions can be **replayed** from a tamper-evident terminal recording. Plus a timeline of every action, policy verdict, approval and outcome. |
+| One-click stop, pause | **STOP AGENT** per session and **Stop all agents** globally: kills the sandbox, denies pending approvals, and records who pressed it. Also enforced by time and action budgets. **Pause** freezes the agent and everything it runs, **Resume** continues exactly where it was. |
 | Any agent | `AgentAdapter` trait; built-in `command` (any CLI) and `opencode` adapters. |
 | User policies | TOML policies with allow / deny / require-approval rules over commands, paths, hosts and tools; deny-overrides semantics; limits. |
 | HITL | Approve or reject with a comment from the UI; timeouts count as rejection. |
@@ -155,7 +155,7 @@ agentcore hash-token '<token>'
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md): components, session lifecycle, the life of an action, gateways, repository and delivery, data model, adding agents and sandbox backends.
+- [Architecture](docs/ARCHITECTURE.md): components, session lifecycle, the life of an action, the live view and pausing, gateways, repository and delivery, data model, adding agents and sandbox backends.
 - [Ways of working](docs/WAYS_OF_WORKING.md): guardrails vs. roles vs. checks, writing your own roles, how agents fit sprints and kanban.
 - [Deployment](docs/DEPLOYMENT.md): topology, install, macOS notes, operations.
 - [Configuration](docs/CONFIGURATION.md): every setting and environment variable.

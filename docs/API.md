@@ -31,6 +31,8 @@ sequenceDiagram
     A-->>C: 201 session (status pending)
     C->>A: GET /sessions/{id}/stream (SSE)
     A-->>C: event: session_created, workspace_prepared, role_applied, turn_started, output…
+    C->>A: GET /sessions/{id}/live (SSE)
+    A-->>C: frame: terminal_reset, terminal, model_delta, tool_output, files…
     A-->>C: event: approval_requested
     C->>A: POST /sessions/{id}/approvals/{approval_id} {approved, comment}
     A-->>C: event: turn_ended, status_changed (awaiting_input)
@@ -74,6 +76,10 @@ before).
 | `GET /sessions/{id}/changes` | V | Commits, files and diff against the base commit (`null` for non-repository sessions) |
 | `POST /sessions/{id}/checks` | O | Run the role's checks: `{passed, checks: [...]}` |
 | `POST /sessions/{id}/deliver` | O | `{title?, body?, draft?}` (defaults from the agent's proposal) → `{branch, commit, pull_request: {number, url}, checks}`, or **409** `{error, checks}` when a required check fails |
+| `GET /sessions/{id}/live` | V | Live view frames (SSE), see below |
+| `POST /sessions/{id}/pause` | O | Freeze the agent and everything it runs → session info |
+| `POST /sessions/{id}/resume` | O | Continue after a pause → session info |
+| `GET /sessions/{id}/recording` | V | Terminal recording (asciicast v2; the recording so far while running), 404 if none |
 | `GET /sessions/{id}/model-calls/{call_id}` | V | Full request/response of one LLM call |
 | `GET /sessions/{id}/audit` | V | Download the audit log (JSON Lines) |
 | `GET /sessions/{id}/audit/verify` | V | `{valid, records, head}` or `{valid: false, error}` |
@@ -124,8 +130,38 @@ reconnect with `?after=<last seq>`. Event types: `session_created`,
 `turn_started`, `output`, `action_requested`, `policy_evaluated`,
 `approval_requested`, `approval_resolved`, `action_completed`, `model_call`,
 `user_message`, `checks_completed`, `pull_request_proposed`, `delivered`,
-`status_changed`, `stop_requested`, `turn_ended`, `session_ended`. The same
-JSON objects form the audit log.
+`status_changed`, `paused`, `resumed`, `stop_requested`, `turn_ended`,
+`recording_closed`, `session_ended`. The same JSON objects form the audit log.
+Session statuses: `pending`, `running`, `awaiting_approval`, `awaiting_input`,
+`paused`, `stopped`, `completed`, `failed`.
+
+### Live view stream (SSE)
+
+`GET /sessions/{id}/live` streams what is happening in the sandbox right now
+(nothing is replayed except the current screen):
+
+```
+event: frame
+data: {"frame":"terminal_reset","data":"\u001b[2m── turn 1 ──…","cols":120,"rows":32}
+
+event: frame
+data: {"frame":"model_delta","call_id":"…","kind":"thinking","text":"Let me run the tests "}
+```
+
+| Frame | Fields | Meaning |
+|---|---|---|
+| `terminal_reset` | `data, cols, rows` | Sent first on every connection: recent terminal output to rebuild the screen |
+| `terminal` | `data` | Agent terminal output (UTF-8, ANSI escape sequences included) |
+| `tool_output` | `action_id, stream, data` | Output of a command run for a tool call, as it is produced |
+| `model_start` | `call_id, provider, model` | A model call started streaming |
+| `model_delta` | `call_id, kind, text` | `kind`: `text`, `thinking`, `tool_name`, `tool_input` (partial JSON) |
+| `model_end` | `call_id` | The call finished |
+| `files` | `changes: [{path, kind, at}]` | Files `created`, `modified` or `removed` in the workspace (`.git` ignored) |
+| `processes` | `processes: [{pid, elapsed, command}]` | Processes in the sandbox (while someone watches) |
+
+`event: lagged` means the client fell behind: reconnect. `event: ended` means
+the session is over (also sent at once for finished sessions); use
+`/recording` for the replay.
 
 ## Tool gateway (`/mcp/{session}`)
 

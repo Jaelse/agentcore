@@ -8,7 +8,7 @@ flowchart LR
     subgraph Host["Docker host (dedicated VM)"]
         AC["agentcore<br/>(on both networks)"]
         PG[("postgres")]
-        D[("$AGENTCORE_DATA<br/>audit · workspaces ·<br/>repos · master.key")]
+        D[("$AGENTCORE_DATA<br/>audit · recordings ·<br/>workspaces · repos · master.key")]
         subgraph SBN["internal network agentcore-sandbox (no internet)"]
             S1["sandbox:<br/>session A"]
             S2["sandbox:<br/>session B"]
@@ -96,7 +96,7 @@ it only to develop agentcore itself.
 
 | Task | How |
 |---|---|
-| Backups | PostgreSQL (`pg_dump`), `$AGENTCORE_DATA/audit`, and the master key, stored **separately** from the database backup |
+| Backups | PostgreSQL (`pg_dump`), `$AGENTCORE_DATA/audit` and `$AGENTCORE_DATA/recordings`, and the master key, stored **separately** from the database backup |
 | Upgrades | Pull, rebuild, `docker compose up -d`. Database migrations run automatically at startup. |
 | Restarts | Sessions that were running are marked failed, their audit logs closed, leftover sandbox containers removed. |
 | Logs | `docker compose logs agentcore` (JSON with `--log-format json`); filter with `AGENTCORE_LOG`. |

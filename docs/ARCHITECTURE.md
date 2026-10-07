@@ -10,6 +10,8 @@ roles, read [Ways of working](WAYS_OF_WORKING.md).
 - [Event pipeline](#event-pipeline)
 - [Life of an action](#life-of-an-action)
 - [Stopping](#stopping)
+- [Live view: watching the agent work](#live-view)
+- [Pausing](#pausing)
 - [Model gateway](#model-gateway)
 - [Team work: repository, conversation, delivery](#team-work)
 - [Persistence](#persistence)
@@ -73,11 +75,11 @@ flowchart TD
 | **core** | Shared types: `Action` (exec, file read/write, network, tool call), `Event`, `Principal` (human, agent, system), `SessionInfo`/`SessionContext`, `AgentAdapter`, model and work types (`Changes`, `CheckResult`, ...). |
 | **policy** | Compiles TOML guardrail policies into glob matchers and evaluates actions with deny-overrides semantics. Normalises paths before matching. |
 | **audit** | One append-only JSONL file per session; each record contains the SHA-256 of the previous one. Existing files are verified before they are extended. |
-| **sandbox** | `SandboxProvider` creates a `Sandbox` that can spawn the agent, run commands, read/write workspace files and `kill()` everything. Backends: Docker (hardened), process (dev only). |
+| **sandbox** | `SandboxProvider` creates a `Sandbox` that can spawn the agent (in a pseudo-terminal), run commands (streaming their output), read/write workspace files, list its processes, `pause()`/`resume()` and `kill()` everything. Backends: Docker (hardened), process (dev only). |
 | **roles** | Role (playbook) files, capability → tool mapping, check definitions, and composition of the agent's first prompt. |
-| **runtime** | `SessionManager` and `Session`: turns, policy gating, approvals, stop, change snapshots, checks, git bundle export, built-in adapters. |
+| **runtime** | `SessionManager` and `Session`: turns, policy gating, approvals, stop, pause/resume, the live view (`LiveHub`: terminal, recording, files, processes), change snapshots, checks, git bundle export, built-in adapters. |
 | **store** | PostgreSQL: session index, model providers, GitHub connection (secrets AES-256-GCM encrypted), projects, model calls, change snapshots, admin log. |
-| **server** | axum: operator API, SSE stream, MCP tool gateway, model gateway, GitHub client and tools, repository checkout and delivery, auth, UI hosting. |
+| **server** | axum: operator API, SSE event and live streams, MCP tool gateway, model gateway (including the token stream for the live view), GitHub client and tools, repository checkout and delivery, auth, UI hosting. |
 | **cli** | `agentcore serve`, `policy check/eval`, `audit verify/show`, `hash-token`. |
 
 ## Session lifecycle
@@ -92,6 +94,10 @@ stateDiagram-v2
         awaiting_approval --> running: decided or timed out
         running --> awaiting_input: turn ends, agent can continue
         awaiting_input --> running: a human sends a message
+        running --> paused: Pause
+        awaiting_approval --> paused: Pause
+        awaiting_input --> paused: Pause
+        paused --> running: Resume (back to the state before)
     }
     live --> completed: Finish, or a single-run agent exits 0
     live --> failed: a single-run agent fails, or an error
@@ -190,7 +196,84 @@ sequenceDiagram
 
 Triggered by **STOP AGENT**, **Stop all agents**, `POST /sessions/{id}/stop`,
 `POST /stop-all`, the time budget, the idle timeout, an audit failure, or
-server shutdown.
+server shutdown. Stopping also works while a session is paused.
+
+<a id="live-view"></a>
+## Live view: watching the agent work
+
+People trust what they can see. The live view shows a running session the way
+a screen share would: the agent's own terminal, the command it is running
+right now with its output, what the model is thinking and writing as the
+tokens arrive, the files it touches and the processes in its sandbox.
+
+```mermaid
+flowchart LR
+    subgraph SB["Sandbox"]
+        PTY["Agent in a<br/>pseudo-terminal"]
+        CMD["Commands run<br/>for tool calls"]
+        FS[("/workspace")]
+        PS["Processes"]
+    end
+    LLM["Model gateway<br/>(response stream)"]
+    PTY -- "terminal bytes" --> HUB["LiveHub<br/>(per session)"]
+    CMD -- "stdout / stderr" --> HUB
+    LLM -- "text · thinking ·<br/>tool calls" --> HUB
+    FS -- "file watcher" --> HUB
+    PS -- "polled while watched" --> HUB
+    HUB -- "SSE /live" --> UI["Live tab"]
+    PTY -- "plain text lines" --> AUD[("Audit log")]
+    HUB -- "asciicast file" --> REC[("recordings/<br/>id.cast")]
+    REC -- "SHA-256 on close" --> AUD
+```
+
+* **Terminal.** Agents run in a pseudo-terminal of 120×32 (`openpty` for the
+  process backend, `docker exec --tty` for Docker), so they print exactly what
+  a developer would see: colours, progress, tool banners. Set `tty = false`
+  on an agent that misbehaves in a terminal.
+* **Frames, not events.** Live frames (`terminal`, `tool_output`,
+  `model_start/delta/end`, `files`, `processes`) are high-volume and
+  ephemeral; they go to viewers only. What matters for the record is still
+  audited: output as ANSI-free text lines, every action and model call, and
+  the terminal recording.
+* **Late viewers.** A viewer who opens the tab gets the last 256 KiB of
+  terminal output (`terminal_reset`), recent file changes and the current
+  processes first, so the screen is complete immediately. A viewer that falls
+  behind is told to reconnect (`lagged`) and gets a fresh screen.
+* **Recording.** The terminal is written to `data/recordings/<session>.cast`
+  (asciicast v2, with a chapter marker per turn and banners for pause, resume
+  and stop). When the session ends, its size and SHA-256 are recorded in the
+  hash-chained audit log (`recording_closed`), so a replay can be proven to be
+  the original. Finished sessions show a *Replay* tab.
+* **Model stream.** The model gateway already relays the provider's response;
+  it also parses Anthropic Messages, OpenAI Chat Completions and OpenAI
+  Responses streams (and plain JSON answers) into text, thinking and tool-call
+  deltas for the live view.
+* **Cost.** The process list is only polled (every 2 s) while someone watches;
+  file changes are debounced and ignore `.git`.
+
+## Pausing
+
+```mermaid
+sequenceDiagram
+    participant H as Operator
+    participant RT as Session
+    participant SB as Sandbox
+    participant GW as Gateways
+
+    H->>RT: pause(by)
+    RT->>SB: docker pause / SIGSTOP every process group
+    Note over RT: events: paused (by), status_changed (paused)
+    Note over SB: the agent and its commands are frozen
+    GW->>RT: calls already in flight wait
+    H->>RT: resume(by)
+    RT->>SB: docker unpause / SIGCONT
+    Note over RT: events: resumed (by), status back to what it was
+```
+
+Pausing freezes everything without losing state: the agent continues exactly
+where it was. Status changes that happen while paused (an approval answered,
+say) are applied on resume. The session's time budget keeps running while it
+is paused; approvals keep their timeouts.
 
 ## Model gateway
 
@@ -433,12 +516,22 @@ disable native side-effecting tools where the agent allows it.
 | `docker` | Container per session: no capabilities, `no-new-privileges`, read-only root, non-root user, resource limits, `network=none` or an internal network; optional gVisor/Kata runtime | Production |
 | `process` | None: host processes in the workspace directory | Developing agentcore only |
 
+| Backend | Agent terminal | Pause | Processes |
+|---|---|---|---|
+| `docker` | `docker exec --tty`, size set with `stty` | `docker pause` (cgroup freezer) | `docker top` |
+| `process` | `openpty` | `SIGSTOP`/`SIGCONT` to every process group | `ps`, filtered by process group |
+
 New backends implement `SandboxProvider` + `Sandbox` (spawn, exec,
-read/write file, kill, destroy, cleanup of orphans). Candidates: Firecracker
+read/write file, pause, resume, processes, kill, destroy, cleanup of
+orphans). Candidates: Firecracker
 microVMs, Kubernetes pods, remote sandboxes.
 
 ## Roadmap
 
+* **Steering**: interrupt a running turn with a message (not only between
+  turns), and take over the agent's terminal.
+* **Annotations**: viewers bookmark and comment moments in a live session or
+  replay.
 * **Event-driven pickup**: agents take cards labelled `agent` from the *Ready*
   column automatically (within a WIP limit), and react to PR review comments
   by continuing their session.

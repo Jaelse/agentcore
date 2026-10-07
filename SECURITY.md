@@ -66,6 +66,9 @@ do, and every attempt is recorded.
   after the role's checks pass and a human clicks *Deliver*.
 * Secrets passed to agents (`{env:NAME}`) go into the environment, which is
   never audited, and never into the audited command line.
+* Watching is read-only: the live view and recordings never send input to the
+  agent's terminal. Viewers can watch; pausing, resuming and stopping need the
+  `operator` role and are audited with who did it.
 
 ## Hardening checklist
 
@@ -84,7 +87,7 @@ do, and every attempt is recorded.
 - [ ] Use a dedicated bot account or fine-grained token for GitHub with access
       only to the repositories and boards agents work on; protect `main` with
       branch protection and required reviews so agent PRs need human approval.
-- [ ] Store `data/` on an encrypted volume with backups; restrict who can read audit logs.
+- [ ] Store `data/` on an encrypted volume with backups; restrict who can read audit logs and terminal recordings (`data/recordings`): they contain whatever the agent printed.
 - [ ] Never use the `process` backend outside local development.
 
 ## Known limitations

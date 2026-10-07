@@ -81,7 +81,7 @@ callers as the admin `local`.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `data_dir` | `data` | Audit logs, workspaces, repository mirrors, master key |
+| `data_dir` | `data` | Audit logs, terminal recordings, workspaces, repository mirrors, master key |
 | `audit_fsync` | `true` | `fsync` every audit record |
 | `audit_retention_days` | `183` | Published in the system card; agentcore never deletes logs itself |
 
@@ -141,6 +141,7 @@ Published in the UI ("About this system") and at `/api/v1/system-card`
 | `follow_up_args` | `command` adapter: arguments for follow-up turns (`{task}` = the human's message). Empty = single run. opencode continues with `--continue` automatically. |
 | `env` | Extra environment; values may use `{env:NAME}` to pass an agentcore environment variable. Not audited (secrets are fine), but model keys belong in the model gateway, not here. |
 | `policy` | Default guardrail policy for this agent |
+| `tty` | Run the agent in a pseudo-terminal for the live view (default `true`); set `false` for agents that misbehave in a terminal |
 
 ```toml
 [[agents]]
