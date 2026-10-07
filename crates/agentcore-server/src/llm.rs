@@ -13,13 +13,18 @@
 //!    (with SHA-256 of request and response) and the full bodies in the
 //!    `model_calls` table.
 //!
+//! While the response streams, the generated text, reasoning and tool calls
+//! are also sent to the session's live view as they arrive.
+//!
 //! Real provider keys never enter the sandbox, and sandboxes need no
 //! internet access: only a route to agentcore.
 
 use std::sync::Arc;
 use std::time::Instant;
 
-use agentcore_core::{EventKind, ModelCallOutcome, ProviderKind, SessionId};
+use agentcore_core::{
+    EventKind, LiveFrame, ModelCallOutcome, ModelDeltaKind, ProviderKind, SessionId,
+};
 use agentcore_runtime::Session;
 use agentcore_store::ModelCallRecord;
 use axum::body::{Body, Bytes};
@@ -208,6 +213,172 @@ impl Usage {
     }
 }
 
+/// Extracts what the model is generating from streamed (SSE) or plain JSON
+/// responses, for the live view: Anthropic Messages, OpenAI Chat Completions
+/// and OpenAI Responses.
+#[derive(Default)]
+struct Deltas {
+    line: Vec<u8>,
+    seen: bool,
+}
+
+type Delta = (ModelDeltaKind, String);
+
+impl Deltas {
+    fn feed(&mut self, chunk: &[u8]) -> Vec<Delta> {
+        let mut out = Vec::new();
+        for &byte in chunk {
+            if byte == b'\n' {
+                let line = std::mem::take(&mut self.line);
+                self.line(&line, &mut out);
+            } else if self.line.len() < 1024 * 1024 {
+                self.line.push(byte);
+            }
+        }
+        coalesce(out)
+    }
+
+    fn line(&mut self, line: &[u8], out: &mut Vec<Delta>) {
+        let line = String::from_utf8_lossy(line);
+        if let Some(data) = line.trim().strip_prefix("data:")
+            && let Ok(value) = serde_json::from_str::<Value>(data.trim())
+        {
+            let before = out.len();
+            stream_deltas(&value, out);
+            self.seen |= out.len() > before;
+        }
+    }
+
+    /// For non-streaming responses: the whole answer at once.
+    fn finish(&mut self, whole_body: Option<&[u8]>) -> Vec<Delta> {
+        let mut out = Vec::new();
+        let rest = std::mem::take(&mut self.line);
+        self.line(&rest, &mut out);
+        if !self.seen
+            && let Some(body) = whole_body
+            && let Ok(value) = serde_json::from_slice::<Value>(body)
+        {
+            message_deltas(&value, &mut out);
+        }
+        coalesce(out)
+    }
+}
+
+/// Merge consecutive deltas of the same kind (fewer, larger frames).
+fn coalesce(deltas: Vec<Delta>) -> Vec<Delta> {
+    let mut out: Vec<Delta> = Vec::with_capacity(deltas.len());
+    for (kind, text) in deltas {
+        if text.is_empty() {
+            continue;
+        }
+        match out.last_mut() {
+            Some((k, t)) if *k == kind && kind != ModelDeltaKind::ToolName => t.push_str(&text),
+            _ => out.push((kind, text)),
+        }
+    }
+    out
+}
+
+fn stream_deltas(v: &Value, out: &mut Vec<Delta>) {
+    let s = |v: &Value| v.as_str().map(str::to_string);
+    let mut push = |kind, text: Option<String>| {
+        if let Some(text) = text {
+            out.push((kind, text));
+        }
+    };
+    match v["type"].as_str() {
+        // Anthropic Messages.
+        Some("content_block_start") => {
+            let block = &v["content_block"];
+            if matches!(block["type"].as_str(), Some("tool_use" | "server_tool_use")) {
+                push(ModelDeltaKind::ToolName, s(&block["name"]));
+            }
+        }
+        Some("content_block_delta") => {
+            let d = &v["delta"];
+            match d["type"].as_str() {
+                Some("text_delta") => push(ModelDeltaKind::Text, s(&d["text"])),
+                Some("thinking_delta") => push(ModelDeltaKind::Thinking, s(&d["thinking"])),
+                Some("input_json_delta") => push(ModelDeltaKind::ToolInput, s(&d["partial_json"])),
+                _ => {}
+            }
+        }
+        // OpenAI Responses.
+        Some("response.output_text.delta") => push(ModelDeltaKind::Text, s(&v["delta"])),
+        Some("response.reasoning_summary_text.delta" | "response.reasoning_text.delta") => {
+            push(ModelDeltaKind::Thinking, s(&v["delta"]))
+        }
+        Some("response.function_call_arguments.delta") => {
+            push(ModelDeltaKind::ToolInput, s(&v["delta"]))
+        }
+        Some("response.output_item.added") if v["item"]["type"] == "function_call" => {
+            push(ModelDeltaKind::ToolName, s(&v["item"]["name"]))
+        }
+        _ => {
+            // OpenAI Chat Completions chunks.
+            let d = &v["choices"][0]["delta"];
+            push(ModelDeltaKind::Thinking, s(&d["reasoning_content"]));
+            push(ModelDeltaKind::Thinking, s(&d["reasoning"]));
+            push(ModelDeltaKind::Text, s(&d["content"]));
+            if let Some(calls) = d["tool_calls"].as_array() {
+                for call in calls {
+                    push(ModelDeltaKind::ToolName, s(&call["function"]["name"]));
+                    push(ModelDeltaKind::ToolInput, s(&call["function"]["arguments"]));
+                }
+            }
+        }
+    }
+}
+
+fn message_deltas(v: &Value, out: &mut Vec<Delta>) {
+    // Anthropic: {"content": [{type: text|thinking|tool_use}]}.
+    if let Some(blocks) = v["content"].as_array() {
+        for b in blocks {
+            match b["type"].as_str() {
+                Some("text") => out.push((
+                    ModelDeltaKind::Text,
+                    b["text"].as_str().unwrap_or_default().into(),
+                )),
+                Some("thinking") => out.push((
+                    ModelDeltaKind::Thinking,
+                    b["thinking"].as_str().unwrap_or_default().into(),
+                )),
+                Some("tool_use") => {
+                    out.push((
+                        ModelDeltaKind::ToolName,
+                        b["name"].as_str().unwrap_or_default().into(),
+                    ));
+                    out.push((ModelDeltaKind::ToolInput, b["input"].to_string()));
+                }
+                _ => {}
+            }
+        }
+    }
+    // OpenAI Chat Completions: {"choices": [{"message": {...}}]}.
+    let m = &v["choices"][0]["message"];
+    for key in ["reasoning_content", "reasoning"] {
+        if let Some(t) = m[key].as_str() {
+            out.push((ModelDeltaKind::Thinking, t.into()));
+        }
+    }
+    if let Some(t) = m["content"].as_str() {
+        out.push((ModelDeltaKind::Text, t.into()));
+    }
+    if let Some(calls) = m["tool_calls"].as_array() {
+        for call in calls {
+            let f = &call["function"];
+            out.push((
+                ModelDeltaKind::ToolName,
+                f["name"].as_str().unwrap_or_default().into(),
+            ));
+            out.push((
+                ModelDeltaKind::ToolInput,
+                f["arguments"].as_str().unwrap_or_default().into(),
+            ));
+        }
+    }
+}
+
 /// Everything known about a call; turned into the audit event and DB row.
 struct Call {
     state: AppState,
@@ -314,6 +485,15 @@ pub async fn proxy(
             );
         }
     };
+    // A paused session's model calls wait (the agent is frozen anyway; this
+    // holds requests that were already in flight).
+    if session.is_paused() && !session.wait_unpaused().await {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "permission_error",
+            "the session was stopped",
+        );
+    }
     let call = Call::new(&state, session.clone(), &provider, &method, &rest, &body);
 
     if let Err(message) = session.admit_model_call() {
@@ -427,8 +607,26 @@ pub async fn proxy(
         0
     };
 
+    let call_id = call.record.id;
+    let live = session.live().sender();
+    let _ = live.send(LiveFrame::ModelStart {
+        call_id,
+        provider: provider.clone(),
+        model: call.record.model.clone(),
+    });
+    let send_deltas = move |deltas: Vec<Delta>| {
+        for (kind, text) in deltas {
+            let _ = live.send(LiveFrame::ModelDelta {
+                call_id,
+                kind,
+                text,
+            });
+        }
+    };
+
     tokio::spawn(async move {
         let mut stream = upstream.bytes_stream();
+        let mut deltas = Deltas::default();
         let mut hasher = Sha256::new();
         let mut captured: Vec<u8> = Vec::new();
         let mut total = 0usize;
@@ -448,6 +646,7 @@ pub async fn proxy(
                     Some(Ok(bytes)) => {
                         hasher.update(&bytes);
                         usage.feed(&bytes);
+                        send_deltas(deltas.feed(&bytes));
                         total += bytes.len();
                         let keep = log_limit.max(PARSE_LIMIT).saturating_sub(captured.len());
                         captured.extend_from_slice(&bytes[..bytes.len().min(keep)]);
@@ -459,7 +658,14 @@ pub async fn proxy(
             }
         };
         drop(tx);
-        usage.finish((total <= captured.len()).then_some(&captured[..]));
+        let whole = (total <= captured.len()).then_some(&captured[..]);
+        send_deltas(deltas.finish(whole));
+        let _ = call
+            .session
+            .live()
+            .sender()
+            .send(LiveFrame::ModelEnd { call_id });
+        usage.finish(whole);
         let r = &mut call.record;
         r.response_sha256 = Some(hex::encode(hasher.finalize()));
         r.input_tokens = usage.input.map(|n| n as i64);
@@ -502,6 +708,51 @@ mod tests {
         usage.finish(None);
         assert_eq!((usage.input, usage.output), (Some(25), Some(15)));
         assert_eq!(usage.model.as_deref(), Some("claude-x"));
+    }
+
+    #[test]
+    fn deltas_from_anthropic_stream() {
+        let stream = concat!(
+            "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"Let me \"}}\n",
+            "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"look.\"}}\n",
+            "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Reading it\"}}\n",
+            "data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"tool_use\",\"name\":\"read_file\"}}\n",
+            "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\"}}\n",
+        );
+        let mut d = Deltas::default();
+        let (a, b) = stream.split_at(30);
+        let mut out = d.feed(a.as_bytes());
+        out.extend(d.feed(b.as_bytes()));
+        out.extend(d.finish(None));
+        assert_eq!(
+            coalesce(out),
+            vec![
+                (ModelDeltaKind::Thinking, "Let me look.".into()),
+                (ModelDeltaKind::Text, "Reading it".into()),
+                (ModelDeltaKind::ToolName, "read_file".into()),
+                (ModelDeltaKind::ToolInput, "{\"path\":".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn deltas_from_openai_chunks_and_plain_responses() {
+        let mut d = Deltas::default();
+        let out = d.feed(
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\
+              data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"function\":{\"name\":\"run_command\",\"arguments\":\"{}\"}}]}}]}\n\
+              data: [DONE]\n",
+        );
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[1], (ModelDeltaKind::ToolName, "run_command".into()));
+
+        let body = br#"{"content":[{"type":"text","text":"Done."}]}"#;
+        let mut d = Deltas::default();
+        d.feed(body);
+        assert_eq!(
+            d.finish(Some(body)),
+            vec![(ModelDeltaKind::Text, "Done.".into())]
+        );
     }
 
     #[test]

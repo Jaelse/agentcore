@@ -240,6 +240,7 @@ async fn agent_works_an_issue_and_delivers_a_pull_request() {
         args: vec!["-c".into(), TURN_ONE.into(), "{task}".into()],
         env: Default::default(),
         policy: None,
+        tty: None,
         follow_up_args: vec!["-c".into(), TURN_TWO.into(), "{task}".into()],
     }];
     let state = AppState::new(config).await.unwrap();

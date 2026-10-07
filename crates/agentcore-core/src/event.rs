@@ -140,6 +140,18 @@ pub enum EventKind {
         by: Principal,
         reason: String,
     },
+    Paused {
+        by: Principal,
+    },
+    Resumed {
+        by: Principal,
+    },
+    /// The terminal recording (asciicast v2) of the session was closed.
+    RecordingClosed {
+        file: String,
+        bytes: u64,
+        sha256: String,
+    },
     SessionEnded {
         status: SessionStatus,
         exit_code: Option<i32>,
@@ -171,6 +183,9 @@ impl EventKind {
             Self::ModelCall { .. } => "model_call",
             Self::StatusChanged { .. } => "status_changed",
             Self::StopRequested { .. } => "stop_requested",
+            Self::Paused { .. } => "paused",
+            Self::Resumed { .. } => "resumed",
+            Self::RecordingClosed { .. } => "recording_closed",
             Self::SessionEnded { .. } => "session_ended",
         }
     }

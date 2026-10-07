@@ -12,6 +12,8 @@ pub enum SessionStatus {
     AwaitingApproval,
     /// The agent finished a turn and waits for a message from a human.
     AwaitingInput,
+    /// Frozen by a human: no process in the sandbox runs, no call goes out.
+    Paused,
     Stopped,
     Completed,
     Failed,

@@ -15,6 +15,7 @@ fn exec(command: &str, args: &[&str], timeout: Duration) -> ExecRequest {
         env: Default::default(),
         timeout,
         max_output_bytes: 4096,
+        live: None,
     }
 }
 
@@ -94,17 +95,48 @@ async fn docker_sandbox_lifecycle() {
         .unwrap();
     assert!(out.timed_out);
 
+    // Agents run in a terminal of the live view's size.
+    let mut tty = sandbox
+        .spawn(&LaunchPlan {
+            program: "sh".into(),
+            args: vec!["-c".into(), "[ -t 1 ] && echo tty; stty size".into()],
+            env: Default::default(),
+            tty: true,
+        })
+        .await
+        .unwrap();
+    let mut screen = Vec::new();
+    {
+        use tokio::io::AsyncReadExt;
+        let mut reader = tty.stdout.take().unwrap();
+        let _ =
+            tokio::time::timeout(Duration::from_secs(10), reader.read_to_end(&mut screen)).await;
+    }
+    tty.child.wait().await.unwrap();
+    let screen = String::from_utf8_lossy(&screen);
+    assert!(
+        screen.contains("tty") && screen.contains("32 120"),
+        "{screen}"
+    );
+
     let mut agent = sandbox
         .spawn(&LaunchPlan {
             program: "sleep".into(),
             args: vec!["300".into()],
             env: Default::default(),
+            tty: false,
         })
         .await
         .unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let procs = sandbox.processes().await.unwrap();
+    assert!(procs.iter().any(|p| p.command == "sleep 300"), "{procs:?}");
+    sandbox.pause().await.unwrap();
+    sandbox.resume().await.unwrap();
+    sandbox.resume().await.unwrap();
     let started = std::time::Instant::now();
     sandbox.kill().await.unwrap();
-    tokio::time::timeout(Duration::from_secs(10), agent.wait())
+    tokio::time::timeout(Duration::from_secs(10), agent.child.wait())
         .await
         .unwrap()
         .unwrap();

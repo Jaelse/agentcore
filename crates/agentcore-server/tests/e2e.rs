@@ -38,6 +38,16 @@ curl -s "$ANTHROPIC_BASE_URL/v1/messages" -H "x-api-key: $ANTHROPIC_API_KEY" \
 echo
 "#;
 
+/// Waits for a viewer, then talks to the model and keeps working.
+const LIVE_AGENT: &str = r#"
+sleep 1
+printf '\033[1mthinking...\033[0m\n'
+curl -sN "$ANTHROPIC_BASE_URL/v1/messages" -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"model":"claude-test","stream":true,"messages":[{"role":"user","content":"hi"}]}' > /dev/null
+sleep 30
+"#;
+
 const SLOW_MODEL_AGENT: &str = r#"
 curl -sN "$ANTHROPIC_BASE_URL/v1/slow" -H "x-api-key: $ANTHROPIC_API_KEY" \
   -H 'content-type: application/json' -d '{"model":"claude-test","stream":true}'
@@ -54,6 +64,7 @@ fn agent(name: &str, script: &str) -> AgentSpec {
         args: vec!["-c".into(), script.into()],
         env: Default::default(),
         policy: None,
+        tty: None,
         follow_up_args: vec![],
     }
 }
@@ -141,6 +152,7 @@ async fn config(dir: &std::path::Path, db_url: &str, bind: std::net::SocketAddr)
         agent("model-agent", MODEL_AGENT),
         agent("slow-model-agent", SLOW_MODEL_AGENT),
         agent("sleepy", "sleep 60"),
+        agent("live-agent", LIVE_AGENT),
     ];
     config
 }
@@ -538,4 +550,97 @@ async fn restart_recovers_interrupted_sessions() {
             .iter()
             .any(|s| s["id"] == id.as_str())
     );
+}
+
+#[tokio::test]
+async fn live_view_shows_screen_and_model_stream_and_can_pause() {
+    let Some((_, db)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (upstream, _) = mock_anthropic().await;
+    let server = start(dir.path(), &db).await;
+    server.add_provider(&upstream).await;
+    let id = server.create("live-agent").await;
+    let base = server.base.clone();
+
+    // A viewer watches for a few seconds.
+    let watch = tokio::process::Command::new("curl")
+        .args([
+            "-sN",
+            "--max-time",
+            "4",
+            "-H",
+            "Authorization: Bearer viewer-token",
+            &format!("{base}/api/v1/sessions/{id}/live"),
+        ])
+        .output();
+    let out = watch.await.unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    let frames: Vec<Value> = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("data: "))
+        .filter_map(|d| serde_json::from_str(d).ok())
+        .collect();
+    let kinds: Vec<&str> = frames.iter().filter_map(|f| f["frame"].as_str()).collect();
+    assert_eq!(kinds.first(), Some(&"terminal_reset"), "{kinds:?}");
+    assert!(
+        frames.iter().any(|f| f["frame"] == "terminal"
+            && f["data"].as_str().unwrap().contains("\u{1b}[1mthinking")),
+        "{text}"
+    );
+    for expected in ["model_start", "model_delta", "model_end", "processes"] {
+        assert!(kinds.contains(&expected), "missing {expected}: {kinds:?}");
+    }
+    let delta = frames.iter().find(|f| f["frame"] == "model_delta").unwrap();
+    assert_eq!(delta["kind"], "text");
+    assert_eq!(delta["text"], "Hello from the model");
+
+    // Viewers watch; operators pause and resume.
+    let url = |what: &str| format!("{base}/api/v1/sessions/{id}/{what}");
+    assert_eq!(
+        http("POST", &url("pause"), Some("viewer-token"), None)
+            .await
+            .0,
+        403
+    );
+    let (code, info) = http("POST", &url("pause"), Some("alice-token"), None).await;
+    assert_eq!(code, 200);
+    assert_eq!(info["status"], "paused");
+    let (code, info) = http("POST", &url("resume"), Some("alice-token"), None).await;
+    assert_eq!(code, 200);
+    assert_eq!(info["status"], "running");
+    http("POST", &url("stop"), Some("alice-token"), None).await;
+    server.wait(&id, terminal).await;
+
+    // The recording replays what the viewer saw; its hash is audited.
+    let cast = tokio::process::Command::new("curl")
+        .args([
+            "-s",
+            "-H",
+            "Authorization: Bearer viewer-token",
+            &url("recording"),
+        ])
+        .output()
+        .await
+        .unwrap()
+        .stdout;
+    let cast_text = String::from_utf8_lossy(&cast);
+    assert!(
+        cast_text.lines().next().unwrap().contains("\"version\":2"),
+        "{cast_text}"
+    );
+    assert!(cast_text.contains("stopped by alice"), "{cast_text}");
+    assert!(cast_text.contains("thinking..."));
+    let events = server.events(&id).await;
+    let closed = events
+        .iter()
+        .find(|e| e["event"] == "recording_closed")
+        .expect("recording audited");
+    use sha2::Digest;
+    assert_eq!(closed["sha256"], hex::encode(sha2::Sha256::digest(&cast)));
+    for expected in ["paused", "resumed"] {
+        let event = events.iter().find(|e| e["event"] == expected).unwrap();
+        assert_eq!(event["by"]["id"], "alice", "{event}");
+    }
 }

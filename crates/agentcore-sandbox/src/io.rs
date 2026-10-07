@@ -3,8 +3,17 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 /// Read up to `max` bytes, then keep draining (so the writer never blocks on a
 /// full pipe) while discarding the rest.
 pub(crate) async fn read_limited<R: AsyncRead + Unpin>(
+    reader: R,
+    max: usize,
+) -> std::io::Result<(Vec<u8>, bool)> {
+    read_limited_live(reader, max, None).await
+}
+
+/// Like [`read_limited`], forwarding every chunk to `live` as it arrives.
+pub(crate) async fn read_limited_live<R: AsyncRead + Unpin>(
     mut reader: R,
     max: usize,
+    live: Option<(crate::OutputSink, agentcore_core::OutputStream)>,
 ) -> std::io::Result<(Vec<u8>, bool)> {
     let mut kept = Vec::new();
     let mut truncated = false;
@@ -13,6 +22,9 @@ pub(crate) async fn read_limited<R: AsyncRead + Unpin>(
         let n = reader.read(&mut buf).await?;
         if n == 0 {
             return Ok((kept, truncated));
+        }
+        if let Some((sink, stream)) = &live {
+            let _ = sink.send((*stream, buf[..n].to_vec()));
         }
         let room = max.saturating_sub(kept.len());
         if n > room {
@@ -40,7 +52,18 @@ pub(crate) async fn collect(
     max: usize,
     on_timeout: impl FnOnce(),
 ) -> std::io::Result<crate::ExecOutput> {
-    let raw = collect_raw(child, timeout, max, on_timeout).await?;
+    collect_live(child, timeout, max, on_timeout, None).await
+}
+
+/// [`collect`] with a live copy of stdout/stderr.
+pub(crate) async fn collect_live(
+    child: tokio::process::Child,
+    timeout: std::time::Duration,
+    max: usize,
+    on_timeout: impl FnOnce(),
+    live: Option<crate::OutputSink>,
+) -> std::io::Result<crate::ExecOutput> {
+    let raw = collect_raw_live(child, timeout, max, on_timeout, live).await?;
     Ok(crate::ExecOutput {
         exit_code: raw.exit_code,
         stdout: String::from_utf8_lossy(&raw.stdout).into_owned(),
@@ -52,22 +75,35 @@ pub(crate) async fn collect(
 
 /// Like [`collect`], keeping stdout and stderr as bytes (binary-safe).
 pub(crate) async fn collect_raw(
-    mut child: tokio::process::Child,
+    child: tokio::process::Child,
     timeout: std::time::Duration,
     max: usize,
     on_timeout: impl FnOnce(),
 ) -> std::io::Result<RawOutput> {
+    collect_raw_live(child, timeout, max, on_timeout, None).await
+}
+
+async fn collect_raw_live(
+    mut child: tokio::process::Child,
+    timeout: std::time::Duration,
+    max: usize,
+    on_timeout: impl FnOnce(),
+    live: Option<crate::OutputSink>,
+) -> std::io::Result<RawOutput> {
+    use agentcore_core::OutputStream;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
+    let live_out = live.clone().map(|s| (s, OutputStream::Stdout));
+    let live_err = live.map(|s| (s, OutputStream::Stderr));
     let out = tokio::spawn(async move {
         match stdout {
-            Some(s) => read_limited(s, max).await,
+            Some(s) => read_limited_live(s, max, live_out).await,
             None => Ok((Vec::new(), false)),
         }
     });
     let err = tokio::spawn(async move {
         match stderr {
-            Some(s) => read_limited(s, max).await,
+            Some(s) => read_limited_live(s, max, live_err).await,
             None => Ok((Vec::new(), false)),
         }
     });

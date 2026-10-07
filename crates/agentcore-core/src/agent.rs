@@ -38,6 +38,10 @@ pub struct AgentSpec {
     /// CLI agents that can continue a conversation. Empty = single run.
     #[serde(default)]
     pub follow_up_args: Vec<String>,
+    /// Run the agent in a pseudo-terminal, so its screen (colours, progress,
+    /// interactive output) can be watched live. Default: true.
+    #[serde(default)]
+    pub tty: Option<bool>,
 }
 
 /// Everything an adapter needs to know to build a launch plan.
@@ -107,6 +111,9 @@ pub struct LaunchPlan {
     pub program: String,
     pub args: Vec<String>,
     pub env: BTreeMap<String, String>,
+    /// Allocate a pseudo-terminal (stdout and stderr merged).
+    #[serde(default)]
+    pub tty: bool,
 }
 
 #[derive(Debug, thiserror::Error)]

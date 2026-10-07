@@ -44,6 +44,7 @@ fn agent(name: &str, script: &str) -> AgentSpec {
         args: vec!["-c".into(), script.into()],
         env: Default::default(),
         policy: None,
+        tty: None,
         follow_up_args: vec![],
     }
 }
@@ -69,6 +70,11 @@ fn manager(dir: &std::path::Path) -> SessionManager {
         vec![
             agent("hello", "echo \"working on: $0\"; echo oops >&2"),
             agent("sleepy", "sleep 60"),
+            agent(
+                "ticker",
+                "[ -t 1 ] && printf '\\033[32mon a terminal\\033[0m\\n'; \
+                 while true; do date +%s%N >> ticks; sleep 0.05; done",
+            ),
         ],
         AdapterRegistry::default(),
         Arc::new(
@@ -297,4 +303,97 @@ async fn stop_kills_agent_and_denies_pending_approvals() {
         });
     assert_eq!(stop, Some(Principal::human("alice")));
     agentcore_audit::verify_file(session.audit_path()).unwrap();
+}
+
+#[tokio::test]
+async fn live_view_pause_resume_and_recording() {
+    use agentcore_core::LiveFrame;
+    let dir = tempfile::tempdir().unwrap();
+    let manager = manager(dir.path());
+    let session = create(&manager, "ticker");
+    wait_for(&session, |s| s == SessionStatus::Running).await;
+    let ticks = dir
+        .path()
+        .join("workspaces")
+        .join(session.id().to_string())
+        .join("ticks");
+    for _ in 0..100 {
+        if ticks.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    // A viewer joining now sees the terminal so far (with colours) ...
+    let (initial, mut frames) = session.live().subscribe();
+    let LiveFrame::TerminalReset { data, cols, .. } = &initial[0] else {
+        panic!("{initial:?}")
+    };
+    assert_eq!(*cols, 120);
+    assert!(data.contains("\u{1b}[32mon a terminal"), "{data:?}");
+    // ... and the audit log has the text without escape sequences.
+    assert!(session.subscribe().0.iter().any(|e| matches!(
+        &e.kind,
+        EventKind::Output { line, .. } if line == "on a terminal"
+    )));
+    // ... file changes and processes follow.
+    let mut saw_file = false;
+    let mut saw_process = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !(saw_file && saw_process) && tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_secs(3), frames.recv()).await {
+            Ok(Ok(LiveFrame::Files { changes })) => {
+                saw_file |= changes.iter().any(|c| c.path == "ticks")
+            }
+            Ok(Ok(LiveFrame::Processes { processes })) => {
+                saw_process |= processes.iter().any(|p| p.command.contains("sh -c"))
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        saw_file && saw_process,
+        "file {saw_file} process {saw_process}"
+    );
+
+    // Pause freezes the agent; resume continues where it was.
+    session.pause(Principal::human("alice")).await.unwrap();
+    assert_eq!(session.status(), SessionStatus::Paused);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let frozen = std::fs::read_to_string(&ticks).unwrap();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(frozen, std::fs::read_to_string(&ticks).unwrap());
+    session.resume(Principal::human("bob")).await.unwrap();
+    assert_eq!(session.status(), SessionStatus::Running);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_ne!(frozen, std::fs::read_to_string(&ticks).unwrap());
+
+    // Stop works while paused, too.
+    session.pause(Principal::human("alice")).await.unwrap();
+    session
+        .stop(Principal::human("alice"), "done watching")
+        .await;
+    assert_eq!(
+        wait_for(&session, SessionStatus::is_terminal).await,
+        SessionStatus::Stopped
+    );
+
+    let names = kinds(&session);
+    for expected in ["paused", "resumed", "recording_closed"] {
+        assert!(names.contains(&expected), "missing {expected}: {names:?}");
+    }
+    let (events, _) = session.subscribe();
+    let (file, sha256) = events
+        .iter()
+        .find_map(|e| match &e.kind {
+            EventKind::RecordingClosed { file, sha256, .. } => Some((file.clone(), sha256.clone())),
+            _ => None,
+        })
+        .unwrap();
+    let cast = std::fs::read(dir.path().join("recordings").join(file)).unwrap();
+    use sha2::Digest;
+    assert_eq!(hex::encode(sha2::Sha256::digest(&cast)), sha256);
+    let cast = String::from_utf8(cast).unwrap();
+    assert!(cast.contains("paused by alice"));
+    assert!(cast.contains("\"m\",\"turn 1\""));
 }

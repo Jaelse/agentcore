@@ -16,6 +16,7 @@ agentcore-sandbox.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 hex.workspace = true
+notify = "8"
 regex = "1"
 serde.workspace = true
 serde_json.workspace = true

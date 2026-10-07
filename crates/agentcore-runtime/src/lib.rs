@@ -11,6 +11,7 @@
 
 pub mod adapters;
 mod approvals;
+pub mod live;
 mod manager;
 mod session;
 pub mod work;

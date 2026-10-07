@@ -14,15 +14,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use agentcore_core::LaunchPlan;
+use agentcore_core::{LaunchPlan, ProcessInfo};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use crate::{
-    ExecOutput, ExecRequest, Result, Sandbox, SandboxError, SandboxProvider, SandboxRequest,
-    WORKSPACE,
+    AgentProcess, ExecOutput, ExecRequest, Result, Sandbox, SandboxError, SandboxProvider,
+    SandboxRequest, WORKSPACE,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -267,8 +267,21 @@ impl DockerSandbox {
         env: impl IntoIterator<Item = (impl AsRef<str>, impl AsRef<str>)>,
         interactive: bool,
     ) -> Command {
+        self.exec_cmd_tty(cwd, env, interactive, false)
+    }
+
+    fn exec_cmd_tty(
+        &self,
+        cwd: &str,
+        env: impl IntoIterator<Item = (impl AsRef<str>, impl AsRef<str>)>,
+        interactive: bool,
+        tty: bool,
+    ) -> Command {
         let mut cmd = Command::new(&self.cli);
         cmd.arg("exec");
+        if tty {
+            cmd.arg("--tty");
+        }
         if interactive {
             cmd.arg("--interactive");
         }
@@ -293,6 +306,25 @@ impl DockerSandbox {
             Ok(())
         } else {
             Err(SandboxError::OutsideWorkspace(path.into()))
+        }
+    }
+
+    /// Run a CLI command against this container, failing on a non-zero exit.
+    async fn container_cli(&self, args: &[&str]) -> Result<String> {
+        let output = Command::new(&self.cli)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .map_err(SandboxError::io(format!("docker {}", args[0])))?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            Err(SandboxError::Command(format!(
+                "docker {} failed: {}",
+                args[0],
+                String::from_utf8_lossy(&output.stderr).trim()
+            )))
         }
     }
 
@@ -325,11 +357,37 @@ impl Sandbox for DockerSandbox {
         self.details.clone()
     }
 
-    async fn spawn(&self, plan: &LaunchPlan) -> Result<tokio::process::Child> {
+    async fn spawn(&self, plan: &LaunchPlan) -> Result<AgentProcess> {
         self.check_alive()?;
-        let mut cmd = self.exec_cmd(WORKSPACE, &plan.env, false);
+        let mut env: Vec<(String, String)> = plan
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let mut cmd = if plan.tty {
+            env.extend(crate::tty_env().map(|(k, v)| (k.to_string(), v)));
+            let mut cmd = self.exec_cmd_tty(WORKSPACE, env, false, true);
+            // `docker exec --tty` without a client terminal leaves the size
+            // at 0x0; set it inside before starting the agent.
+            use agentcore_core::live::{TERMINAL_COLS, TERMINAL_ROWS};
+            cmd.args([
+                "sh".to_string(),
+                "-c".to_string(),
+                format!("stty cols {TERMINAL_COLS} rows {TERMINAL_ROWS} 2>/dev/null; exec \"$@\""),
+                "agentcore".to_string(),
+            ]);
+            cmd
+        } else {
+            self.exec_cmd(WORKSPACE, env, false)
+        };
         cmd.arg(&plan.program).args(&plan.args);
-        cmd.spawn().map_err(SandboxError::io("docker exec agent"))
+        let mut child = cmd.spawn().map_err(SandboxError::io("docker exec agent"))?;
+        Ok(AgentProcess {
+            stdout: child.stdout.take().map(|s| Box::pin(s) as _),
+            stderr: child.stderr.take().map(|s| Box::pin(s) as _),
+            child,
+            tty: plan.tty,
+        })
     }
 
     async fn exec(&self, request: ExecRequest) -> Result<ExecOutput> {
@@ -342,11 +400,12 @@ impl Sandbox for DockerSandbox {
         cmd.args(["timeout", "-s", "KILL", &secs, &request.command])
             .args(&request.args);
         let child = cmd.spawn().map_err(SandboxError::io("docker exec"))?;
-        crate::io::collect(
+        crate::io::collect_live(
             child,
             request.timeout + Duration::from_secs(5),
             request.max_output_bytes,
             || {},
+            request.live,
         )
         .await
         .map(|mut out| {
@@ -421,11 +480,60 @@ impl Sandbox for DockerSandbox {
         self.killed.store(true, Ordering::SeqCst);
         self.remove().await
     }
+
+    async fn pause(&self) -> Result<()> {
+        self.check_alive()?;
+        self.container_cli(&["pause", &self.name]).await.map(drop)
+    }
+
+    async fn resume(&self) -> Result<()> {
+        self.check_alive()?;
+        match self.container_cli(&["unpause", &self.name]).await {
+            Err(SandboxError::Command(e)) if e.contains("not paused") => Ok(()),
+            other => other.map(drop),
+        }
+    }
+
+    async fn processes(&self) -> Result<Vec<ProcessInfo>> {
+        self.check_alive()?;
+        let out = self
+            .container_cli(&["top", &self.name, "-eo", "pid,etime,args"])
+            .await?;
+        Ok(parse_top(&out))
+    }
+}
+
+/// Parse `docker top <name> -eo pid,etime,args`, dropping the idle
+/// `sleep infinity` that keeps the container alive.
+fn parse_top(out: &str) -> Vec<ProcessInfo> {
+    out.lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let pid = parts.next()?.parse().ok()?;
+            let elapsed = parts.next()?.to_string();
+            let command = parts.collect::<Vec<_>>().join(" ");
+            (command != "sleep infinity").then_some(ProcessInfo {
+                pid,
+                elapsed,
+                command,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_docker_top() {
+        let out = "PID   ELAPSED  COMMAND\n4242  01:02    sleep infinity\n4300  00:05    opencode run fix it\n";
+        let procs = parse_top(out);
+        assert_eq!(procs.len(), 1);
+        assert_eq!(procs[0].pid, 4300);
+        assert_eq!(procs[0].command, "opencode run fix it");
+    }
 
     #[test]
     fn explains_mount_errors() {

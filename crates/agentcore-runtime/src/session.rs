@@ -6,21 +6,24 @@ use std::time::{Duration, Instant};
 use agentcore_audit::AuditLog;
 use agentcore_core::{
     AI_GENERATED_MARKER, Action, ActionOutcome, AgentAdapter, AgentSpec, Changes, CheckResult,
-    Event, EventKind, LaunchContext, LaunchPlan, ModelEndpoint, OutputStream, Principal,
+    Event, EventKind, LaunchContext, LaunchPlan, LiveFrame, ModelEndpoint, OutputStream, Principal,
     PullRequestProposal, SessionContext, SessionId, SessionInfo, SessionStatus, Verdict,
 };
 use agentcore_policy::{CompiledPolicy, normalize_action};
 use agentcore_roles::{CheckKind, RepoDoc, Role, compose_prompt};
-use agentcore_sandbox::{ExecRequest, Sandbox, SandboxProvider, SandboxRequest, WORKSPACE};
+use agentcore_sandbox::{
+    AgentProcess, ExecRequest, Sandbox, SandboxProvider, SandboxRequest, WORKSPACE,
+};
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
-use tokio::sync::{broadcast, mpsc};
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::approvals::{ApprovalBroker, ApprovalDecision, PendingApproval};
+use crate::live::{LiveHub, PlainLines, Utf8Stream, watch_files};
 use crate::work::{
     GIT, SessionOptions, ToolHandler, WorkspaceSetup, changes_script, parse_changes, patch_script,
 };
@@ -35,6 +38,8 @@ const MAX_PATCH: usize = 2 * 1024 * 1024;
 const MAX_BUNDLE: usize = 512 * 1024 * 1024;
 const BUNDLE_REL: &str = ".git/agentcore-delivery.bundle";
 const BUNDLE_PATH: &str = "/workspace/.git/agentcore-delivery.bundle";
+/// How often the process list is refreshed while someone is watching.
+const PROCESS_POLL: Duration = Duration::from_secs(2);
 
 struct State {
     seq: u64,
@@ -84,6 +89,10 @@ pub struct Session {
     busy: tokio::sync::Mutex<()>,
     inbox: mpsc::UnboundedSender<Inbox>,
     inbox_rx: Mutex<Option<mpsc::UnboundedReceiver<Inbox>>>,
+    live: Arc<LiveHub>,
+    paused: watch::Sender<bool>,
+    /// Status to return to on resume (updated by changes made while paused).
+    resume_status: Mutex<Option<SessionStatus>>,
 }
 
 pub(crate) struct SessionParams {
@@ -143,6 +152,9 @@ impl Session {
             busy: tokio::sync::Mutex::new(()),
             inbox,
             inbox_rx: Mutex::new(Some(inbox_rx)),
+            live: Arc::new(LiveHub::default()),
+            paused: watch::channel(false).0,
+            resume_status: Mutex::new(None),
         });
         session.emit(EventKind::SessionCreated {
             agent: session.spec.name.clone(),
@@ -272,6 +284,73 @@ impl Session {
         self.emit(event).map(|_| ())
     }
 
+    /// The live view of this session.
+    pub fn live(&self) -> &LiveHub {
+        &self.live
+    }
+
+    pub fn is_paused(&self) -> bool {
+        *self.paused.borrow()
+    }
+
+    /// Wait while the session is paused. Returns `false` if it was stopped.
+    pub async fn wait_unpaused(&self) -> bool {
+        let mut rx = self.paused.subscribe();
+        tokio::select! {
+            r = rx.wait_for(|paused| !paused) => r.is_ok() && !self.cancel.is_cancelled(),
+            () = self.cancel.cancelled() => false,
+        }
+    }
+
+    /// Freeze the agent and everything it started. Model and tool calls that
+    /// arrive while paused wait; the time budget keeps running.
+    pub async fn pause(&self, by: Principal) -> Result<(), RuntimeError> {
+        if self.cancel.is_cancelled() || self.status().is_terminal() {
+            return Err(RuntimeError::NotRunning);
+        }
+        if self.paused.send_replace(true) {
+            return Ok(());
+        }
+        if let Some(sandbox) = self.sandbox()
+            && let Err(err) = sandbox.pause().await
+        {
+            self.paused.send_replace(false);
+            return Err(err.into());
+        }
+        *lock(&self.resume_status) = Some(self.status());
+        let banner = format!("\r\n\x1b[43;30m paused by {} \x1b[0m\r\n", who(&by));
+        self.emit(EventKind::Paused { by })?;
+        let current = self.status();
+        if current != SessionStatus::Paused && !current.is_terminal() {
+            self.emit(EventKind::StatusChanged {
+                status: SessionStatus::Paused,
+            })?;
+        }
+        self.live.terminal(&banner);
+        Ok(())
+    }
+
+    /// Continue after [`Session::pause`].
+    pub async fn resume(&self, by: Principal) -> Result<(), RuntimeError> {
+        if !*self.paused.borrow() {
+            return Ok(());
+        }
+        if let Some(sandbox) = self.sandbox() {
+            sandbox.resume().await?;
+        }
+        let status = lock(&self.resume_status).take();
+        let banner = format!("\x1b[42;30m resumed by {} \x1b[0m\r\n", who(&by));
+        self.emit(EventKind::Resumed { by })?;
+        self.paused.send_replace(false);
+        self.live.terminal(&banner);
+        if let Some(status) = status {
+            self.set_status(status);
+        } else {
+            self.set_status(self.idle_status());
+        }
+        Ok(())
+    }
+
     pub fn pending_approvals(&self) -> Vec<PendingApproval> {
         self.approvals.list()
     }
@@ -322,6 +401,11 @@ impl Session {
     }
 
     fn set_status(&self, status: SessionStatus) {
+        if *self.paused.borrow() && !status.is_terminal() {
+            // Applied on resume.
+            *lock(&self.resume_status) = Some(status);
+            return;
+        }
         let current = self.status();
         if current != status && !current.is_terminal() {
             let _ = self.emit(EventKind::StatusChanged { status });
@@ -337,6 +421,31 @@ impl Session {
         }
     }
 
+    /// A sink that turns command output into live frames.
+    fn tool_output(&self, action_id: Uuid) -> agentcore_sandbox::OutputSink {
+        let (tx, mut rx) = mpsc::unbounded_channel::<(OutputStream, Vec<u8>)>();
+        let frames = self.live.sender();
+        tokio::spawn(async move {
+            let mut out = Utf8Stream::default();
+            let mut err = Utf8Stream::default();
+            while let Some((stream, bytes)) = rx.recv().await {
+                let decoder = match stream {
+                    OutputStream::Stdout => &mut out,
+                    OutputStream::Stderr => &mut err,
+                };
+                let data = decoder.push(&bytes);
+                if !data.is_empty() {
+                    let _ = frames.send(LiveFrame::ToolOutput {
+                        action_id,
+                        stream,
+                        data,
+                    });
+                }
+            }
+        });
+        tx
+    }
+
     fn sandbox(&self) -> Option<Arc<dyn Sandbox>> {
         lock(&self.sandbox).clone()
     }
@@ -347,16 +456,24 @@ impl Session {
         if self.cancel.is_cancelled() || self.status().is_terminal() {
             return;
         }
-        let _ = self.emit(EventKind::StopRequested {
-            by,
-            reason: reason.into(),
-        });
+        let reason = reason.into();
+        self.live.terminal(&format!(
+            "\r\n\x1b[41;97m stopped by {}: {} \x1b[0m\r\n",
+            who(&by),
+            one_line(&reason, 100)
+        ));
+        let _ = self.emit(EventKind::StopRequested { by, reason });
         self.cancel.cancel();
         self.approvals.cancel_all();
-        if let Some(sandbox) = self.sandbox()
-            && let Err(err) = sandbox.kill().await
-        {
-            tracing::error!(session = %self.id, error = %err, "failed to kill sandbox");
+        let was_paused = self.paused.send_replace(false);
+        if let Some(sandbox) = self.sandbox() {
+            if was_paused {
+                // Some runtimes refuse to remove a frozen container.
+                let _ = sandbox.resume().await;
+            }
+            if let Err(err) = sandbox.kill().await {
+                tracing::error!(session = %self.id, error = %err, "failed to kill sandbox");
+            }
         }
     }
 
@@ -456,6 +573,19 @@ impl Session {
             };
             self.cancel.cancel();
             self.approvals.cancel_all();
+            match self.live.finish_recording() {
+                Some(Ok(rec)) => {
+                    let _ = self.emit(EventKind::RecordingClosed {
+                        file: rec.file,
+                        bytes: rec.bytes,
+                        sha256: rec.sha256,
+                    });
+                }
+                Some(Err(err)) => {
+                    tracing::error!(error = %err, "failed to close the terminal recording");
+                }
+                None => {}
+            }
             let _ = self.emit(EventKind::SessionEnded {
                 status,
                 exit_code,
@@ -499,7 +629,7 @@ impl Session {
         // 2. Start the sandbox.
         let request = SandboxRequest {
             session_id: self.id,
-            workspace_dir,
+            workspace_dir: workspace_dir.clone(),
             image: self.spec.image.clone(),
         };
         let sandbox = tokio::select! {
@@ -515,6 +645,45 @@ impl Session {
             backend: sandbox.backend().into(),
             details: sandbox.describe(),
         })?;
+
+        // The live view: terminal recording, file changes, processes.
+        let recording = config
+            .data_dir
+            .join("recordings")
+            .join(format!("{}.cast", self.id));
+        if let Err(err) = self
+            .live
+            .start_recording(&recording, &format!("{} · {}", self.spec.name, self.id))
+        {
+            tracing::warn!(error = %err, "cannot record the terminal");
+        }
+        let _watcher = {
+            let live = self.live.clone();
+            watch_files(workspace_dir.clone(), move |changes| live.files(changes))
+                .map_err(|err| tracing::warn!(error = %err, "cannot watch the workspace"))
+                .ok()
+        };
+        let poller = self.cancel.child_token();
+        let _stop_poller = poller.clone().drop_guard();
+        {
+            let live = self.live.clone();
+            let sandbox = sandbox.clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(PROCESS_POLL);
+                loop {
+                    tokio::select! {
+                        _ = tick.tick() => {}
+                        () = poller.cancelled() => break,
+                    }
+                    if live.viewers() == 0 {
+                        continue;
+                    }
+                    if let Ok(processes) = sandbox.processes().await {
+                        live.processes(processes);
+                    }
+                }
+            });
+        }
 
         // 3. What the agent is asked to do: the role playbook + team
         //    conventions + work item, or just the task.
@@ -544,8 +713,19 @@ impl Session {
 
         // 4. Turns: run the agent; if it can continue, wait for a human.
         let mut turn = 1u32;
+        let mut said: Option<String> = None;
         loop {
+            if !self.wait_unpaused().await {
+                return Ok((SessionStatus::Stopped, None, None));
+            }
             self.decorate(&mut plan, &ctx);
+            let label = match said.take() {
+                Some(text) => format!("turn {turn} · {}", one_line(&text, 80)),
+                None => format!("turn {turn}"),
+            };
+            self.live.marker(&label);
+            self.live
+                .terminal(&format!("\x1b[2m── {label} ──\x1b[0m\r\n"));
             if turn == 1 {
                 // Arguments are audited; the environment is not (it carries secrets).
                 self.emit(EventKind::AgentStarted {
@@ -604,6 +784,7 @@ impl Session {
                     plan = adapter
                         .follow_up(&self.spec, &ctx, &text)?
                         .ok_or(RuntimeError::NotAwaitingInput)?;
+                    said = Some(text);
                     turn += 1;
                 }
                 Some(Inbox::Finish(by)) => {
@@ -676,19 +857,22 @@ impl Session {
         plan: &LaunchPlan,
         deadline: Instant,
     ) -> Result<TurnOutcome, RuntimeError> {
-        let mut child = sandbox.spawn(plan).await?;
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
+        let AgentProcess {
+            mut child,
+            stdout,
+            stderr,
+            tty,
+        } = sandbox.spawn(plan).await?;
         let pumps = async {
             tokio::join!(
                 async {
                     if let Some(s) = stdout {
-                        self.pump(s, OutputStream::Stdout).await;
+                        self.pump(s, OutputStream::Stdout, tty).await;
                     }
                 },
                 async {
                     if let Some(s) = stderr {
-                        self.pump(s, OutputStream::Stderr).await;
+                        self.pump(s, OutputStream::Stderr, tty).await;
                     }
                 },
             );
@@ -728,13 +912,42 @@ impl Session {
         Ok(result)
     }
 
-    async fn pump(&self, reader: impl AsyncRead + Unpin, stream: OutputStream) {
-        let mut lines = BufReader::new(reader).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let line = truncate(&line, MAX_LINE);
-            if self.emit(EventKind::Output { stream, line }).is_err() {
-                break;
+    /// Copy agent output to the live terminal (as is) and to the audit log
+    /// (as plain text lines).
+    async fn pump(&self, mut reader: impl AsyncRead + Unpin, stream: OutputStream, tty: bool) {
+        let mut decoder = Utf8Stream::default();
+        let mut lines = PlainLines::default();
+        let mut buf = vec![0u8; 16 * 1024];
+        loop {
+            // A PTY master reports EIO once the agent has exited.
+            let n = match reader.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            let text = decoder.push(&buf[..n]);
+            if tty {
+                self.live.terminal(&text);
+            } else {
+                // Without a terminal, a bare newline does not return the cursor.
+                let shown = text.replace('\n', "\r\n");
+                if stream == OutputStream::Stderr {
+                    self.live.terminal(&format!("\x1b[31m{shown}\x1b[0m"));
+                } else {
+                    self.live.terminal(&shown);
+                }
             }
+            for line in lines.push(&text) {
+                let line = truncate(&line, MAX_LINE);
+                if self.emit(EventKind::Output { stream, line }).is_err() {
+                    return;
+                }
+            }
+        }
+        if let Some(line) = lines.finish() {
+            let _ = self.emit(EventKind::Output {
+                stream,
+                line: truncate(&line, MAX_LINE),
+            });
         }
     }
 
@@ -762,6 +975,7 @@ impl Session {
                 env: Default::default(),
                 timeout,
                 max_output_bytes: max,
+                live: None,
             })
             .await?)
     }
@@ -1012,6 +1226,9 @@ impl Session {
         if self.cancel.is_cancelled() || self.status().is_terminal() {
             return Err(RuntimeError::NotRunning);
         }
+        if !self.wait_unpaused().await {
+            return Err(RuntimeError::NotRunning);
+        }
         let action = normalize_action(&action, WORKSPACE);
         // Track in-flight actions so status changes after approvals stay correct.
         let action_id = Uuid::now_v7();
@@ -1045,14 +1262,14 @@ impl Session {
                     .await?
                 {
                     None => {
-                        self.execute(&action, contents, limits.max_output_bytes)
+                        self.execute(action_id, &action, contents, limits.max_output_bytes)
                             .await
                     }
                     Some(denied) => denied,
                 }
             }
             Verdict::Allow { .. } => {
-                self.execute(&action, contents, limits.max_output_bytes)
+                self.execute(action_id, &action, contents, limits.max_output_bytes)
                     .await
             }
         };
@@ -1128,6 +1345,7 @@ impl Session {
 
     async fn execute(
         &self,
+        action_id: Uuid,
         action: &Action,
         contents: Option<Vec<u8>>,
         max_output: usize,
@@ -1140,6 +1358,7 @@ impl Session {
         let result = match action {
             Action::Exec { command, args, cwd } => sandbox
                 .exec(ExecRequest {
+                    live: Some(self.tool_output(action_id)),
                     command: command.clone(),
                     args: args.clone(),
                     cwd: cwd.clone().unwrap_or_else(|| WORKSPACE.into()),
@@ -1187,6 +1406,24 @@ impl Session {
                 error: err.to_string(),
             },
         }
+    }
+}
+
+/// How a principal is named in terminal banners.
+fn who(p: &Principal) -> String {
+    match p {
+        Principal::Human(name) => name.clone(),
+        Principal::Agent(name) => format!("agent {name}"),
+        Principal::System => "agentcore".into(),
+    }
+}
+
+fn one_line(s: &str, max: usize) -> String {
+    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= max {
+        flat
+    } else {
+        format!("{}…", flat.chars().take(max).collect::<String>())
     }
 }
 

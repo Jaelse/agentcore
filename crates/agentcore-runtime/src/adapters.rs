@@ -100,6 +100,7 @@ impl AgentAdapter for CommandAdapter {
             program,
             args: spec.args.iter().map(|a| ctx.substitute(a)).collect(),
             env: expand_env(spec, ctx),
+            tty: spec.tty.unwrap_or(true),
         })
     }
 }
@@ -218,6 +219,7 @@ impl AgentAdapter for OpenCodeAdapter {
             program: spec.command.clone().unwrap_or_else(|| "opencode".into()),
             args,
             env,
+            tty: spec.tty.unwrap_or(true),
         })
     }
 }
@@ -251,6 +253,7 @@ mod tests {
             args: vec!["--task".into(), "{task}".into()],
             env: [("KEY".to_string(), "{env:AGENTCORE_TEST_VAR}-x".to_string())].into(),
             policy: None,
+            tty: None,
             follow_up_args: vec![],
         }
     }

@@ -9,14 +9,14 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use agentcore_core::LaunchPlan;
+use agentcore_core::{LaunchPlan, ProcessInfo};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
 use crate::{
-    ExecOutput, ExecRequest, Result, Sandbox, SandboxError, SandboxProvider, SandboxRequest,
-    WORKSPACE,
+    AgentProcess, ExecOutput, ExecRequest, Result, Sandbox, SandboxError, SandboxProvider,
+    SandboxRequest, WORKSPACE,
 };
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -150,6 +150,13 @@ impl ProcessSandbox {
         cmd
     }
 
+    fn groups(&self) -> Vec<u32> {
+        self.groups
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+
     fn track(&self, child: &tokio::process::Child) {
         if let Some(pid) = child.id() {
             self.groups
@@ -160,15 +167,79 @@ impl ProcessSandbox {
     }
 }
 
-#[cfg(unix)]
-fn kill_group(pgid: u32) {
-    use nix::sys::signal::{Signal, killpg};
+fn signal_group(pgid: u32, signal: nix::sys::signal::Signal) {
     use nix::unistd::Pid;
-    let _ = killpg(Pid::from_raw(pgid as i32), Signal::SIGKILL);
+    let _ = nix::sys::signal::killpg(Pid::from_raw(pgid as i32), signal);
 }
 
-#[cfg(not(unix))]
-fn kill_group(_pgid: u32) {}
+fn kill_group(pgid: u32) {
+    signal_group(pgid, nix::sys::signal::Signal::SIGKILL);
+}
+
+/// Non-blocking reader for a PTY master (`tokio::fs::File` would park a
+/// blocking thread on every read).
+struct PtyReader(tokio::io::unix::AsyncFd<std::fs::File>);
+
+impl PtyReader {
+    fn new(master: std::fs::File) -> Result<Self> {
+        use nix::fcntl::{FcntlArg, OFlag, fcntl};
+        let flags = fcntl(&master, FcntlArg::F_GETFL)
+            .map_err(|e| SandboxError::Command(format!("pseudo-terminal: {e}")))?;
+        fcntl(
+            &master,
+            FcntlArg::F_SETFL(OFlag::from_bits_truncate(flags) | OFlag::O_NONBLOCK),
+        )
+        .map_err(|e| SandboxError::Command(format!("pseudo-terminal: {e}")))?;
+        tokio::io::unix::AsyncFd::new(master)
+            .map(Self)
+            .map_err(SandboxError::io("register pseudo-terminal"))
+    }
+}
+
+impl tokio::io::AsyncRead for PtyReader {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        use std::io::Read;
+        use std::task::Poll;
+        loop {
+            let mut guard = match self.0.poll_read_ready(cx) {
+                Poll::Ready(Ok(guard)) => guard,
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            };
+            let unfilled = buf.initialize_unfilled();
+            match guard.try_io(|fd| fd.get_ref().read(unfilled)) {
+                Ok(Ok(n)) => {
+                    buf.advance(n);
+                    return Poll::Ready(Ok(()));
+                }
+                // EIO: every process holding the terminal has exited.
+                Ok(Err(e)) if e.raw_os_error() == Some(nix::libc::EIO) => {
+                    return Poll::Ready(Ok(()));
+                }
+                Ok(Err(e)) => return Poll::Ready(Err(e)),
+                Err(_would_block) => continue,
+            }
+        }
+    }
+}
+
+/// A pseudo-terminal of the live view's size: (master, slave).
+fn open_pty() -> Result<(std::fs::File, std::os::fd::OwnedFd)> {
+    use agentcore_core::live::{TERMINAL_COLS, TERMINAL_ROWS};
+    let size = nix::pty::Winsize {
+        ws_row: TERMINAL_ROWS,
+        ws_col: TERMINAL_COLS,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let pty = nix::pty::openpty(Some(&size), None)
+        .map_err(|e| SandboxError::Command(format!("cannot open a pseudo-terminal: {e}")))?;
+    Ok((std::fs::File::from(pty.master), pty.slave))
+}
 
 #[async_trait]
 impl Sandbox for ProcessSandbox {
@@ -180,15 +251,45 @@ impl Sandbox for ProcessSandbox {
         serde_json::json!({ "workspace": self.root, "isolation": "none" })
     }
 
-    async fn spawn(&self, plan: &LaunchPlan) -> Result<tokio::process::Child> {
+    async fn spawn(&self, plan: &LaunchPlan) -> Result<AgentProcess> {
         self.check_alive()?;
         let mut cmd = self.command(&plan.program, &plan.args, &self.root);
         cmd.envs(&plan.env);
+        if !plan.tty {
+            let mut child = cmd
+                .spawn()
+                .map_err(SandboxError::io(format!("spawn `{}`", plan.program)))?;
+            self.track(&child);
+            return Ok(AgentProcess {
+                stdout: child.stdout.take().map(|s| Box::pin(s) as _),
+                stderr: child.stderr.take().map(|s| Box::pin(s) as _),
+                child,
+                tty: false,
+            });
+        }
+        let (master, slave) = open_pty()?;
+        let clone = |fd: &std::os::fd::OwnedFd| {
+            fd.try_clone()
+                .map_err(SandboxError::io("duplicate pseudo-terminal"))
+        };
+        // Like `docker exec --tty`: stdin, stdout and stderr are the terminal.
+        cmd.stdin(Stdio::from(clone(&slave)?))
+            .stdout(Stdio::from(clone(&slave)?))
+            .stderr(Stdio::from(slave))
+            .envs(crate::tty_env());
         let child = cmd
             .spawn()
             .map_err(SandboxError::io(format!("spawn `{}`", plan.program)))?;
+        // `cmd` holds the slave's descriptors; close them so reading the
+        // master ends once the agent exits.
+        drop(cmd);
         self.track(&child);
-        Ok(child)
+        Ok(AgentProcess {
+            child,
+            stdout: Some(Box::pin(PtyReader::new(master)?)),
+            stderr: None,
+            tty: true,
+        })
     }
 
     async fn exec(&self, request: ExecRequest) -> Result<ExecOutput> {
@@ -201,7 +302,7 @@ impl Sandbox for ProcessSandbox {
             .map_err(SandboxError::io(format!("spawn `{}`", request.command)))?;
         self.track(&child);
         let pgid = child.id();
-        crate::io::collect(
+        crate::io::collect_live(
             child,
             request.timeout,
             request.max_output_bytes,
@@ -210,6 +311,7 @@ impl Sandbox for ProcessSandbox {
                     kill_group(pgid);
                 }
             },
+            request.live,
         )
         .await
         .map_err(SandboxError::io("exec"))
@@ -259,6 +361,50 @@ impl Sandbox for ProcessSandbox {
     async fn destroy(&self) -> Result<()> {
         self.kill().await
     }
+
+    async fn pause(&self) -> Result<()> {
+        self.check_alive()?;
+        for pgid in self.groups() {
+            signal_group(pgid, nix::sys::signal::Signal::SIGSTOP);
+        }
+        Ok(())
+    }
+
+    async fn resume(&self) -> Result<()> {
+        for pgid in self.groups() {
+            signal_group(pgid, nix::sys::signal::Signal::SIGCONT);
+        }
+        Ok(())
+    }
+
+    async fn processes(&self) -> Result<Vec<ProcessInfo>> {
+        self.check_alive()?;
+        let groups = self.groups();
+        if groups.is_empty() {
+            return Ok(Vec::new());
+        }
+        let out = Command::new("ps")
+            .args(["-eo", "pid=,pgid=,etime=,args="])
+            .output()
+            .await
+            .map_err(SandboxError::io("ps"))?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        Ok(text
+            .lines()
+            .filter_map(|line| {
+                let mut parts = line.split_whitespace();
+                let pid = parts.next()?.parse().ok()?;
+                let pgid: u32 = parts.next()?.parse().ok()?;
+                let elapsed = parts.next()?.to_string();
+                let command = parts.collect::<Vec<_>>().join(" ");
+                groups.contains(&pgid).then_some(ProcessInfo {
+                    pid,
+                    elapsed,
+                    command,
+                })
+            })
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -289,6 +435,7 @@ mod tests {
             env: Default::default(),
             timeout,
             max_output_bytes: 16,
+            live: None,
         }
     }
 
@@ -383,16 +530,17 @@ mod tests {
     async fn kill_stops_everything() {
         let dir = tempfile::tempdir().unwrap();
         let sb = sandbox(dir.path()).await;
-        let mut child = sb
+        let mut agent = sb
             .spawn(&LaunchPlan {
                 program: "sh".into(),
                 args: vec!["-c".into(), "sleep 30 & sleep 30".into()],
                 env: Default::default(),
+                tty: false,
             })
             .await
             .unwrap();
         sb.kill().await.unwrap();
-        let status = tokio::time::timeout(Duration::from_secs(5), child.wait())
+        let status = tokio::time::timeout(Duration::from_secs(5), agent.child.wait())
             .await
             .expect("agent did not die")
             .unwrap();
@@ -401,5 +549,76 @@ mod tests {
             sb.exec(exec("true", &[], Duration::from_secs(1))).await,
             Err(SandboxError::Killed)
         ));
+    }
+
+    #[tokio::test]
+    async fn agents_get_a_terminal_and_live_output() {
+        use tokio::io::AsyncReadExt;
+        let dir = tempfile::tempdir().unwrap();
+        let sb = sandbox(dir.path()).await;
+        let mut agent = sb
+            .spawn(&LaunchPlan {
+                program: "sh".into(),
+                args: vec![
+                    "-c".into(),
+                    "[ -t 1 ] && echo tty; stty size; echo err >&2".into(),
+                ],
+                env: Default::default(),
+                tty: true,
+            })
+            .await
+            .unwrap();
+        let mut out = Vec::new();
+        let mut reader = agent.stdout.take().unwrap();
+        // Reading a PTY master after the slave closes fails with EIO.
+        let _ = tokio::time::timeout(Duration::from_secs(5), reader.read_to_end(&mut out)).await;
+        agent.child.wait().await.unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("tty"), "{text}");
+        assert!(text.contains("32 120"), "{text}");
+        assert!(text.contains("err"), "{text}");
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut request = exec("sh", &["-c", "echo live"], Duration::from_secs(5));
+        request.live = Some(tx);
+        sb.exec(request).await.unwrap();
+        let (_, chunk) = rx.recv().await.unwrap();
+        assert_eq!(chunk, b"live\n");
+    }
+
+    #[tokio::test]
+    async fn pause_freezes_and_resume_continues() {
+        let dir = tempfile::tempdir().unwrap();
+        let sb = sandbox(dir.path()).await;
+        let mut agent = sb
+            .spawn(&LaunchPlan {
+                program: "sh".into(),
+                args: vec![
+                    "-c".into(),
+                    "while true; do date +%s%N >> ticks; sleep 0.05; done".into(),
+                ],
+                env: Default::default(),
+                tty: false,
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!sb.processes().await.unwrap().is_empty());
+        sb.pause().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let frozen = std::fs::read_to_string(dir.path().join("ticks")).unwrap();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(
+            frozen,
+            std::fs::read_to_string(dir.path().join("ticks")).unwrap()
+        );
+        sb.resume().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_ne!(
+            frozen,
+            std::fs::read_to_string(dir.path().join("ticks")).unwrap()
+        );
+        sb.kill().await.unwrap();
+        let _ = agent.child.wait().await;
     }
 }

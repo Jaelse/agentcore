@@ -10,6 +10,7 @@ pub mod auth;
 pub mod config;
 mod error;
 pub mod github;
+pub mod live;
 pub mod llm;
 pub mod mcp;
 pub mod sessions;
@@ -109,6 +110,10 @@ pub fn router(state: AppState) -> Router {
         .route("/sessions/{id}/stop", post(api::stop_session))
         .route("/sessions/{id}/events", get(api::events))
         .route("/sessions/{id}/stream", get(api::stream))
+        .route("/sessions/{id}/live", get(live::stream))
+        .route("/sessions/{id}/pause", post(live::pause))
+        .route("/sessions/{id}/resume", post(live::resume))
+        .route("/sessions/{id}/recording", get(live::recording))
         .route("/sessions/{id}/approvals", get(api::list_approvals))
         .route(
             "/sessions/{id}/approvals/{approval_id}",

@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use agentcore_core::{LaunchPlan, SessionId};
+use agentcore_core::{LaunchPlan, OutputStream, ProcessInfo, SessionId};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -88,6 +88,27 @@ pub struct SandboxRequest {
     pub image: Option<String>,
 }
 
+/// Receives command output while it is produced (for the live view).
+pub type OutputSink = tokio::sync::mpsc::UnboundedSender<(OutputStream, Vec<u8>)>;
+
+/// A running agent process and its output streams.
+pub struct AgentProcess {
+    pub child: tokio::process::Child,
+    /// With a TTY: the terminal (stdout and stderr merged). Otherwise stdout.
+    pub stdout: Option<std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>>,
+    pub stderr: Option<std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>>,
+    pub tty: bool,
+}
+
+/// Environment for agents running in a pseudo-terminal.
+pub fn tty_env() -> [(&'static str, String); 3] {
+    [
+        ("TERM", "xterm-256color".to_string()),
+        ("COLUMNS", agentcore_core::live::TERMINAL_COLS.to_string()),
+        ("LINES", agentcore_core::live::TERMINAL_ROWS.to_string()),
+    ]
+}
+
 #[derive(Debug, Clone)]
 pub struct ExecRequest {
     pub command: String,
@@ -97,6 +118,8 @@ pub struct ExecRequest {
     pub env: BTreeMap<String, String>,
     pub timeout: Duration,
     pub max_output_bytes: usize,
+    /// Optional live copy of the output as it is produced.
+    pub live: Option<OutputSink>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,8 +151,9 @@ pub trait Sandbox: Send + Sync {
     /// Backend-specific details for the audit log (image, limits, ...).
     fn describe(&self) -> serde_json::Value;
 
-    /// Start the long-running agent process. stdout and stderr are piped.
-    async fn spawn(&self, plan: &LaunchPlan) -> Result<tokio::process::Child>;
+    /// Start the long-running agent process, in a pseudo-terminal if
+    /// `plan.tty` is set.
+    async fn spawn(&self, plan: &LaunchPlan) -> Result<AgentProcess>;
 
     /// Run a short-lived command (a tool call) to completion.
     async fn exec(&self, request: ExecRequest) -> Result<ExecOutput>;
@@ -146,4 +170,13 @@ pub trait Sandbox: Send + Sync {
 
     /// Release all resources (container, processes). The workspace is kept.
     async fn destroy(&self) -> Result<()>;
+
+    /// Freeze every process in the sandbox.
+    async fn pause(&self) -> Result<()>;
+
+    /// Continue after [`Sandbox::pause`].
+    async fn resume(&self) -> Result<()>;
+
+    /// Processes currently running in the sandbox.
+    async fn processes(&self) -> Result<Vec<ProcessInfo>>;
 }

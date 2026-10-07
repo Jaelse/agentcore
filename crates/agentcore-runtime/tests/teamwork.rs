@@ -106,6 +106,7 @@ fn agent() -> AgentSpec {
         env: Default::default(),
         policy: None,
         // Follow-up: fix the commit message as asked.
+        tty: None,
         follow_up_args: vec![
             "-c".into(),
             format!("{GIT_ID} commit -q --amend -m 'feat: add hello'; echo \"got: $0\""),
