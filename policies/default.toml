@@ -75,6 +75,20 @@ commands = [
 ]
 
 [[rules]]
+id = "allow-github-reads"
+description = "Reading issues, milestones, the board and discussions."
+effect = "allow"
+kinds = ["tool_call"]
+tools = ["github_list_*", "github_get_*", "propose_pull_request"]
+
+[[rules]]
+id = "approve-github-writes"
+description = "Comments and changes on GitHub are visible to the whole team: a human approves."
+effect = "require_approval"
+kinds = ["tool_call"]
+tools = ["github_comment_*", "github_create_*", "github_update_*", "github_set_*"]
+
+[[rules]]
 id = "allow-package-registries"
 description = "Dependency downloads from well-known registries."
 effect = "allow"

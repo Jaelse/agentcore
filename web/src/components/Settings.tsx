@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import type { AdminEvent, Me, ProviderInfo, ProviderKind } from "../types";
+import { GitHubSettings, RolesOverview } from "./TeamSettings";
 
 const DEFAULT_URL: Record<ProviderKind, string> = {
   anthropic: "https://api.anthropic.com",
@@ -64,6 +65,10 @@ export function Settings({ me, onError }: { me: Me; onError: (err: unknown) => v
       </section>
 
       {isAdmin && <AddProvider existing={providers ?? []} onAdded={refresh} onError={onError} />}
+
+      <GitHubSettings me={me} onError={onError} onChanged={refresh} />
+
+      <RolesOverview onError={onError} />
 
       {isAdmin && (
         <section className="card pad">

@@ -23,6 +23,8 @@ agentcore-cli ──► agentcore-server ──► agentcore-runtime ──► a
   agent, run tool commands, read and write workspace files, and `kill()` everything.
 * **runtime**: `SessionManager` and `Session`. A session drives the agent
   process, gates every action through policy and approvals, and emits events.
+* **roles**: role (playbook) files, prompt composition from the playbook, the
+  team's convention files and the work item, capability → tool mapping.
 * **store**: PostgreSQL via sqlx (migrations run at startup). Holds the
   session index, model providers (API keys AES-256-GCM encrypted with the
   master key, provider name bound as associated data), every model call, and
@@ -44,6 +46,52 @@ agentcore-cli ──► agentcore-server ──► agentcore-runtime ──► a
 On startup agentcore marks sessions that were running when it last stopped as
 `failed`, appends a closing `session_ended` event to their audit logs, and
 removes any sandbox containers left behind.
+
+## Team work
+
+### Sessions are conversations
+
+A session runs the agent in *turns*. After each turn, if the adapter can
+continue a conversation (`AgentAdapter::follow_up`; opencode uses
+`opencode run --continue`, CLI agents can declare `follow_up_args`), the
+session waits in `awaiting_input` with the sandbox kept alive. A human message
+starts the next turn; **Finish** ends the session; the policy's
+`idle_timeout_secs` and `max_session_secs` still apply.
+
+### Repository workspace
+
+```
+GitHub ──(token, as HTTP header via env)──► data/repos/<session>.git   (bare mirror, agentcore only)
+                                               │ git clone file://
+                                               ▼
+                                        data/workspaces/<session>      (agent's checkout, mounted at /workspace)
+```
+
+The checkout happens before any agent code exists in the directory. The
+workspace gets a local work branch (from the role's branch pattern), the commit
+identity from the GitHub settings, and an `origin` without credentials.
+
+### First prompt
+
+`compose_prompt` = role playbook + the team's convention files (read inside
+the sandbox, so a symlink cannot reach host files) + project notes + the
+role's checks + the issue with its comments + the operator's instructions +
+how to deliver. Its SHA-256, the role digest and the list of files are
+recorded in a `role_applied` event.
+
+### Delivery
+
+```
+Deliver (human) ─► checks in sandbox ─► git bundle base..HEAD (in sandbox)
+               ─► read bundle bytes ─► git fetch bundle into the bare mirror (host)
+               ─► push +refs/heads/<work branch> (token) ─► create/update PR
+               ─► move board card, comment on issue ─► `delivered` event
+```
+
+agentcore never runs git inside the agent-controlled checkout on the host:
+everything crossing the boundary is a bundle, which is plain data. Hooks and
+fsmonitor are disabled for every git command agentcore runs. Only the
+session's own branch is pushed.
 
 ## Model gateway
 
@@ -145,8 +193,12 @@ microVMs, Kubernetes pods (one per session), and remote sandboxes.
 
 * **Egress proxy**: allow network access per policy `network` rules, instead
   of all-or-nothing.
-* **Git integration**: clone a repository into the workspace and deliver
-  results as a branch / pull request.
+* **Event-driven pickup**: agents that take cards labelled `agent` from the
+  *Ready* column automatically (within a WIP limit), and that react to PR review
+  comments by continuing their session.
+* **GitHub App** authentication (per-installation tokens) instead of a token.
+* **Other trackers**: GitLab, Jira, Linear behind the same project/board model.
+* **Role editor** in the UI (roles are files today).
 * **OpenTelemetry export** of traces and events; SIEM forwarding of audit logs.
 * **SSO (OIDC)** for operators; per-team policies.
 * **Spend limits**: per-session and per-provider token/cost budgets.

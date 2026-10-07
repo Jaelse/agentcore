@@ -44,6 +44,7 @@ fn agent(name: &str, script: &str) -> AgentSpec {
         args: vec!["-c".into(), script.into()],
         env: Default::default(),
         policy: None,
+        follow_up_args: vec![],
     }
 }
 
@@ -90,7 +91,7 @@ fn create(manager: &SessionManager, agent: &str) -> Arc<Session> {
                 policy: None,
             },
             Principal::human("alice"),
-            Vec::new(),
+            Default::default(),
         )
         .unwrap()
 }

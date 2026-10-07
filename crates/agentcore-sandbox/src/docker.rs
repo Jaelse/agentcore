@@ -75,28 +75,6 @@ impl DockerProvider {
         Self { config }
     }
 
-    /// Give a new workspace to the (non-root) sandbox user so the agent can
-    /// write to it. Only possible when agentcore runs as root, as it does in
-    /// the docker-compose deployment; otherwise the operator must arrange it.
-    fn hand_over(&self, dir: &std::path::Path) {
-        let mut ids = self
-            .config
-            .user
-            .splitn(2, ':')
-            .map(|p| p.parse::<u32>().ok());
-        let (Some(Some(uid)), gid) = (ids.next(), ids.next().flatten()) else {
-            return;
-        };
-        #[cfg(unix)]
-        if let Err(err) = std::os::unix::fs::chown(dir, Some(uid), gid) {
-            tracing::warn!(
-                dir = %dir.display(),
-                error = %err,
-                "could not hand the workspace to the sandbox user; the agent may not be able to write to it"
-            );
-        }
-    }
-
     /// Arguments for `docker run`, exposed for testing and auditing.
     pub fn run_args(&self, request: &SandboxRequest, name: &str, workspace: &str) -> Vec<String> {
         let c = &self.config;
@@ -160,13 +138,16 @@ impl SandboxProvider for DockerProvider {
     }
 
     async fn create(&self, request: &SandboxRequest) -> Result<Arc<dyn Sandbox>> {
-        let fresh = !request.workspace_dir.exists();
         tokio::fs::create_dir_all(&request.workspace_dir)
             .await
             .map_err(SandboxError::io("create workspace"))?;
-        if fresh {
-            self.hand_over(&request.workspace_dir);
-        }
+        // The workspace may hold a freshly cloned repository: give all of it
+        // to the sandbox user.
+        let dir = request.workspace_dir.clone();
+        let this = self.config.user.clone();
+        tokio::task::spawn_blocking(move || hand_over(&this, &dir))
+            .await
+            .map_err(|e| SandboxError::Command(e.to_string()))?;
         let workspace: PathBuf = tokio::fs::canonicalize(&request.workspace_dir)
             .await
             .map_err(SandboxError::io("resolve workspace"))?;
@@ -211,6 +192,37 @@ impl DockerProvider {
             ));
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+}
+
+/// Give the workspace (recursively, without following symlinks) to the
+/// non-root sandbox user so the agent can write to it. Only possible when
+/// agentcore runs as root, as in the docker-compose deployment; otherwise the
+/// operator must arrange permissions.
+fn hand_over(user: &str, dir: &std::path::Path) {
+    let mut ids = user.splitn(2, ':').map(|p| p.parse::<u32>().ok());
+    let (Some(Some(uid)), gid) = (ids.next(), ids.next().flatten()) else {
+        return;
+    };
+    #[cfg(unix)]
+    {
+        fn walk(path: &std::path::Path, uid: u32, gid: Option<u32>) -> std::io::Result<()> {
+            std::os::unix::fs::lchown(path, Some(uid), gid)?;
+            let meta = std::fs::symlink_metadata(path)?;
+            if meta.is_dir() {
+                for entry in std::fs::read_dir(path)? {
+                    walk(&entry?.path(), uid, gid)?;
+                }
+            }
+            Ok(())
+        }
+        if let Err(err) = walk(dir, uid, gid) {
+            tracing::warn!(
+                dir = %dir.display(),
+                error = %err,
+                "could not hand the workspace to the sandbox user; the agent may not be able to write to it"
+            );
+        }
     }
 }
 
@@ -353,16 +365,16 @@ impl Sandbox for DockerSandbox {
         let mut cmd = self.exec_cmd(WORKSPACE, std::iter::empty::<(&str, &str)>(), false);
         cmd.args(["cat", "--", path]);
         let child = cmd.spawn().map_err(SandboxError::io("docker exec cat"))?;
-        let out = crate::io::collect(child, Duration::from_secs(30), max_bytes, || {})
+        let out = crate::io::collect_raw(child, Duration::from_secs(120), max_bytes, || {})
             .await
             .map_err(SandboxError::io("read file"))?;
         if out.exit_code != Some(0) && !out.truncated {
             return Err(SandboxError::Command(format!(
                 "read {path}: {}",
-                out.stderr.trim()
+                String::from_utf8_lossy(&out.stderr).trim()
             )));
         }
-        Ok((out.stdout.into_bytes(), out.truncated))
+        Ok((out.stdout, out.truncated))
     }
 
     async fn write_file(&self, path: &str, contents: &[u8]) -> Result<()> {

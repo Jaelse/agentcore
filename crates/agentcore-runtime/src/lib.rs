@@ -13,11 +13,13 @@ pub mod adapters;
 mod approvals;
 mod manager;
 mod session;
+pub mod work;
 
 pub use adapters::AdapterRegistry;
 pub use approvals::{ApprovalDecision, PendingApproval};
 pub use manager::{CreateSession, RuntimeConfig, SessionManager};
 pub use session::Session;
+pub use work::{PreparedWorkspace, SessionOptions, ToolHandler, WorkspaceSetup};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
@@ -33,6 +35,10 @@ pub enum RuntimeError {
     ApprovalNotFound(uuid::Uuid),
     #[error("session is not running")]
     NotRunning,
+    #[error("the agent is not waiting for input")]
+    NotAwaitingInput,
+    #[error("workspace: {0}")]
+    Workspace(String),
     #[error(transparent)]
     Audit(#[from] agentcore_audit::AuditError),
     #[error(transparent)]

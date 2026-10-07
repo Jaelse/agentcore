@@ -70,6 +70,28 @@ impl AgentAdapter for CommandAdapter {
         "command"
     }
 
+    fn follow_up(
+        &self,
+        spec: &AgentSpec,
+        ctx: &LaunchContext,
+        message: &str,
+    ) -> Result<Option<LaunchPlan>, AdapterError> {
+        if spec.follow_up_args.is_empty() {
+            return Ok(None);
+        }
+        let follow_ctx = LaunchContext {
+            task: message.to_string(),
+            ..ctx.clone()
+        };
+        let mut plan = self.plan(spec, &follow_ctx)?;
+        plan.args = spec
+            .follow_up_args
+            .iter()
+            .map(|a| follow_ctx.substitute(a))
+            .collect();
+        Ok(Some(plan))
+    }
+
     fn plan(&self, spec: &AgentSpec, ctx: &LaunchContext) -> Result<LaunchPlan, AdapterError> {
         let program = spec.command.clone().ok_or_else(|| {
             AdapterError::InvalidSpec(spec.name.clone(), "`command` is required".into())
@@ -157,6 +179,30 @@ impl AgentAdapter for OpenCodeAdapter {
         "opencode"
     }
 
+    /// `opencode run --continue <message>` resumes the last opencode session
+    /// in the sandbox (its state lives in the agent's HOME, which survives
+    /// between turns because the sandbox does).
+    fn follow_up(
+        &self,
+        spec: &AgentSpec,
+        ctx: &LaunchContext,
+        message: &str,
+    ) -> Result<Option<LaunchPlan>, AdapterError> {
+        let follow_ctx = LaunchContext {
+            task: message.to_string(),
+            ..ctx.clone()
+        };
+        let mut plan = self.plan(spec, &follow_ctx)?;
+        match plan.args.iter().position(|a| a == "run") {
+            Some(i) if !plan.args.iter().any(|a| a == "--continue" || a == "-c") => {
+                plan.args.insert(i + 1, "--continue".into());
+            }
+            Some(_) => {}
+            None => return Ok(None),
+        }
+        Ok(Some(plan))
+    }
+
     fn plan(&self, spec: &AgentSpec, ctx: &LaunchContext) -> Result<LaunchPlan, AdapterError> {
         let args = if spec.args.is_empty() {
             vec!["run".into(), ctx.task.clone()]
@@ -205,7 +251,46 @@ mod tests {
             args: vec!["--task".into(), "{task}".into()],
             env: [("KEY".to_string(), "{env:AGENTCORE_TEST_VAR}-x".to_string())].into(),
             policy: None,
+            follow_up_args: vec![],
         }
+    }
+
+    #[test]
+    fn opencode_follow_up_continues_the_conversation() {
+        let mut s = spec("opencode");
+        s.command = None;
+        s.args = vec![
+            "run".into(),
+            "--model".into(),
+            "opencode/big-pickle".into(),
+            "{task}".into(),
+        ];
+        let plan = OpenCodeAdapter
+            .follow_up(&s, &ctx(), "now add tests")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            plan.args,
+            [
+                "run",
+                "--continue",
+                "--model",
+                "opencode/big-pickle",
+                "now add tests"
+            ]
+        );
+        s.args.clear();
+        let plan = OpenCodeAdapter
+            .follow_up(&s, &ctx(), "again")
+            .unwrap()
+            .unwrap();
+        assert_eq!(plan.args, ["run", "--continue", "again"]);
+        assert!(
+            CommandAdapter
+                .follow_up(&spec("command"), &ctx(), "x")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

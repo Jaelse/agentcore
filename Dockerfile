@@ -15,11 +15,12 @@ RUN cargo build --release --locked -p agentcore-cli
 
 FROM debian:bookworm-slim
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates docker.io curl \
+ && apt-get install -y --no-install-recommends ca-certificates docker.io curl git \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/agentcore /usr/local/bin/agentcore
 COPY --from=web /src/web/dist /opt/agentcore/web/dist
 COPY policies /opt/agentcore/policies
+COPY roles /opt/agentcore/roles
 WORKDIR /opt/agentcore
 EXPOSE 8080
 HEALTHCHECK CMD curl -fsS http://127.0.0.1:8080/api/v1/health || exit 1

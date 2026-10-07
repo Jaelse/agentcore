@@ -5,6 +5,9 @@ import type { ActionRecord, ModelCallEvent, TimelineItem } from "../hooks";
 import type { AgentEvent, Me, ModelCallRecord, PendingApproval, SessionInfo } from "../types";
 import { TERMINAL, actionSummary, principalLabel } from "../types";
 import { StatusPill } from "./StatusPill";
+import { Conversation } from "./Conversation";
+import { ChangesView } from "./ChangesView";
+import { DeliverDialog } from "./DeliverDialog";
 
 interface Props {
   info: SessionInfo;
@@ -13,15 +16,38 @@ interface Props {
   onError: (err: unknown) => void;
 }
 
-type Tab = "activity" | "output" | "audit";
+type Tab = "conversation" | "activity" | "changes" | "output" | "audit";
+
+type Detail = Awaited<ReturnType<typeof api.session>>;
 
 export function SessionView({ info, me, onChanged, onError }: Props) {
   const { events, connected } = useEventStream(info.id);
   const { timeline, output, pending } = useSessionModel(events);
-  const [tab, setTab] = useState<Tab>("activity");
+  const [tab, setTab] = useState<Tab>("conversation");
   const [stopping, setStopping] = useState(false);
+  const [detail, setDetail] = useState<Detail | null>(null);
+  const [delivering, setDelivering] = useState(false);
   const ended = TERMINAL.includes(info.status);
   const canAct = me.role !== "viewer";
+  const ctx = info.context ?? {};
+  const isRepo = !!ctx.repository;
+
+  // Reload details (proposal, role) when something relevant happens.
+  const lastRelevant = events.filter((e) =>
+    ["pull_request_proposed", "delivered", "role_applied", "session_ended"].includes(e.event),
+  ).length;
+  useEffect(() => {
+    api.session(info.id).then(setDetail).catch(() => {});
+  }, [info.id, lastRelevant, info.status]);
+
+  const finish = async () => {
+    try {
+      await api.finish(info.id);
+      onChanged();
+    } catch (err) {
+      onError(err);
+    }
+  };
 
   const stop = async () => {
     setStopping(true);
@@ -45,6 +71,24 @@ export function SessionView({ info, me, onChanged, onError }: Props) {
             <span className={`dot ${connected ? "on" : "off"}`} title={connected ? "Live" : "Reconnecting"} />
           </div>
           <p className="session-task-full">{info.task}</p>
+          {(ctx.project_name || ctx.issue || ctx.role) && (
+            <div className="context-chips">
+              {ctx.project_name && <span className="chip">📁 {ctx.project_name}</span>}
+              {ctx.repository && <span className="chip mono small">{ctx.repository}</span>}
+              {ctx.issue && (
+                <a className="chip" href={ctx.issue.url} target="_blank" rel="noreferrer">
+                  #{ctx.issue.number} {ctx.issue.title}
+                </a>
+              )}
+              {detail?.role && <span className="chip">👤 {detail.role.title}</span>}
+              {ctx.work_branch && <span className="chip mono small">⎇ {ctx.work_branch}</span>}
+              {ctx.pull_request_url && (
+                <a className="chip ok" href={ctx.pull_request_url} target="_blank" rel="noreferrer">
+                  Pull request ↗
+                </a>
+              )}
+            </div>
+          )}
           <dl className="meta">
             <div>
               <dt>Policy</dt>
@@ -73,6 +117,17 @@ export function SessionView({ info, me, onChanged, onError }: Props) {
           </dl>
         </div>
         {canAct && !ended && (
+          <div className="session-actions">
+            {info.status === "awaiting_input" && isRepo && detail?.role?.delivery === "pull_request" && (
+              <button className="btn primary" onClick={() => setDelivering(true)}>
+                Deliver…
+              </button>
+            )}
+            {info.status === "awaiting_input" && (
+              <button className="btn" onClick={finish} title="End the session; the work stays as it is">
+                Finish
+              </button>
+            )}
           <button
             className="btn stop-button"
             onClick={stop}
@@ -82,6 +137,7 @@ export function SessionView({ info, me, onChanged, onError }: Props) {
             <span className="stop-icon" aria-hidden />
             {stopping ? "Stopping…" : "STOP AGENT"}
           </button>
+          </div>
         )}
       </section>
 
@@ -99,7 +155,9 @@ export function SessionView({ info, me, onChanged, onError }: Props) {
       <nav className="tabs" role="tablist">
         {(
           [
+            ["conversation", "Conversation"],
             ["activity", `Activity (${timeline.filter((t) => t.type !== "event").length})`],
+            ...(isRepo ? [["changes", "Changes"]] : []),
             ["output", `Output (${output.length})`],
             ["audit", "Audit"],
           ] as [Tab, string][]
@@ -116,9 +174,22 @@ export function SessionView({ info, me, onChanged, onError }: Props) {
         ))}
       </nav>
 
+      {tab === "conversation" && <Conversation info={info} me={me} events={events} onError={onError} />}
       {tab === "activity" && <Timeline items={timeline} sessionId={info.id} onError={onError} />}
+      {tab === "changes" && <ChangesView sessionId={info.id} status={info.status} onError={onError} />}
       {tab === "output" && <Output lines={output} />}
       {tab === "audit" && <Audit sessionId={info.id} events={events} onError={onError} />}
+      {delivering && (
+        <DeliverDialog
+          sessionId={info.id}
+          proposal={detail?.proposal ?? null}
+          onClose={() => {
+            setDelivering(false);
+            onChanged();
+          }}
+          onError={onError}
+        />
+      )}
     </div>
   );
 }

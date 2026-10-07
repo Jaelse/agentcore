@@ -55,6 +55,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./deploy/agentcore.toml:/etc/agentcore/agentcore.toml:ro
       - ./policies:/etc/agentcore/policies:ro
+      - ./roles:/etc/agentcore/roles:ro
       # Workspaces are bind-mounted into sandboxes by the host's Docker daemon,
       # so the data directory must have the same path inside and outside.
       - ${AGENTCORE_DATA}:${AGENTCORE_DATA}

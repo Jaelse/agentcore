@@ -202,14 +202,35 @@ pub async fn handle(
             }),
         ),
         "ping" => rpc_result(&id, json!({})),
-        "tools/list" => rpc_result(&id, json!({ "tools": tools() })),
+        "tools/list" => {
+            let mut list = tools().as_array().cloned().unwrap_or_default();
+            list.extend(session.external_tools());
+            rpc_result(&id, json!({ "tools": list }))
+        }
         "tools/call" => {
             let name = params
                 .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
-            match to_action(name, &args) {
+            let external = session
+                .external_tools()
+                .iter()
+                .any(|t| t["name"].as_str() == Some(name));
+            let mapped = if external {
+                // Role tools (GitHub, propose_pull_request) are policy-checked
+                // tool calls executed by agentcore, not in the sandbox.
+                Ok((
+                    Action::ToolCall {
+                        tool: name.to_string(),
+                        arguments: args.clone(),
+                    },
+                    None,
+                ))
+            } else {
+                to_action(name, &args)
+            };
+            match mapped {
                 Err(message) => rpc_result(&id, tool_text(message, true)),
                 Ok((action, contents)) => match session.request_action(action, contents).await {
                     Ok(outcome) => rpc_result(&id, render_outcome(outcome)),

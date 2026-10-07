@@ -18,6 +18,9 @@ audit_fsync = false
 dir = "policies"
 default = "default"
 
+[roles]
+dir = "roles"
+
 [sandbox]
 backend = "process"
 

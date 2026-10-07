@@ -22,15 +22,41 @@ pub(crate) async fn read_limited<R: AsyncRead + Unpin>(
     }
 }
 
-/// Run a child to completion collecting bounded stdout/stderr.
+/// Raw result of a finished child process.
+pub(crate) struct RawOutput {
+    pub exit_code: Option<i32>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub truncated: bool,
+    pub timed_out: bool,
+}
+
+/// Run a child to completion collecting bounded stdout/stderr as text.
 /// `on_timeout` runs before the direct child is killed, so backends can take
 /// down the whole process tree.
 pub(crate) async fn collect(
-    mut child: tokio::process::Child,
+    child: tokio::process::Child,
     timeout: std::time::Duration,
     max: usize,
     on_timeout: impl FnOnce(),
 ) -> std::io::Result<crate::ExecOutput> {
+    let raw = collect_raw(child, timeout, max, on_timeout).await?;
+    Ok(crate::ExecOutput {
+        exit_code: raw.exit_code,
+        stdout: String::from_utf8_lossy(&raw.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&raw.stderr).into_owned(),
+        truncated: raw.truncated,
+        timed_out: raw.timed_out,
+    })
+}
+
+/// Like [`collect`], keeping stdout and stderr as bytes (binary-safe).
+pub(crate) async fn collect_raw(
+    mut child: tokio::process::Child,
+    timeout: std::time::Duration,
+    max: usize,
+    on_timeout: impl FnOnce(),
+) -> std::io::Result<RawOutput> {
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let out = tokio::spawn(async move {
@@ -68,10 +94,10 @@ pub(crate) async fn collect(
     };
     let (stdout, t1) = finish(out).await?;
     let (stderr, t2) = finish(err).await?;
-    Ok(crate::ExecOutput {
+    Ok(RawOutput {
         exit_code: status.and_then(|s| s.code()),
-        stdout: String::from_utf8_lossy(&stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        stdout,
+        stderr,
         truncated: t1 || t2,
         timed_out,
     })

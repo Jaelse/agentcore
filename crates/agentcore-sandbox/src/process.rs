@@ -59,7 +59,18 @@ impl SandboxProvider for ProcessProvider {
             .await
             .map_err(SandboxError::io("resolve workspace"))?;
         tracing::warn!(session = %request.session_id, "using the insecure `process` sandbox backend");
+        // HOME lives next to the workspace, so agent state (e.g. opencode's
+        // sessions) does not show up as changes in the repository.
+        let name = root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let home = root.with_file_name(format!("{name}.home"));
+        tokio::fs::create_dir_all(&home)
+            .await
+            .map_err(SandboxError::io("create agent home"))?;
         Ok(Arc::new(ProcessSandbox {
+            home,
             root,
             path: self
                 .config
@@ -75,6 +86,7 @@ impl SandboxProvider for ProcessProvider {
 
 pub struct ProcessSandbox {
     root: PathBuf,
+    home: PathBuf,
     path: String,
     killed: AtomicBool,
     /// Process group ids of everything we started.
@@ -121,7 +133,7 @@ impl ProcessSandbox {
             .current_dir(cwd)
             .env_clear()
             .env("PATH", &self.path)
-            .env("HOME", &self.root)
+            .env("HOME", &self.home)
             .env("AGENTCORE_WORKSPACE", &self.root)
             // Stop git from discovering a repository *above* the workspace
             // (e.g. the agentcore checkout itself when data_dir is inside it).

@@ -3,11 +3,14 @@
 Secure runtime layer for AI agents: sandboxed tools, policy-based permissions,
 human approval, and audit logs. Written in Rust, works with any MCP agent.
 
-agentcore lets a team run AI coding agents (opencode today, any CLI or MCP agent
-tomorrow) as **supervised coworkers**: each agent works in its own isolated
-sandbox, every side effect goes through a policy that people wrote, risky steps
-wait for a human, everything is visible live in a web UI, one click stops it,
-and an append-only, tamper-evident log records what happened.
+agentcore lets a team run AI agents (opencode today, any CLI or MCP agent
+tomorrow) as **supervised coworkers inside the team's normal workflow**: they
+pick up GitHub issues from the board, work in an isolated sandbox on a checkout
+of the repository, follow the team's own conventions, talk with their
+supervisor, and deliver pull requests that move the card to review. Every side
+effect goes through a policy people wrote, risky steps wait for a human,
+everything is visible live in a web UI, one click stops it, and an append-only,
+tamper-evident log records what happened.
 
 ```
 ┌────────────── Web UI (React) ──────────────┐
@@ -31,7 +34,10 @@ and an append-only, tamper-evident log records what happened.
 | Requirement | How agentcore covers it |
 |---|---|
 | Run open code securely | Per-session container: `--cap-drop=ALL`, `no-new-privileges`, read-only root fs, non-root user, pid/memory/cpu limits, `--network=none` or an internal-only network, optional gVisor/Kata runtime. |
-| Coworker for developers | Agents get a workspace plus MCP tools (`run_command`, `read_file`, `write_file`, `list_files`) that are checked against policy on every call. |
+| Coworker for the team | Projects link a GitHub repository and its Projects board (kanban, sprints). Start an agent on a card: it gets a sandboxed checkout, the issue with its discussion, and role-specific GitHub tools (issues, milestones, board, discussions). |
+| Ways of working | **Roles** (developer, project manager, marketing, or your own) define how the agent works: playbook, the team's own convention files from the repository, tools, board transitions, and **checks** that must pass before work leaves the sandbox. See [docs/WAYS_OF_WORKING.md](docs/WAYS_OF_WORKING.md). |
+| Conversation | Agents wait after each turn; send follow-ups ("also add tests") and they continue in the same workspace and conversation. |
+| Review & delivery | *Changes* tab with commits and diff. *Deliver* runs the checks, pushes the agent's branch with agentcore's credentials, opens/updates the PR (issue link, AI disclosure) and moves the card to *In review*. |
 | Hostable | Single binary + static UI, PostgreSQL, Docker image, docker-compose with an isolated sandbox network, token auth with admin/operator/viewer roles. |
 | Model gateway | Agents call LLMs through agentcore with a per-session token. Real API keys are stored AES-256-GCM encrypted in PostgreSQL and never enter a sandbox; per-provider model allow-lists and per-session call limits apply. Every call is logged with token usage and full request/response. **Stop** aborts calls that are still streaming. Providers are managed in the web UI. |
 | See what the agent does | Live timeline of every action, policy verdict, approval and outcome, plus raw agent output, streamed over SSE. |
@@ -81,6 +87,18 @@ Put a TLS-terminating reverse proxy in front of port 8080. Read
 [SECURITY.md](SECURITY.md) before exposing it; in particular, the Docker
 socket gives agentcore root-equivalent access to its host.
 
+## Working with GitHub
+
+1. **Settings → GitHub** (admin): paste a token (a bot account or fine-grained
+   token with contents, issues, pull requests, projects and discussions access
+   to the repositories you link). It is stored encrypted; agents never see it.
+2. **Projects → New project** (admin): repository, base branch, agent, default
+   role, optionally the GitHub Projects board (owner + number, status column
+   names, sprint field), and notes for agents.
+3. On the project's board, **Start agent** on a card, pick a role, add
+   instructions if needed. Follow the conversation, answer, review the
+   *Changes*, then **Deliver**.
+
 ## Running opencode
 
 The `opencode` agent is defined in `agentcore.example.toml` and
@@ -129,17 +147,20 @@ agentcore hash-token '<token>'
 | `crates/agentcore-audit` | Hash-chained audit log |
 | `crates/agentcore-sandbox` | `Sandbox` trait; Docker and (dev-only) process backends |
 | `crates/agentcore-runtime` | Session supervisor, approvals, kill switch, adapters |
-| `crates/agentcore-store` | PostgreSQL: sessions, model providers (encrypted keys), model calls, admin log |
+| `crates/agentcore-roles` | Roles (playbooks): instructions, team conventions, tools, workflow, checks |
+| `crates/agentcore-store` | PostgreSQL: sessions, model providers, GitHub connection (encrypted secrets), projects, model calls, changes, admin log |
 | `crates/agentcore-server` | REST/SSE API, MCP tool gateway, model gateway, auth, config, UI hosting |
 | `crates/agentcore-cli` | The `agentcore` binary |
 | `web/` | React + TypeScript web UI (Vite) |
-| `policies/` | Bundled policies: `default`, `read-only`, `supervised` |
+| `policies/` | Guardrail policies: `default`, `read-only`, `supervised`, `project-management`, `marketing` |
+| `roles/` | Roles: `developer`, `project-manager`, `marketing` |
 | `docs/` | Architecture, policies, EU AI Act mapping |
 
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md): components, the life of an action, how to add an agent or sandbox backend.
-- [Policies](docs/POLICIES.md): policy language reference.
+- [Ways of working](docs/WAYS_OF_WORKING.md): guardrails vs. roles vs. checks, writing your own roles, how agents fit sprints and kanban.
+- [Policies](docs/POLICIES.md): guardrail policy language reference.
 - [EU AI Act](docs/EU_AI_ACT.md): how agentcore supports the obligations for providers and deployers.
 - [Security](SECURITY.md): threat model and hardening.
 

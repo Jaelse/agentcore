@@ -95,16 +95,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentcore-roles"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "agentcore-runtime"
 version = "0.1.0"
 dependencies = [
  "agentcore-audit",
  "agentcore-core",
  "agentcore-policy",
+ "agentcore-roles",
  "agentcore-sandbox",
  "async-trait",
  "chrono",
  "hex",
+ "regex",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -139,11 +154,14 @@ dependencies = [
  "agentcore-audit",
  "agentcore-core",
  "agentcore-policy",
+ "agentcore-roles",
  "agentcore-runtime",
  "agentcore-sandbox",
  "agentcore-store",
  "anyhow",
+ "async-trait",
  "axum",
+ "base64 0.22.1",
  "chrono",
  "futures",
  "globset",
@@ -153,6 +171,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "thiserror",
  "tokio",
  "tokio-stream",
  "toml",
@@ -1626,6 +1645,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
  "bitflags",
+]
+
+[[package]]
+name = "regex"
+version = "1.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
 ]
 
 [[package]]

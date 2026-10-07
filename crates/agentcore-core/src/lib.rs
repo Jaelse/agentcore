@@ -11,6 +11,7 @@ pub mod event;
 pub mod model;
 pub mod principal;
 pub mod session;
+pub mod work;
 
 pub use action::{Action, ActionKind, ActionOutcome, Verdict};
 pub use agent::{AgentAdapter, AgentSpec, LaunchContext, LaunchPlan};
@@ -18,6 +19,9 @@ pub use event::{Event, EventKind, OutputStream};
 pub use model::{ModelCallOutcome, ModelEndpoint, ProviderKind};
 pub use principal::Principal;
 pub use session::{SessionId, SessionInfo, SessionStatus};
+pub use work::{
+    ChangedFile, Changes, CheckResult, Commit, IssueRef, PullRequestProposal, SessionContext,
+};
 
 /// Marker placed in the environment of every sandboxed agent and attached to
 /// generated artefacts so downstream consumers can tell the content was

@@ -10,6 +10,8 @@ pub enum SessionStatus {
     Pending,
     Running,
     AwaitingApproval,
+    /// The agent finished a turn and waits for a message from a human.
+    AwaitingInput,
     Stopped,
     Completed,
     Failed,
@@ -36,4 +38,6 @@ pub struct SessionInfo {
     pub actions: u64,
     #[serde(default)]
     pub model_calls: u64,
+    #[serde(default)]
+    pub context: crate::SessionContext,
 }

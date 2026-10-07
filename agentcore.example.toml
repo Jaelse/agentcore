@@ -39,6 +39,9 @@ audit_retention_days = 183
 dir = "policies"
 default = "default"
 
+[roles]
+dir = "roles"
+
 [sandbox]
 backend = "docker"          # "process" = no isolation, development only
 

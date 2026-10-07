@@ -4,6 +4,7 @@ export type SessionStatus =
   | "pending"
   | "running"
   | "awaiting_approval"
+  | "awaiting_input"
   | "stopped"
   | "completed"
   | "failed";
@@ -44,6 +45,43 @@ export interface SessionInfo {
   pending_approvals: number;
   actions: number;
   model_calls: number;
+  context: SessionContext;
+}
+
+export interface SessionContext {
+  role?: string;
+  project_id?: string;
+  project_name?: string;
+  repository?: string;
+  base_branch?: string;
+  issue?: { number: number; title: string; url: string };
+  work_branch?: string;
+  delivery_branch?: string;
+  pull_request_url?: string;
+}
+
+export interface CheckResult {
+  name: string;
+  passed: boolean;
+  optional: boolean;
+  skipped: boolean;
+  detail: string;
+}
+
+export interface PullRequestProposal {
+  title: string;
+  body: string;
+}
+
+export interface Changes {
+  base: string;
+  head: string | null;
+  commits: { sha: string; author: string; subject: string }[];
+  files: { path: string; status: string; additions: number | null; deletions: number | null }[];
+  patch: string;
+  patch_truncated: boolean;
+  uncommitted: boolean;
+  captured_at: string;
 }
 
 export interface PendingApproval {
@@ -66,6 +104,14 @@ export type EventKind =
   | { event: "session_created"; agent: string; task: string; policy: string; policy_digest: string; created_by: Principal }
   | { event: "sandbox_started"; backend: string; details: unknown }
   | { event: "agent_started"; program: string; args: string[] }
+  | { event: "workspace_prepared"; repository: string; branch: string; base_commit: string }
+  | { event: "role_applied"; role: string; role_digest: string; repo_docs: string[]; prompt_sha256: string }
+  | { event: "turn_started"; turn: number }
+  | { event: "turn_ended"; turn: number; exit_code: number | null }
+  | { event: "user_message"; by: Principal; text: string }
+  | { event: "checks_completed"; requested_by: Principal; passed: boolean; results: CheckResult[] }
+  | { event: "pull_request_proposed"; proposal: PullRequestProposal }
+  | { event: "delivered"; by: Principal; branch: string; commit: string; pull_request_url: string | null }
   | { event: "output"; stream: "stdout" | "stderr"; line: string }
   | { event: "action_requested"; action_id: string; action: Action; requested_by: Principal }
   | { event: "policy_evaluated"; action_id: string; verdict: Verdict }
@@ -96,6 +142,84 @@ export type AgentEvent = EventBase & EventKind;
 export type ModelCallOutcome = "completed" | "rejected" | "upstream_error" | "aborted";
 
 export type Role = "viewer" | "operator" | "admin";
+
+export interface TeamRole {
+  name: string;
+  title: string;
+  description: string;
+  policy: string | null;
+  capabilities: string[];
+  tools: string[];
+  repo_docs: string[];
+  instructions: string;
+  workflow: { on_start: string | null; on_deliver: string | null; announce_on_issue: boolean };
+  delivery: { kind: "pull_request" | "none"; branch: string; draft: boolean };
+  checks: { name: string; optional: boolean; kind: string; pattern?: string; run?: string; when_exists?: string }[];
+  digest: string;
+}
+
+export interface BoardConfig {
+  owner: string;
+  number: number;
+  status_field: string;
+  iteration_field: string | null;
+  columns: { ready: string; in_progress: string; in_review: string; done: string };
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  repo_owner: string;
+  repo_name: string;
+  default_branch: string;
+  agent: string;
+  role: string;
+  board: BoardConfig | null;
+  notes: string;
+  updated_at: string;
+  updated_by: string;
+}
+
+export interface BoardItem {
+  id: string;
+  status: string | null;
+  iteration: string | null;
+  content_type: string;
+  number: number | null;
+  title: string;
+  url: string | null;
+  state: string | null;
+  repository: string | null;
+  labels: string[];
+  assignees: string[];
+  milestone: string | null;
+}
+
+export interface Board {
+  id: string;
+  title: string;
+  url: string | null;
+  columns: string[];
+  current_iteration: string | null;
+  items: BoardItem[];
+}
+
+export interface IssueSummary {
+  number: number;
+  title: string;
+  state: string;
+  url: string;
+  labels: string[];
+  assignees: string[];
+  milestone: string | null;
+}
+
+export interface GitHubConnection {
+  config: { api_url: string; web_url: string; commit_name: string; commit_email: string };
+  token_hint: string;
+  updated_at: string;
+  updated_by: string;
+}
 
 export interface Me {
   name: string;

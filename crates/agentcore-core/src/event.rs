@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    Action, ActionOutcome, ModelCallOutcome, Principal, SessionId, SessionStatus, Verdict,
+    Action, ActionOutcome, CheckResult, ModelCallOutcome, Principal, PullRequestProposal,
+    SessionId, SessionStatus, Verdict,
 };
 
 /// A single, immutable fact about a session. Events are numbered per session
@@ -39,9 +40,51 @@ pub enum EventKind {
         backend: String,
         details: serde_json::Value,
     },
+    /// The repository was checked out into the workspace.
+    WorkspacePrepared {
+        repository: String,
+        branch: String,
+        base_commit: String,
+    },
+    /// The role (playbook) and the team convention files given to the agent.
+    RoleApplied {
+        role: String,
+        role_digest: String,
+        repo_docs: Vec<String>,
+        /// SHA-256 of the full first prompt (instructions + task).
+        prompt_sha256: String,
+    },
     AgentStarted {
         program: String,
         args: Vec<String>,
+    },
+    /// One agent run. Multi-turn sessions have several.
+    TurnStarted {
+        turn: u32,
+    },
+    TurnEnded {
+        turn: u32,
+        exit_code: Option<i32>,
+    },
+    /// A message from a human to the agent (follow-up instruction, answer).
+    UserMessage {
+        by: Principal,
+        text: String,
+    },
+    ChecksCompleted {
+        requested_by: Principal,
+        passed: bool,
+        results: Vec<CheckResult>,
+    },
+    PullRequestProposed {
+        proposal: PullRequestProposal,
+    },
+    /// Work left agentcore: a branch was pushed / a pull request opened.
+    Delivered {
+        by: Principal,
+        branch: String,
+        commit: String,
+        pull_request_url: Option<String>,
     },
     /// A line of output produced by the agent process.
     Output {
@@ -110,7 +153,15 @@ impl EventKind {
         match self {
             Self::SessionCreated { .. } => "session_created",
             Self::SandboxStarted { .. } => "sandbox_started",
+            Self::WorkspacePrepared { .. } => "workspace_prepared",
+            Self::RoleApplied { .. } => "role_applied",
             Self::AgentStarted { .. } => "agent_started",
+            Self::TurnStarted { .. } => "turn_started",
+            Self::TurnEnded { .. } => "turn_ended",
+            Self::UserMessage { .. } => "user_message",
+            Self::ChecksCompleted { .. } => "checks_completed",
+            Self::PullRequestProposed { .. } => "pull_request_proposed",
+            Self::Delivered { .. } => "delivered",
             Self::Output { .. } => "output",
             Self::ActionRequested { .. } => "action_requested",
             Self::PolicyEvaluated { .. } => "policy_evaluated",

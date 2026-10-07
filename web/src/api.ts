@@ -1,4 +1,13 @@
 import type {
+  Board,
+  BoardConfig,
+  Changes,
+  CheckResult,
+  GitHubConnection,
+  IssueSummary,
+  Project,
+  PullRequestProposal,
+  TeamRole,
   AdminEvent,
   AgentEvent,
   Me,
@@ -30,7 +39,11 @@ export function setToken(token: string | null) {
 }
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(
+    public status: number,
+    message: string,
+    public body?: Record<string, unknown>,
+  ) {
     super(message);
   }
 }
@@ -48,14 +61,18 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   });
   if (!res.ok) {
     let message = res.statusText;
+    let body: Record<string, unknown> | undefined;
     try {
-      message = (await res.json()).error ?? message;
+      body = await res.json();
+      message = (body?.error as string) ?? message;
     } catch {
       // Non-JSON error body.
     }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, body);
   }
-  return res.status === 204 ? (undefined as T) : res.json();
+  // 202/204 and other empty bodies carry no JSON.
+  const text = await res.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 export const api = {
@@ -63,10 +80,55 @@ export const api = {
   systemCard: () => request<SystemCard>("GET", "/system-card"),
   sessions: () => request<SessionInfo[]>("GET", "/sessions"),
   session: (id: string) =>
-    request<{ session: SessionInfo; policy: { name: string; digest: string }; approvals: PendingApproval[] }>(
-      "GET",
-      `/sessions/${id}`,
+    request<{
+      session: SessionInfo;
+      live: boolean;
+      policy: { name: string; digest: string };
+      approvals: PendingApproval[];
+      proposal: PullRequestProposal | null;
+      role: { name: string; title: string; delivery: "pull_request" | "none"; checks: string[] } | null;
+    }>("GET", `/sessions/${id}`),
+  sendMessage: (id: string, text: string) => request<void>("POST", `/sessions/${id}/messages`, { text }),
+  finish: (id: string) => request<void>("POST", `/sessions/${id}/finish`),
+  changes: (id: string) => request<Changes | null>("GET", `/sessions/${id}/changes`),
+  runChecks: (id: string) => request<{ passed: boolean; checks: CheckResult[] }>("POST", `/sessions/${id}/checks`),
+  deliver: (id: string, body: { title?: string; body?: string; draft?: boolean }) =>
+    request<{ branch: string; commit: string; pull_request: { number: number; url: string }; checks: CheckResult[] }>(
+      "POST",
+      `/sessions/${id}/deliver`,
+      body,
     ),
+  roles: () => request<TeamRole[]>("GET", "/roles"),
+  github: () => request<GitHubConnection | null>("GET", "/integrations/github"),
+  saveGithub: (body: {
+    token?: string;
+    api_url: string;
+    web_url: string;
+    commit_name: string;
+    commit_email: string;
+  }) => request<GitHubConnection>("PUT", "/integrations/github", body),
+  testGithub: () => request<{ login: string }>("POST", "/integrations/github/test"),
+  deleteGithub: () => request<void>("DELETE", "/integrations/github"),
+  projects: () => request<Project[]>("GET", "/projects"),
+  saveProject: (
+    id: string | null,
+    body: {
+      name: string;
+      repository: string;
+      default_branch: string;
+      agent: string;
+      role: string;
+      board: BoardConfig | null;
+      notes: string;
+    },
+  ) => (id ? request<Project>("PUT", `/projects/${id}`, body) : request<Project>("POST", "/projects", body)),
+  deleteProject: (id: string) => request<void>("DELETE", `/projects/${id}`),
+  board: (id: string) => request<{ board: Board; config: BoardConfig }>("GET", `/projects/${id}/board`),
+  issues: (id: string, state = "open") => request<IssueSummary[]>("GET", `/projects/${id}/issues?state=${state}`),
+  startProjectSession: (
+    id: string,
+    body: { issue_number?: number; task?: string; role?: string; agent?: string; policy?: string },
+  ) => request<SessionInfo>("POST", `/projects/${id}/sessions`, body),
   createSession: (agent: string, task: string, policy?: string) =>
     request<SessionInfo>("POST", "/sessions", { agent, task, policy: policy || undefined }),
   stop: (id: string, reason?: string) => request<SessionInfo>("POST", `/sessions/${id}/stop`, { reason }),

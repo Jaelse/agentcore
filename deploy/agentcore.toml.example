@@ -5,6 +5,8 @@ bind = "0.0.0.0:8080"
 # How sandboxes reach agentcore over the internal network.
 gateway_url = "http://agentcore:8080"
 ui_dir = "/opt/agentcore/web/dist"
+# Public URL of the web UI, used for links in GitHub comments.
+# public_url = "https://agentcore.example.com"
 
 # Required when binding to a non-loopback address.
 # Generate with: docker compose run --rm agentcore hash-token '<token>'
@@ -37,6 +39,9 @@ audit_retention_days = 183
 [policies]
 dir = "/etc/agentcore/policies"
 default = "default"
+
+[roles]
+dir = "/etc/agentcore/roles"
 
 [sandbox]
 backend = "docker"

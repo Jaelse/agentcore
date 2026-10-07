@@ -8,6 +8,9 @@ import { Sidebar } from "./components/Sidebar";
 import { SessionView } from "./components/SessionView";
 import { SystemCardDialog } from "./components/SystemCardDialog";
 import { Settings } from "./components/Settings";
+import { Projects } from "./components/Projects";
+
+type View = "sessions" | "projects" | "settings";
 
 export default function App() {
   const [me, setMe] = useState<Me | null>(null);
@@ -16,7 +19,7 @@ export default function App() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [selected, setSelected] = useState<string | null>(() => location.hash.slice(1) || null);
   const [showCard, setShowCard] = useState(false);
-  const [view, setView] = useState<"sessions" | "settings">("sessions");
+  const [view, setView] = useState<View>("sessions");
   const [providerCount, setProviderCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -115,6 +118,17 @@ export default function App() {
         <main className="main settings-main">
           <Settings me={me} onError={handleError} />
         </main>
+      ) : view === "projects" ? (
+        <Projects
+          me={me}
+          card={card}
+          onStarted={(s) => {
+            setSelected(s.id);
+            setView("sessions");
+            refresh();
+          }}
+          onError={handleError}
+        />
       ) : (
       <div className={`layout ${current ? "has-session" : ""}`}>
         <Sidebar

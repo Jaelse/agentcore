@@ -24,6 +24,8 @@ pub struct Config {
     #[serde(default)]
     pub policies: PoliciesConfig,
     #[serde(default)]
+    pub roles: RolesConfig,
+    #[serde(default)]
     pub sandbox: SandboxConfig,
     #[serde(default)]
     pub transparency: Transparency,
@@ -40,6 +42,8 @@ pub struct ServerConfig {
     pub gateway_url: Option<String>,
     /// Directory with the built web UI (`web/dist`).
     pub ui_dir: PathBuf,
+    /// Public URL of the web UI, used for links in GitHub comments.
+    pub public_url: Option<String>,
     /// Authenticated operators. When empty, the server only accepts
     /// connections on a loopback address and treats callers as `local`.
     pub operators: Vec<Operator>,
@@ -51,6 +55,7 @@ impl Default for ServerConfig {
             bind: "127.0.0.1:8080".parse().expect("valid address"),
             gateway_url: None,
             ui_dir: "web/dist".into(),
+            public_url: None,
             operators: Vec::new(),
         }
     }
@@ -140,6 +145,21 @@ impl Default for StorageConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+pub struct RolesConfig {
+    /// Directory with role (playbook) files.
+    pub dir: PathBuf,
+}
+
+impl Default for RolesConfig {
+    fn default() -> Self {
+        Self {
+            dir: "roles".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct PoliciesConfig {
     pub dir: PathBuf,
     pub default: String,
@@ -210,6 +230,7 @@ impl Config {
         for p in [
             &mut config.storage.data_dir,
             &mut config.policies.dir,
+            &mut config.roles.dir,
             &mut config.server.ui_dir,
         ] {
             if p.is_relative() {

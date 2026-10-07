@@ -7,6 +7,7 @@
 //! * `admin_events`: who changed configuration.
 
 mod crypto;
+mod teamwork;
 #[doc(hidden)]
 pub mod testing;
 
@@ -22,6 +23,9 @@ use sqlx::types::Json;
 use uuid::Uuid;
 
 pub use crypto::{Cipher, MASTER_KEY_ENV};
+pub use teamwork::{
+    BoardColumns, BoardConfig, GitHubConfig, GitHubConnection, GitHubUpdate, Project, ProjectInput,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -75,6 +79,7 @@ struct SessionRow {
     actions: i64,
     model_calls: i64,
     audit_path: String,
+    context: Json<agentcore_core::SessionContext>,
 }
 
 /// A session as persisted.
@@ -100,6 +105,7 @@ impl From<SessionRow> for SessionRecord {
                 pending_approvals: 0,
                 actions: row.actions.max(0) as u64,
                 model_calls: row.model_calls.max(0) as u64,
+                context: row.context.0,
             },
             policy_digest: row.policy_digest,
             audit_path: row.audit_path.into(),
@@ -237,7 +243,7 @@ fn validate_url(url: &str) -> Result<String> {
     Ok(url.to_string())
 }
 
-fn key_hint(key: &str) -> String {
+pub(crate) fn key_hint(key: &str) -> String {
     let chars: Vec<char> = key.chars().collect();
     let tail: String = chars[chars.len().saturating_sub(4)..].iter().collect();
     format!("…{tail}")
@@ -270,11 +276,11 @@ impl Store {
         let info = &record.info;
         sqlx::query(
             "INSERT INTO sessions (id, agent, task, policy, policy_digest, status, created_by,
-                                   created_at, ended_at, actions, model_calls, audit_path)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                                   created_at, ended_at, actions, model_calls, audit_path, context)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
              ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status,
                  ended_at = EXCLUDED.ended_at, actions = EXCLUDED.actions,
-                 model_calls = EXCLUDED.model_calls",
+                 model_calls = EXCLUDED.model_calls, context = EXCLUDED.context",
         )
         .bind(info.id)
         .bind(&info.agent)
@@ -288,6 +294,7 @@ impl Store {
         .bind(info.actions as i64)
         .bind(info.model_calls as i64)
         .bind(record.audit_path.to_string_lossy().as_ref())
+        .bind(Json(&info.context))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -296,7 +303,7 @@ impl Store {
     pub async fn list_sessions(&self, limit: i64) -> Result<Vec<SessionRecord>> {
         let rows: Vec<SessionRow> = sqlx::query_as(
             "SELECT id, agent, task, policy, policy_digest, status, created_by, created_at,
-                    ended_at, actions, model_calls, audit_path
+                    ended_at, actions, model_calls, audit_path, context
              FROM sessions ORDER BY created_at DESC LIMIT $1",
         )
         .bind(limit)
@@ -308,7 +315,7 @@ impl Store {
     pub async fn get_session(&self, id: SessionId) -> Result<Option<SessionRecord>> {
         let row: Option<SessionRow> = sqlx::query_as(
             "SELECT id, agent, task, policy, policy_digest, status, created_by, created_at,
-                    ended_at, actions, model_calls, audit_path
+                    ended_at, actions, model_calls, audit_path, context
              FROM sessions WHERE id = $1",
         )
         .bind(id)
@@ -324,7 +331,7 @@ impl Store {
             "UPDATE sessions SET status = 'failed', ended_at = now()
              WHERE status NOT IN ('stopped', 'completed', 'failed')
              RETURNING id, agent, task, policy, policy_digest, status, created_by, created_at,
-                       ended_at, actions, model_calls, audit_path",
+                       ended_at, actions, model_calls, audit_path, context",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -601,7 +608,7 @@ impl Store {
     }
 }
 
-async fn admin_event(
+pub(crate) async fn admin_event(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     actor: &str,
     action: &str,

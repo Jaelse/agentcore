@@ -9,9 +9,11 @@ pub mod api;
 pub mod auth;
 pub mod config;
 mod error;
+pub mod github;
 pub mod llm;
 pub mod mcp;
 pub mod sessions;
+pub mod teamwork;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,7 +24,7 @@ use agentcore_runtime::{AdapterRegistry, RuntimeConfig, SessionManager};
 use agentcore_store::{Cipher, Store};
 use anyhow::Context;
 use axum::Router;
-use axum::routing::{any, get, patch, post};
+use axum::routing::{any, get, patch, post, put};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
@@ -34,8 +36,11 @@ pub struct AppState {
     pub manager: Arc<SessionManager>,
     pub config: Arc<Config>,
     pub store: Store,
-    /// Client for upstream model providers.
+    /// Client for upstream model providers and GitHub.
     pub http: reqwest::Client,
+    pub roles: Arc<agentcore_roles::RoleSet>,
+    /// Sessions with a delivery in progress.
+    pub delivering: Arc<tokio::sync::Mutex<std::collections::HashSet<uuid::Uuid>>>,
 }
 
 impl AppState {
@@ -44,6 +49,15 @@ impl AppState {
     pub async fn new(config: Config) -> anyhow::Result<Self> {
         let policies = PolicySet::load_dir(&config.policies.dir)
             .with_context(|| format!("loading policies from {}", config.policies.dir.display()))?;
+        let roles = agentcore_roles::RoleSet::load_dir(&config.roles.dir)
+            .with_context(|| format!("loading roles from {}", config.roles.dir.display()))?;
+        for role in roles.iter() {
+            if let Some(policy) = &role.policy
+                && policies.get(policy).is_none()
+            {
+                anyhow::bail!("role `{}` uses unknown policy `{policy}`", role.name);
+            }
+        }
         let provider = config.sandbox.provider()?;
         let cipher = Cipher::load_or_create(&config.master_key_file())?;
         let store = Store::connect(&config.database_url()?, cipher)
@@ -75,6 +89,8 @@ impl AppState {
             config: Arc::new(config),
             store,
             http,
+            roles: Arc::new(roles),
+            delivering: Arc::default(),
         })
     }
 }
@@ -109,7 +125,34 @@ pub fn router(state: AppState) -> Router {
             "/providers/{name}",
             patch(api::update_provider).delete(api::delete_provider),
         )
-        .route("/admin-events", get(api::admin_events));
+        .route("/admin-events", get(api::admin_events))
+        .route("/roles", get(teamwork::list_roles))
+        .route(
+            "/integrations/github",
+            get(teamwork::get_github)
+                .put(teamwork::put_github)
+                .delete(teamwork::delete_github),
+        )
+        .route("/integrations/github/test", post(teamwork::test_github))
+        .route(
+            "/projects",
+            get(teamwork::list_projects).post(teamwork::create_project),
+        )
+        .route(
+            "/projects/{id}",
+            put(teamwork::update_project).delete(teamwork::delete_project),
+        )
+        .route("/projects/{id}/board", get(teamwork::project_board))
+        .route("/projects/{id}/issues", get(teamwork::project_issues))
+        .route(
+            "/projects/{id}/sessions",
+            post(teamwork::start_project_session),
+        )
+        .route("/sessions/{id}/messages", post(teamwork::send_message))
+        .route("/sessions/{id}/finish", post(teamwork::finish_session))
+        .route("/sessions/{id}/changes", get(teamwork::changes))
+        .route("/sessions/{id}/checks", post(teamwork::run_checks))
+        .route("/sessions/{id}/deliver", post(teamwork::deliver_session));
 
     let ui_dir = &state.config.server.ui_dir;
     let ui = ServeDir::new(ui_dir).fallback(ServeFile::new(ui_dir.join("index.html")));

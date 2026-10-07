@@ -1,6 +1,9 @@
 use agentcore_core::{ModelCallOutcome, Principal, ProviderKind, SessionInfo, SessionStatus};
 use agentcore_store::testing::fresh_store;
-use agentcore_store::{ModelCallRecord, NewProvider, ProviderUpdate, SessionRecord, StoreError};
+use agentcore_store::{
+    BoardConfig, GitHubConfig, GitHubUpdate, ModelCallRecord, NewProvider, ProjectInput,
+    ProviderUpdate, SessionRecord, StoreError,
+};
 use chrono::Utc;
 use uuid::Uuid;
 
@@ -18,6 +21,7 @@ fn session(status: SessionStatus) -> SessionRecord {
             pending_approvals: 0,
             actions: 3,
             model_calls: 0,
+            context: Default::default(),
         },
         policy_digest: "abc".into(),
         audit_path: "/data/audit/x.jsonl".into(),
@@ -234,4 +238,97 @@ async fn opencode_zen_defaults_to_the_free_public_key() {
         store.create_provider(anthropic, "alice").await,
         Err(StoreError::Invalid(_))
     ));
+}
+
+#[tokio::test]
+async fn github_connection_and_projects() {
+    let Some((store, _)) = fresh_store().await else {
+        return;
+    };
+    assert!(store.github_connection().await.unwrap().is_none());
+    // A token is required the first time.
+    let no_token = GitHubUpdate {
+        token: None,
+        config: GitHubConfig::default(),
+    };
+    assert!(store.set_github(no_token, "root").await.is_err());
+    let conn = store
+        .set_github(
+            GitHubUpdate {
+                token: Some("ghp_secret1234".into()),
+                config: GitHubConfig::default(),
+            },
+            "root",
+        )
+        .await
+        .unwrap();
+    assert_eq!(conn.token_hint, "…1234");
+    // Updating settings keeps the token.
+    let config = GitHubConfig {
+        commit_name: "team-bot".into(),
+        ..Default::default()
+    };
+    store
+        .set_github(
+            GitHubUpdate {
+                token: None,
+                config,
+            },
+            "root",
+        )
+        .await
+        .unwrap();
+    let (config, token) = store.github_credentials().await.unwrap().unwrap();
+    assert_eq!(
+        (config.commit_name.as_str(), token.as_str()),
+        ("team-bot", "ghp_secret1234")
+    );
+    let events = store.admin_events(10).await.unwrap();
+    assert!(
+        events
+            .iter()
+            .all(|e| !e.details.0.to_string().contains("ghp_"))
+    );
+
+    let input = |name: &str| ProjectInput {
+        name: name.into(),
+        repository: "https://github.com/acme/api".into(),
+        default_branch: "main".into(),
+        agent: "opencode".into(),
+        role: "developer".into(),
+        board: Some(BoardConfig {
+            owner: "acme".into(),
+            number: 3,
+            status_field: "Status".into(),
+            iteration_field: Some("Sprint".into()),
+            columns: Default::default(),
+        }),
+        notes: "Be nice.".into(),
+    };
+    let p = store
+        .save_project(None, input("API"), "root")
+        .await
+        .unwrap();
+    assert_eq!(p.repository(), "acme/api");
+    assert_eq!(p.board.as_ref().unwrap().columns.in_review, "In Review");
+    assert!(matches!(
+        store.save_project(None, input("API"), "root").await,
+        Err(StoreError::Conflict(_))
+    ));
+    let mut renamed = input("API v2");
+    renamed.repository = "acme/api2".into();
+    let p2 = store
+        .save_project(Some(p.id), renamed, "root")
+        .await
+        .unwrap();
+    assert_eq!((p2.id, p2.repo_name.as_str()), (p.id, "api2"));
+    let mut bad = input("bad");
+    bad.repository = "nope".into();
+    assert!(matches!(
+        store.save_project(None, bad, "root").await,
+        Err(StoreError::Invalid(_))
+    ));
+    assert_eq!(store.list_projects().await.unwrap().len(), 1);
+    store.delete_project(p.id, "root").await.unwrap();
+    assert!(store.get_project(p.id).await.unwrap().is_none());
 }

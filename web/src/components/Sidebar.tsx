@@ -37,6 +37,13 @@ export function Sidebar({ me, card, sessions, selected, onSelect, onCreated, onE
                 <strong>{s.agent}</strong>
                 <StatusPill status={s.status} />
               </div>
+              {s.context?.project_name && (
+                <div className="muted small">
+                  📁 {s.context.project_name}
+                  {s.context.issue && ` · #${s.context.issue.number}`}
+                  {s.context.role && ` · ${s.context.role}`}
+                </div>
+              )}
               <div className="session-task">{s.task}</div>
               <div className="muted small">
                 {new Date(s.created_at).toLocaleString()} · {s.actions} actions · {s.model_calls ?? 0} model calls

@@ -54,6 +54,7 @@ fn agent(name: &str, script: &str) -> AgentSpec {
         args: vec!["-c".into(), script.into()],
         env: Default::default(),
         policy: None,
+        follow_up_args: vec![],
     }
 }
 

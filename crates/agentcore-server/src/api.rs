@@ -115,7 +115,11 @@ pub async fn create_session(
         ));
     }
     let models = state.store.enabled_endpoints().await?;
-    let session = state.manager.create(request, caller.principal(), models)?;
+    let options = agentcore_runtime::SessionOptions {
+        models,
+        ..Default::default()
+    };
+    let session = state.manager.create(request, caller.principal(), options)?;
     state.persist(&session).await;
     state.follow(session.clone());
     Ok((StatusCode::CREATED, Json(json!(session.info()))))
@@ -128,15 +132,31 @@ pub async fn get_session(
 ) -> ApiResult<Json<Value>> {
     let session = state.lookup(id).await?;
     let info = session.info();
-    let approvals = match &session {
-        SessionRef::Live(s) => json!(s.pending_approvals()),
-        SessionRef::Archived(_) => json!([]),
+    let (approvals, proposal) = match &session {
+        SessionRef::Live(s) => (json!(s.pending_approvals()), json!(s.proposal())),
+        SessionRef::Archived(_) => {
+            let proposal = session
+                .events()
+                .await?
+                .into_iter()
+                .rev()
+                .find_map(|e| match e.kind {
+                    agentcore_core::EventKind::PullRequestProposed { proposal } => Some(proposal),
+                    _ => None,
+                });
+            (json!([]), json!(proposal))
+        }
     };
     Ok(Json(json!({
         "session": info,
         "live": matches!(session, SessionRef::Live(_)),
         "policy": { "name": info.policy, "digest": session.policy_digest() },
         "approvals": approvals,
+        "proposal": proposal,
+        "role": info.context.role.as_ref().and_then(|r| state.roles.get(r)).map(|r| json!({
+            "name": r.name, "title": r.display_title(), "delivery": r.delivery.kind,
+            "checks": r.checks.iter().map(|c| &c.name).collect::<Vec<_>>(),
+        })),
     })))
 }
 

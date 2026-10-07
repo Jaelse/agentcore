@@ -3,14 +3,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use agentcore_audit::AuditLog;
-use agentcore_core::{AgentSpec, ModelEndpoint, Principal, SessionId, SessionInfo};
+use agentcore_core::{AgentSpec, Principal, SessionId, SessionInfo};
 use agentcore_policy::PolicySet;
 use agentcore_sandbox::SandboxProvider;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::session::{Session, SessionParams};
-use crate::{AdapterRegistry, RuntimeError};
+use crate::{AdapterRegistry, RuntimeError, SessionOptions};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
@@ -92,13 +92,12 @@ impl SessionManager {
         self.provider.name()
     }
 
-    /// Create a session and start it in the background. `models` are the
-    /// providers the agent may reach through the model gateway.
+    /// Create a session and start it in the background.
     pub fn create(
         &self,
         request: CreateSession,
         by: Principal,
-        models: Vec<ModelEndpoint>,
+        options: SessionOptions,
     ) -> Result<Arc<Session>, RuntimeError> {
         let spec = self
             .agents
@@ -107,6 +106,7 @@ impl SessionManager {
             .ok_or_else(|| RuntimeError::UnknownAgent(request.agent.clone()))?;
         let policy_name = request
             .policy
+            .or_else(|| options.role.as_ref().and_then(|r| r.policy.clone()))
             .or_else(|| spec.policy.clone())
             .unwrap_or_else(|| self.config.default_policy.clone());
         let policy = self
@@ -133,7 +133,7 @@ impl SessionManager {
             created_by: by,
             policy,
             audit,
-            models,
+            options,
         })?;
         self.sessions
             .write()

@@ -33,6 +33,15 @@ Trust boundaries:
   working when the session ends.
 * Only the `admin` role can add, rotate or delete provider keys; keys are never
   returned by the API, and every change is logged with its actor.
+* The GitHub token is encrypted at rest like provider keys. Agents use GitHub
+  only through agentcore tools bound to the project's repository and board,
+  limited by the role's capabilities and checked by the guardrail policy.
+* Git: the token is passed to git as an HTTP header through environment
+  variables (never on the command line or in a config file); hooks, fsmonitor
+  and credential helpers are disabled for every git command agentcore runs.
+  Work leaves the sandbox only as a git bundle (data), fetched into a bare
+  mirror the agent never touches, and only the session's branch is pushed,
+  after the role's checks pass and a human clicks *Deliver*.
 * Secrets passed to agents (`{env:NAME}`) go into the environment, which is
   never audited, and never into the audited command line.
 
@@ -50,6 +59,9 @@ Trust boundaries:
 - [ ] Use provider API keys with spending limits, and set `allowed_models`.
 - [ ] Use a dedicated PostgreSQL role and TLS (`?sslmode=require`) for remote databases.
 - [ ] Restrict access to the `model_calls` table: it contains prompts and responses.
+- [ ] Use a dedicated bot account or fine-grained token for GitHub with access
+      only to the repositories and boards agents work on; protect `main` with
+      branch protection and required reviews so agent PRs need human approval.
 - [ ] Store `data/` on an encrypted volume with backups; restrict who can read audit logs.
 - [ ] Never use the `process` backend outside local development.
 

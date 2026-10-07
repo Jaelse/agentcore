@@ -34,6 +34,10 @@ pub struct AgentSpec {
     /// Name of the policy applied when the session does not choose one.
     #[serde(default)]
     pub policy: Option<String>,
+    /// Arguments for follow-up turns (`{task}` is the human's message), for
+    /// CLI agents that can continue a conversation. Empty = single run.
+    #[serde(default)]
+    pub follow_up_args: Vec<String>,
 }
 
 /// Everything an adapter needs to know to build a launch plan.
@@ -116,4 +120,16 @@ pub trait AgentAdapter: Send + Sync {
     fn id(&self) -> &'static str;
 
     fn plan(&self, spec: &AgentSpec, ctx: &LaunchContext) -> Result<LaunchPlan, AdapterError>;
+
+    /// Plan for a follow-up turn that continues the same conversation with a
+    /// new message from a human. `None` means the agent cannot continue and
+    /// the session ends after the first run.
+    fn follow_up(
+        &self,
+        _spec: &AgentSpec,
+        _ctx: &LaunchContext,
+        _message: &str,
+    ) -> Result<Option<LaunchPlan>, AdapterError> {
+        Ok(None)
+    }
 }

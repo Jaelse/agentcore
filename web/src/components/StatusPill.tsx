@@ -4,6 +4,7 @@ const LABELS: Record<SessionStatus, string> = {
   pending: "Starting",
   running: "Running",
   awaiting_approval: "Needs approval",
+  awaiting_input: "Waiting for you",
   stopped: "Stopped",
   completed: "Completed",
   failed: "Failed",

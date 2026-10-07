@@ -109,9 +109,16 @@ impl AppState {
                 match rx.recv().await {
                     Ok(event) => match event.kind {
                         EventKind::SessionEnded { .. } => break,
-                        EventKind::StatusChanged { .. }
-                        | EventKind::ActionCompleted { .. }
-                        | EventKind::ModelCall { .. } => state.persist(&session).await,
+                        EventKind::StatusChanged { status } => {
+                            state.persist(&session).await;
+                            // A turn ended: keep the latest change snapshot.
+                            if status == agentcore_core::SessionStatus::AwaitingInput {
+                                state.persist_changes(&session).await;
+                            }
+                        }
+                        EventKind::ActionCompleted { .. }
+                        | EventKind::ModelCall { .. }
+                        | EventKind::Delivered { .. } => state.persist(&session).await,
                         _ => {}
                     },
                     Err(RecvError::Lagged(_)) => state.persist(&session).await,
@@ -119,7 +126,16 @@ impl AppState {
                 }
             }
             state.persist(&session).await;
+            state.persist_changes(&session).await;
         });
+    }
+
+    pub async fn persist_changes(&self, session: &Session) {
+        if let Some(changes) = session.last_changes()
+            && let Err(err) = self.store.save_changes(session.id(), &changes).await
+        {
+            tracing::error!(session = %session.id(), error = %err, "failed to store changes");
+        }
     }
 }
 

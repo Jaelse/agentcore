@@ -7,6 +7,7 @@ use axum::response::{IntoResponse, Response};
 pub struct ApiError {
     status: StatusCode,
     message: String,
+    body: Option<serde_json::Value>,
 }
 
 impl ApiError {
@@ -14,6 +15,16 @@ impl ApiError {
         Self {
             status,
             message: message.into(),
+            body: None,
+        }
+    }
+
+    /// An error with a structured JSON body (must contain `error`).
+    pub fn with_body(status: StatusCode, body: serde_json::Value) -> Self {
+        Self {
+            status,
+            message: body["error"].as_str().unwrap_or_default().to_string(),
+            body: Some(body),
         }
     }
 }
@@ -27,7 +38,8 @@ impl From<RuntimeError> for ApiError {
             RuntimeError::UnknownAgent(_) | RuntimeError::UnknownPolicy(_) => {
                 StatusCode::BAD_REQUEST
             }
-            RuntimeError::NotRunning => StatusCode::CONFLICT,
+            RuntimeError::NotRunning | RuntimeError::NotAwaitingInput => StatusCode::CONFLICT,
+            RuntimeError::Workspace(_) => StatusCode::CONFLICT,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         Self::new(status, err.to_string())
@@ -58,10 +70,9 @@ impl IntoResponse for ApiError {
         if self.status.is_server_error() {
             tracing::error!(status = %self.status, error = %self.message, "request failed");
         }
-        (
-            self.status,
-            Json(serde_json::json!({ "error": self.message })),
-        )
-            .into_response()
+        let body = self
+            .body
+            .unwrap_or_else(|| serde_json::json!({ "error": self.message }));
+        (self.status, Json(body)).into_response()
     }
 }
