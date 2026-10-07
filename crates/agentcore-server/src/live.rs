@@ -39,9 +39,11 @@ pub async fn stream(
         }
         SessionRef::Archived(_) => stream::empty().boxed(),
     };
-    let ended = sse::Event::default().event("ended").data("{}");
+    // `lagged`: reconnect (and get a fresh screen). `ended`: the session is over.
+    let lagged = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = lagged.clone();
     let events = frames
-        .scan(false, |stop, item| {
+        .scan(false, move |stop, item| {
             if *stop {
                 return futures::future::ready(None);
             }
@@ -52,12 +54,19 @@ pub async fn stream(
                     .unwrap_or_else(|_| sse::Event::default().event("error")),
                 Err(()) => {
                     *stop = true;
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
                     sse::Event::default().event("lagged").data("{}")
                 }
             };
             futures::future::ready(Some(out))
         })
-        .chain(stream::once(async move { ended }))
+        .chain(
+            stream::once(async move {
+                (!lagged.load(std::sync::atomic::Ordering::SeqCst))
+                    .then(|| sse::Event::default().event("ended").data("{}"))
+            })
+            .filter_map(futures::future::ready),
+        )
         .map(Ok);
     Ok(Sse::new(events).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }

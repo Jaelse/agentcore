@@ -10,6 +10,7 @@ import type {
   TeamRole,
   AdminEvent,
   AgentEvent,
+  LiveFrame,
   Me,
   ModelCallRecord,
   PendingApproval,
@@ -131,6 +132,23 @@ export const api = {
   ) => request<SessionInfo>("POST", `/projects/${id}/sessions`, body),
   createSession: (agent: string, task: string, policy?: string) =>
     request<SessionInfo>("POST", "/sessions", { agent, task, policy: policy || undefined }),
+  pause: (id: string) => request<SessionInfo>("POST", `/sessions/${id}/pause`),
+  resume: (id: string) => request<SessionInfo>("POST", `/sessions/${id}/resume`),
+  /** The terminal recording (asciicast v2), or null if there is none. */
+  async recording(id: string): Promise<string | null> {
+    const res = await fetch(`/api/v1/sessions/${id}/recording`, { headers: headers() });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new ApiError(res.status, res.statusText);
+    return res.text();
+  },
+  async downloadRecording(id: string) {
+    const res = await fetch(`/api/v1/sessions/${id}/recording`, { headers: headers() });
+    if (!res.ok) throw new ApiError(res.status, res.statusText);
+    const url = URL.createObjectURL(await res.blob());
+    const a = Object.assign(document.createElement("a"), { href: url, download: `agentcore-${id}.cast` });
+    a.click();
+    URL.revokeObjectURL(url);
+  },
   stop: (id: string, reason?: string) => request<SessionInfo>("POST", `/sessions/${id}/stop`, { reason }),
   stopAll: (reason?: string) => request<{ stopped: number }>("POST", "/stop-all", { reason }),
   decide: (id: string, approvalId: string, approved: boolean, comment?: string) =>
@@ -165,6 +183,72 @@ export const api = {
     URL.revokeObjectURL(url);
   },
 };
+
+/** Read a server-sent event stream, calling `onMessage(type, data)` per message. */
+async function readSse(res: Response, onMessage: (type: string, data: string) => void) {
+  if (!res.body) return;
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    buffer += value;
+    let split: number;
+    while ((split = buffer.indexOf("\n\n")) >= 0) {
+      const frame = buffer.slice(0, split);
+      buffer = buffer.slice(split + 2);
+      let type = "message";
+      const data: string[] = [];
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event:")) type = line.slice(6).trim();
+        else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+      }
+      if (data.length) onMessage(type, data.join("\n"));
+    }
+  }
+}
+
+/**
+ * Watch a running session's live view (terminal, model stream, files,
+ * processes). Every (re)connection starts with a `terminal_reset` frame
+ * carrying the recent screen. `onEnded` fires when the session is over.
+ */
+export function streamLive(
+  sessionId: string,
+  onFrame: (f: LiveFrame) => void,
+  onConnected: (connected: boolean) => void,
+  onEnded: () => void,
+): () => void {
+  const controller = new AbortController();
+  const run = async () => {
+    while (!controller.signal.aborted) {
+      let ended = false;
+      try {
+        const res = await fetch(`/api/v1/sessions/${sessionId}/live`, {
+          headers: headers({ Accept: "text/event-stream" }),
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new ApiError(res.status, res.statusText);
+        onConnected(true);
+        await readSse(res, (type, data) => {
+          if (type === "frame") onFrame(JSON.parse(data) as LiveFrame);
+          else if (type === "ended") ended = true;
+        });
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        if (err instanceof ApiError && err.status === 404) return;
+      }
+      onConnected(false);
+      if (ended) {
+        onEnded();
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  };
+  void run();
+  return () => controller.abort();
+}
 
 /**
  * Subscribe to a session's server-sent events. Uses fetch (not EventSource)

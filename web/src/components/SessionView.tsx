@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { useEventStream, useSessionModel } from "../hooks";
 import type { ActionRecord, ModelCallEvent, TimelineItem } from "../hooks";
@@ -9,6 +9,10 @@ import { Conversation } from "./Conversation";
 import { ChangesView } from "./ChangesView";
 import { DeliverDialog } from "./DeliverDialog";
 
+// xterm.js is large: load the live view only when it is opened.
+const LiveView = lazy(() => import("./LiveView").then((m) => ({ default: m.LiveView })));
+const Replay = lazy(() => import("./LiveView").then((m) => ({ default: m.Replay })));
+
 interface Props {
   info: SessionInfo;
   me: Me;
@@ -16,15 +20,16 @@ interface Props {
   onError: (err: unknown) => void;
 }
 
-type Tab = "conversation" | "activity" | "changes" | "output" | "audit";
+type Tab = "live" | "conversation" | "activity" | "changes" | "output" | "audit";
 
 type Detail = Awaited<ReturnType<typeof api.session>>;
 
 export function SessionView({ info, me, onChanged, onError }: Props) {
   const { events, connected } = useEventStream(info.id);
   const { timeline, output, pending } = useSessionModel(events);
-  const [tab, setTab] = useState<Tab>("conversation");
+  const [tab, setTab] = useState<Tab>(TERMINAL.includes(info.status) ? "conversation" : "live");
   const [stopping, setStopping] = useState(false);
+  const [pausing, setPausing] = useState(false);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [delivering, setDelivering] = useState(false);
   const ended = TERMINAL.includes(info.status);
@@ -46,6 +51,19 @@ export function SessionView({ info, me, onChanged, onError }: Props) {
       onChanged();
     } catch (err) {
       onError(err);
+    }
+  };
+
+  const togglePause = async () => {
+    setPausing(true);
+    try {
+      if (info.status === "paused") await api.resume(info.id);
+      else await api.pause(info.id);
+      onChanged();
+    } catch (err) {
+      onError(err);
+    } finally {
+      setPausing(false);
     }
   };
 
@@ -128,6 +146,20 @@ export function SessionView({ info, me, onChanged, onError }: Props) {
                 Finish
               </button>
             )}
+            {info.status !== "pending" && (
+              <button
+                className={`btn pause-button ${info.status === "paused" ? "resume" : ""}`}
+                onClick={togglePause}
+                disabled={pausing}
+                title={
+                  info.status === "paused"
+                    ? "Unfreeze the agent; it continues exactly where it was"
+                    : "Freeze the agent and everything it runs, without losing any state"
+                }
+              >
+                {info.status === "paused" ? "▶ Resume" : "❚❚ Pause"}
+              </button>
+            )}
           <button
             className="btn stop-button"
             onClick={stop}
@@ -155,6 +187,7 @@ export function SessionView({ info, me, onChanged, onError }: Props) {
       <nav className="tabs" role="tablist">
         {(
           [
+            ["live", ended ? "Replay" : "● Live"],
             ["conversation", "Conversation"],
             ["activity", `Activity (${timeline.filter((t) => t.type !== "event").length})`],
             ...(isRepo ? [["changes", "Changes"]] : []),
@@ -174,6 +207,15 @@ export function SessionView({ info, me, onChanged, onError }: Props) {
         ))}
       </nav>
 
+      {tab === "live" && (
+        <Suspense fallback={<p className="muted pad">Loading the live view…</p>}>
+          {ended ? (
+            <Replay info={info} onError={onError} />
+          ) : (
+            <LiveView info={info} timeline={timeline} onEnded={onChanged} />
+          )}
+        </Suspense>
+      )}
       {tab === "conversation" && <Conversation info={info} me={me} events={events} onError={onError} />}
       {tab === "activity" && <Timeline items={timeline} sessionId={info.id} onError={onError} />}
       {tab === "changes" && <ChangesView sessionId={info.id} status={info.status} onError={onError} />}
@@ -429,6 +471,16 @@ function LifecycleRow({ event }: { event: AgentEvent }) {
     case "agent_started":
       text = `Agent started: ${event.program}`;
       break;
+    case "paused":
+      text = `Paused by ${principalLabel(event.by)}`;
+      tone = "attention";
+      break;
+    case "resumed":
+      text = `Resumed by ${principalLabel(event.by)}`;
+      break;
+    case "recording_closed":
+      text = `Terminal recording saved (${(event.bytes / 1024).toFixed(1)} KiB, sha256:${event.sha256.slice(0, 12)}…)`;
+      break;
     case "stop_requested":
       text = `Stop requested by ${principalLabel(event.by)}: ${event.reason}`;
       tone = "bad";
@@ -457,11 +509,11 @@ function Output({ lines }: { lines: Extract<AgentEvent, { event: "output" }>[] }
     if (follow && ref.current) ref.current.scrollTop = ref.current.scrollHeight;
   }, [lines.length, follow]);
   return (
-    <div className="terminal-wrap">
+    <div className="output-wrap">
       <label className="follow small">
         <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} /> Follow output
       </label>
-      <div className="terminal" ref={ref}>
+      <div className="output-log" ref={ref}>
         {lines.length === 0 && <span className="muted">No output yet.</span>}
         {lines.map((l) => (
           <div key={l.id} className={l.stream}>

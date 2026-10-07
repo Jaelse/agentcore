@@ -5,6 +5,7 @@ export type SessionStatus =
   | "running"
   | "awaiting_approval"
   | "awaiting_input"
+  | "paused"
   | "stopped"
   | "completed"
   | "failed";
@@ -135,6 +136,9 @@ export type EventKind =
     }
   | { event: "status_changed"; status: SessionStatus }
   | { event: "stop_requested"; by: Principal; reason: string }
+  | { event: "paused"; by: Principal }
+  | { event: "resumed"; by: Principal }
+  | { event: "recording_closed"; file: string; bytes: number; sha256: string }
   | { event: "session_ended"; status: SessionStatus; exit_code: number | null; reason: string | null };
 
 export type AgentEvent = EventBase & EventKind;
@@ -312,3 +316,29 @@ export function actionSummary(a: Action): string {
       return `tool ${a.tool}`;
   }
 }
+
+// ---- live view (crates/agentcore-core/src/live.rs) ----
+
+export type ModelDeltaKind = "text" | "thinking" | "tool_name" | "tool_input";
+
+export interface FileChange {
+  path: string;
+  kind: "created" | "modified" | "removed";
+  at: string;
+}
+
+export interface ProcessInfo {
+  pid: number;
+  elapsed: string;
+  command: string;
+}
+
+export type LiveFrame =
+  | { frame: "terminal"; data: string }
+  | { frame: "terminal_reset"; data: string; cols: number; rows: number }
+  | { frame: "tool_output"; action_id: string; stream: "stdout" | "stderr"; data: string }
+  | { frame: "model_start"; call_id: string; provider: string; model: string | null }
+  | { frame: "model_delta"; call_id: string; kind: ModelDeltaKind; text: string }
+  | { frame: "model_end"; call_id: string }
+  | { frame: "files"; changes: FileChange[] }
+  | { frame: "processes"; processes: ProcessInfo[] };

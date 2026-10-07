@@ -67,6 +67,12 @@ function build(events: AgentEvent[]): Item[] {
       case "delivered":
         items.push({ kind: "delivered", url: e.pull_request_url, branch: e.branch, by: principalLabel(e.by), at: e.timestamp });
         break;
+      case "paused":
+        items.push({ kind: "note", text: `Paused by ${principalLabel(e.by)}`, at: e.timestamp, tone: "attention" });
+        break;
+      case "resumed":
+        items.push({ kind: "note", text: `Resumed by ${principalLabel(e.by)}`, at: e.timestamp, tone: "ok" });
+        break;
       case "stop_requested":
         items.push({ kind: "note", text: `Stopped by ${principalLabel(e.by)}: ${e.reason}`, at: e.timestamp, tone: "bad" });
         break;
@@ -149,7 +155,8 @@ export function Conversation({
           </div>
         </form>
       )}
-      {info.status === "running" && <p className="muted small pad">The agent is working…</p>}
+      {info.status === "running" && <p className="muted small pad">The agent is working… (watch it in the Live tab)</p>}
+      {info.status === "paused" && <p className="muted small pad">The agent is paused.</p>}
     </div>
   );
 }
