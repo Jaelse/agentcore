@@ -10,6 +10,25 @@ apart, because they are enforced differently:
 | **Role** (playbook) | How does someone in this job work here? Which tools does the job need? | `roles/*.toml` + the team's own files in the repository | Instructions given to the agent; tools it is (not) given |
 | **Checks** | Did the work follow the conventions? | `[[checks]]` in the role | agentcore, before work leaves the sandbox |
 
+```mermaid
+flowchart LR
+    subgraph ROLE["Role: how this job is done here"]
+        PB["Playbook"]
+        TF["Team's own files<br/>CONTRIBUTING.md · AGENTS.md ·<br/>PR template"]
+        TL["Tools for the job"]
+    end
+    PB --> AG["Agent"]
+    TF --> AG
+    TL --> AG
+    AG -- "every action" --> GR{"Guardrails<br/>(policy)"}
+    GR -- "allow" --> DO["Done"]
+    GR -- "require approval" --> HU["Human decides"] --> DO
+    GR -- "deny" --> NO["Refused"]
+    DO --> CH{"Checks<br/>(on Deliver)"}
+    CH -- "pass" --> PR["Pull request"]
+    CH -- "fail" --> AG
+```
+
 Instructions are advice; checks are proof. A model can ignore "use
 Conventional Commits", but it cannot deliver a pull request whose commits
 don't match the pattern.
@@ -106,6 +125,38 @@ every session records the role's SHA-256 so it is provable which playbook an
 agent followed.
 
 ## How it fits the team's workflow
+
+```mermaid
+flowchart LR
+    T["Todo / Ready"] -- "Start agent" --> P["In Progress<br/>agent works, you chat"]
+    P -- "Deliver: checks pass,<br/>PR opened" --> R["In Review<br/>humans review the PR"]
+    R -- "review comments: continue<br/>the session, deliver again" --> R
+    R -- "PR merged" --> D["Done"]
+```
+
+```mermaid
+sequenceDiagram
+    actor Lead as Team lead
+    participant AC as agentcore
+    participant AG as Agent (developer)
+    participant GH as GitHub
+    actor Rev as Reviewer
+    Lead->>AC: Start agent on #42
+    AC->>GH: card → In Progress, comment on the issue
+    AC->>AG: playbook + team conventions + issue
+    loop working
+        AG->>AC: tool calls (guardrails, approvals)
+    end
+    AG-->>Lead: summary or question
+    Lead->>AG: answer / "also add tests"
+    Lead->>AC: Deliver
+    AC->>AC: checks
+    AC->>GH: push branch, open PR, card → In Review
+    Rev->>GH: review comments
+    Lead->>AG: "address the review"
+    Lead->>AC: Deliver again (same PR updated)
+    Rev->>GH: approve and merge
+```
 
 1. **Plan as usual.** Issues, milestones and the GitHub Projects board stay the
    source of truth. Sprints are the board's iteration field; agentcore shows

@@ -42,6 +42,18 @@ lexically before matching, so `../../etc/passwd` is checked as `/etc/passwd`.
 
 ## Evaluation: deny overrides
 
+```mermaid
+flowchart TD
+    A["Action<br/>(paths normalised)"] --> M["Collect all matching rules"]
+    M --> D{"Any deny?"}
+    D -- "yes" --> DENY["Deny"]
+    D -- "no" --> R{"Any require_approval?"}
+    R -- "yes" --> APP["Ask a human"]
+    R -- "no" --> AL{"Any allow?"}
+    AL -- "yes" --> ALLOW["Allow"]
+    AL -- "no" --> DEF["Policy default"]
+```
+
 1. If any matching rule has `effect = "deny"`, the action is denied.
 2. Otherwise, if any matching rule requires approval, a human must approve.
 3. Otherwise, if any matching rule allows it, it is allowed.
@@ -67,6 +79,12 @@ the audit log proves which exact policy governed the session.
 | `default` | Free inside `/workspace`, common dev tools allowed, publishing and unknown commands need approval, secrets and destructive commands denied. |
 | `read-only` | Inspect only; any change is denied. |
 | `supervised` | Every action needs approval (except secret access, which is denied). |
+| `project-management` | For the project-manager role: read the repository, manage issues and the board; milestones and public posts need approval. |
+| `marketing` | For the marketing role: write drafts under `/workspace/drafts/` only; public posts need approval. |
+
+The default policy also allows reading GitHub (`github_list_*`, `github_get_*`,
+`propose_pull_request`) and requires approval for GitHub writes. A role picks
+its policy with `policy = "..."`; see [Ways of working](WAYS_OF_WORKING.md).
 
 ## Caveats
 

@@ -12,21 +12,16 @@ effect goes through a policy people wrote, risky steps wait for a human,
 everything is visible live in a web UI, one click stops it, and an append-only,
 tamper-evident log records what happened.
 
-```
-┌────────────── Web UI (React) ──────────────┐
-│ live timeline · approvals · STOP · audit   │
-│ settings: model providers & API keys       │
-└──────────────────┬─────────────────────────┘
-                   │ REST + SSE (/api/v1)
-┌──────────────────▼─────────────────────────┐  tools (MCP)  ┌───────── sandbox ─────────┐
-│ agentcore server                           │◄──────────────┤ container: no caps, ro    │
-│  session supervisor ─ policy engine        │               │ rootfs, non-root, internal│
-│  HITL approvals ─ kill switch              │◄──────────────┤ network only, opt. gVisor │
-│  model gateway ─ hash-chained audit log    │  LLM calls    │   agent (opencode, …)     │
-└───────┬────────────────────────┬───────────┘               │   /workspace              │
-        │ real API keys          │                           └───────────────────────────┘
-        ▼                        ▼
-  Anthropic / OpenAI        PostgreSQL (sessions, providers, model calls)
+```mermaid
+flowchart LR
+    B["GitHub board<br/>issue #42"] -- "Start agent" --> RO
+    subgraph AC["agentcore"]
+        RO["Role<br/>playbook + team conventions"] --> AG["Agent in a sandbox<br/>repo checkout"]
+        AG -- "every action" --> GR["Guardrails +<br/>human approval"]
+        YOU["You, in the web UI<br/>watch · chat · STOP"] <--> AG
+        GR --> CH["Checks"]
+    end
+    CH -- "Deliver" --> PR["Pull request<br/>card → In Review"]
 ```
 
 ## Features
@@ -112,9 +107,11 @@ through your policy.
    `process` backend, install it on your machine (`npm i -g opencode-ai`).
 2. In the web UI, open **Settings** and add a model provider. Only admins can
    do this. Either:
-   - **OpenCode Zen** (name `opencode`, leave the API key empty): opencode's
-     free models such as **Big Pickle**, no account needed; or
-   - **Anthropic** / **OpenAI** with your API key.
+   - **Anthropic** / **OpenAI** with your API key; or
+   - **OpenCode Zen** (name `opencode`) with a Zen API key from
+     [opencode.ai/zen](https://opencode.ai/zen). Zen's keyless free tier only
+     accepts requests coming directly from the opencode app, so it does not
+     work through agentcore's gateway.
 3. Go back to **Sessions**, pick **opencode**, choose a policy, describe the
    task and click **Start agent**.
 
@@ -123,9 +120,9 @@ so it works on the internal-only sandbox network: the sandbox needs no
 internet access. Each LLM call shows up in the session's activity timeline
 with tokens, timing and the full request and response.
 
-With OpenCode Zen, agentcore keeps opencode on Zen's free tier (it picks Big
-Pickle by default; force it with `args = ["run", "--model", "opencode/big-pickle", "{task}"]`).
-Paid Zen models are not offered to opencode, even with a paid Zen key.
+With OpenCode Zen, opencode only offers Zen's free models (Big Pickle is the
+default; force it with `args = ["run", "--model", "opencode/big-pickle", "{task}"]`),
+billed through your Zen key. Paid Zen models are not offered to opencode.
 
 ## CLI
 
@@ -158,8 +155,11 @@ agentcore hash-token '<token>'
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md): components, the life of an action, how to add an agent or sandbox backend.
+- [Architecture](docs/ARCHITECTURE.md): components, session lifecycle, the life of an action, gateways, repository and delivery, data model, adding agents and sandbox backends.
 - [Ways of working](docs/WAYS_OF_WORKING.md): guardrails vs. roles vs. checks, writing your own roles, how agents fit sprints and kanban.
+- [Deployment](docs/DEPLOYMENT.md): topology, install, macOS notes, operations.
+- [Configuration](docs/CONFIGURATION.md): every setting and environment variable.
+- [API](docs/API.md): operator API, live event stream, tool and model gateways.
 - [Policies](docs/POLICIES.md): guardrail policy language reference.
 - [EU AI Act](docs/EU_AI_ACT.md): how agentcore supports the obligations for providers and deployers.
 - [Security](SECURITY.md): threat model and hardening.

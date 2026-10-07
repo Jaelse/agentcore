@@ -1,206 +1,452 @@
 # Architecture
 
-## Components
+This document explains how agentcore is built and how its parts interact.
+For *using* it, start with the [README](../README.md); for the concepts behind
+roles, read [Ways of working](WAYS_OF_WORKING.md).
 
-```
-agentcore-cli ──► agentcore-server ──► agentcore-runtime ──► agentcore-sandbox
-                       │                    │   │                (docker | process)
-                       │                    │   └──► agentcore-policy
-                       │                    └──────► agentcore-audit
-                       ├── agentcore-store ──► PostgreSQL
-                       └── web/ (React UI, served as static files)
-                 all crates share agentcore-core (types)
+- [System overview](#system-overview)
+- [Crates](#crates)
+- [Session lifecycle](#session-lifecycle)
+- [Event pipeline](#event-pipeline)
+- [Life of an action](#life-of-an-action)
+- [Stopping](#stopping)
+- [Model gateway](#model-gateway)
+- [Team work: repository, conversation, delivery](#team-work)
+- [Persistence](#persistence)
+- [Agents and adapters](#agents-and-adapters)
+- [Sandbox backends](#sandbox-backends)
+- [Roadmap](#roadmap)
+
+## System overview
+
+```mermaid
+flowchart LR
+    OP["Operators & viewers<br/>(browser)"]
+    subgraph AC["agentcore"]
+        UI["Web UI +<br/>operator API"] --> RT["Runtime<br/>sessions · policy ·<br/>approvals · audit"]
+        GW["Gateways<br/>tools /mcp · models /llm"] --> RT
+    end
+    subgraph SB["Sandbox (one per session)"]
+        AG["Agent<br/>+ /workspace checkout"]
+    end
+    OP --> UI
+    AG -- "tool & LLM calls<br/>(session token)" --> GW
+    GW -- "real API key" --> PROV["LLM providers"]
+    RT -- "GitHub token" --> GH["GitHub<br/>repo · issues · board"]
+    RT --> PG[("PostgreSQL")]
 ```
 
-* **core**: `Action` (exec, file read/write, network, generic tool call),
-  `Event` (everything that can happen in a session), `Principal` (human, agent,
-  system), and the `AgentAdapter` trait.
-* **policy**: compiles TOML policies into glob matchers and evaluates actions
-  with deny-overrides semantics. Paths are normalised before matching.
-* **audit**: one append-only JSONL file per session; each record contains the
-  SHA-256 of the previous one. Existing files are verified before they are extended.
-* **sandbox**: `SandboxProvider` creates a `Sandbox`, which can spawn the
-  agent, run tool commands, read and write workspace files, and `kill()` everything.
-* **runtime**: `SessionManager` and `Session`. A session drives the agent
-  process, gates every action through policy and approvals, and emits events.
-* **roles**: role (playbook) files, prompt composition from the playbook, the
-  team's convention files and the work item, capability → tool mapping.
-* **store**: PostgreSQL via sqlx (migrations run at startup). Holds the
-  session index, model providers (API keys AES-256-GCM encrypted with the
-  master key, provider name bound as associated data), every model call, and
-  the configuration change log.
-* **server**: axum HTTP server with the operator API, an SSE event stream, the
-  MCP tool gateway, the model gateway, bearer-token auth and the UI.
+The agent can only reach agentcore. Every side effect is a tool call through
+the tool gateway, which the runtime checks against policy and then executes
+inside the sandbox (or on GitHub); every LLM call goes through the model
+gateway. Real
+credentials (model API keys, the GitHub token) never enter the sandbox.
+
+## Crates
+
+```mermaid
+flowchart TD
+    cli["agentcore-cli<br/><i>binary</i>"] --> server
+    server["agentcore-server<br/>HTTP API · gateways · GitHub · auth"] --> runtime
+    server --> store
+    server --> roles
+    runtime["agentcore-runtime<br/>sessions · turns · approvals · adapters"] --> sandbox
+    runtime --> policy
+    runtime --> audit
+    runtime --> roles
+    store["agentcore-store<br/>PostgreSQL · encryption"]
+    sandbox["agentcore-sandbox<br/>docker · process"]
+    policy["agentcore-policy<br/>guardrails"]
+    audit["agentcore-audit<br/>hash chain"]
+    roles["agentcore-roles<br/>playbooks · checks · prompt"]
+    core["agentcore-core<br/>shared types"]
+    server -.-> core
+    runtime -.-> core
+    store -.-> core
+    sandbox -.-> core
+    policy -.-> core
+    audit -.-> core
+```
+
+| Crate | Responsibility |
+|---|---|
+| **core** | Shared types: `Action` (exec, file read/write, network, tool call), `Event`, `Principal` (human, agent, system), `SessionInfo`/`SessionContext`, `AgentAdapter`, model and work types (`Changes`, `CheckResult`, ...). |
+| **policy** | Compiles TOML guardrail policies into glob matchers and evaluates actions with deny-overrides semantics. Normalises paths before matching. |
+| **audit** | One append-only JSONL file per session; each record contains the SHA-256 of the previous one. Existing files are verified before they are extended. |
+| **sandbox** | `SandboxProvider` creates a `Sandbox` that can spawn the agent, run commands, read/write workspace files and `kill()` everything. Backends: Docker (hardened), process (dev only). |
+| **roles** | Role (playbook) files, capability → tool mapping, check definitions, and composition of the agent's first prompt. |
+| **runtime** | `SessionManager` and `Session`: turns, policy gating, approvals, stop, change snapshots, checks, git bundle export, built-in adapters. |
+| **store** | PostgreSQL: session index, model providers, GitHub connection (secrets AES-256-GCM encrypted), projects, model calls, change snapshots, admin log. |
+| **server** | axum: operator API, SSE stream, MCP tool gateway, model gateway, GitHub client and tools, repository checkout and delivery, auth, UI hosting. |
+| **cli** | `agentcore serve`, `policy check/eval`, `audit verify/show`, `hash-token`. |
+
+## Session lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> live
+    state live {
+        [*] --> pending
+        pending --> running: repo checked out, sandbox up
+        running --> awaiting_approval: an action needs a human
+        awaiting_approval --> running: decided or timed out
+        running --> awaiting_input: turn ends, agent can continue
+        awaiting_input --> running: a human sends a message
+    }
+    live --> completed: Finish, or a single-run agent exits 0
+    live --> failed: a single-run agent fails, or an error
+    live --> stopped: STOP · time budget · idle timeout · audit failure
+    completed --> [*]
+    failed --> [*]
+    stopped --> [*]
+```
+
+* A **turn** is one run of the agent process. Agents that can continue a
+  conversation (opencode with `--continue`, CLI agents with `follow_up_args`)
+  go to `awaiting_input` after each turn, with the sandbox kept alive;
+  others end after the first run.
+* While `awaiting_input`, a human can send messages, look at the changes, run
+  checks and deliver.
+* Limits from the guardrail policy: `max_session_secs` (whole session),
+  `idle_timeout_secs` (waiting for a human), `max_actions`,
+  `max_model_calls`, `approval_timeout_secs`.
+* On restart, sessions that were live are marked `failed`, their audit logs
+  closed with a `session_ended` event, and leftover containers removed.
+
+## Event pipeline
+
+Every state change is an `Event`, recorded through one function:
+
+```mermaid
+flowchart LR
+    S["Session::emit(event)"] --> A{"append to<br/>audit log"}
+    A -- "fails" --> STOP["stop the session<br/>(fail closed)"]
+    A -- "ok" --> H["in-memory state<br/>& history"]
+    H --> T["tracing<br/>(agentcore::event)"]
+    H --> B["broadcast"]
+    B --> SSE["SSE → web UI"]
+    B --> F["follower task →<br/>PostgreSQL session row"]
+```
+
+The UI, the audit log and the operational logs are three views of the same
+event sequence. If an event cannot be recorded, the agent is stopped: an
+unrecorded agent must not keep acting.
+
+## Life of an action
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant AG as Agent (sandbox)
+    participant GW as Tool gateway /mcp
+    participant RT as Session
+    participant PO as Policy
+    participant H as Human (UI)
+    participant EX as Sandbox / GitHub
+
+    AG->>GW: tools/call (session token)
+    GW->>RT: request_action(action)
+    RT->>RT: normalise (absolute paths, no "..")
+    Note over RT: event: action_requested
+    RT->>PO: evaluate
+    PO-->>RT: allow / deny / require_approval
+    Note over RT: event: policy_evaluated
+    alt require_approval
+        Note over RT: event: approval_requested
+        RT->>H: approval card
+        H-->>RT: approve / reject (+ comment)
+        Note over RT: event: approval_resolved
+    end
+    alt allowed or approved
+        RT->>EX: exec / read / write / GitHub call
+        EX-->>RT: result
+    end
+    Note over RT: event: action_completed
+    RT-->>GW: outcome
+    GW-->>AG: result, or "DENIED: reason. Do not retry."
+```
+
+Built-in tools (`run_command`, `read_file`, `write_file`, `list_files`) run in
+the sandbox. Role tools (`github_*`, `propose_pull_request`) are executed by
+agentcore, but go through exactly the same policy, approval and audit steps.
+
+## Stopping
+
+```mermaid
+sequenceDiagram
+    participant H as Human / system
+    participant RT as Session
+    participant SB as Sandbox
+    participant LLM as Model gateway
+
+    H->>RT: stop(by, reason)
+    Note over RT: event: stop_requested
+    RT->>RT: cancel token: no new actions or model calls
+    RT->>RT: drop pending approvals (resolve as rejected)
+    RT->>LLM: in-flight streams aborted
+    RT->>SB: kill() → docker rm --force / SIGKILL process groups
+    Note over RT: event: session_ended (stopped)
+```
+
+Triggered by **STOP AGENT**, **Stop all agents**, `POST /sessions/{id}/stop`,
+`POST /stop-all`, the time budget, the idle timeout, an audit failure, or
+server shutdown.
+
+## Model gateway
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant AG as Agent (sandbox)
+    participant GW as Model gateway /llm
+    participant DB as PostgreSQL
+    participant UP as Provider
+
+    AG->>GW: POST /llm/{session}/{provider}/v1/... (session token)
+    GW->>GW: token belongs to the live session? (401)
+    GW->>GW: under max_model_calls? (429) · session running? (403)
+    GW->>DB: provider + decrypted key
+    GW->>GW: provider enabled? (403) · model allowed? (403)
+    GW->>UP: same request, real key, session token stripped
+    UP-->>GW: response (streamed)
+    GW-->>AG: relayed chunk by chunk (aborted if the session stops)
+    GW->>GW: event model_call: model, status, tokens, duration, SHA-256s
+    GW->>DB: full request and response bodies
+```
+
+Every agent gets `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY` and
+`OPENAI_BASE_URL`/`OPENAI_API_KEY` pointing at the gateway (with the session
+token as the key) for the first enabled provider of each kind; the opencode
+adapter configures opencode's `anthropic`, `openai` and `opencode` (Zen)
+providers the same way. Refused calls are recorded too.
+
+## Team work
+
+### Starting an agent on an issue
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant H as Operator (UI)
+    participant S as Server
+    participant GH as GitHub
+    participant RT as Runtime
+    participant SB as Sandbox
+
+    H->>S: Start agent on #7 (role)
+    S->>GH: read issue + comments
+    S->>RT: create session (role, tools, work item)
+    S-->>GH: move card → In Progress, comment "agent started"
+    RT->>S: prepare workspace
+    S->>GH: clone (token via env) → bare mirror
+    S->>S: clone mirror → workspace, work branch, commit identity
+    RT->>SB: start sandbox (workspace mounted at /workspace)
+    RT->>SB: read the team's convention files
+    RT->>RT: compose prompt · event role_applied
+    RT->>SB: run agent (turn 1)
+```
+
+### The repository and its boundary
+
+```mermaid
+flowchart LR
+    GH["GitHub repo"] -- "clone (token)" --> M[("data/repos/{session}.git<br/>bare mirror<br/><i>agentcore only</i>")]
+    M -- "git clone file://" --> W[("data/workspaces/{session}<br/><i>agent's checkout</i>")]
+    W -- "git bundle base..HEAD<br/>(created in the sandbox)" --> BUN["bundle (bytes)"]
+    BUN -- "git fetch" --> M
+    M -- "push session branch only (token)" --> GH
+```
+
+agentcore never runs git in the agent-controlled checkout on the host.
+Everything crossing the boundary is a bundle, which is plain data. Hooks,
+fsmonitor and credential helpers are disabled for every git command agentcore
+runs, and the token is passed as an HTTP header through environment variables.
+
+### First prompt
+
+```mermaid
+flowchart LR
+    R["Role playbook<br/>(roles/*.toml)"] --> P["First prompt"]
+    D["Team's files from the repo<br/>CONTRIBUTING.md · AGENTS.md ·<br/>PR template ..."] --> P
+    N["Project notes<br/>(UI)"] --> P
+    C["Role checks"] --> P
+    I["Issue + comments<br/>(GitHub)"] --> P
+    O["Operator's instructions"] --> P
+    P --> E["event role_applied:<br/>role digest · files · prompt SHA-256"]
+```
+
+The convention files are read **inside the sandbox**, so a symlink in the
+repository cannot make agentcore read a host file.
+
+### Delivery
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant H as Operator (UI)
+    participant S as Server
+    participant RT as Session
+    participant SB as Sandbox
+    participant GH as GitHub
+
+    H->>S: Deliver (title, description)
+    S->>RT: run_checks()
+    RT->>SB: commit messages, clean tree, commands
+    Note over RT: event checks_completed
+    alt a required check failed
+        S-->>H: 409 + results → ask the agent to fix, deliver again
+    else all passed
+        S->>RT: export_bundle()
+        RT->>SB: git bundle create base..HEAD
+        SB-->>S: bundle bytes
+        S->>S: fetch into mirror, verify head
+        S->>GH: push agent branch
+        S->>GH: open or update PR (issue link, AI disclosure)
+        S->>GH: move card → In Review, comment on the issue
+        S->>RT: record_delivery · event delivered
+        S-->>H: PR link
+    end
+```
+
+Delivery is possible while the agent waits for input. After review comments,
+continue the session and deliver again: the same pull request is updated.
 
 ## Persistence
+
+```mermaid
+erDiagram
+    projects ||--o{ sessions : "context.project_id"
+    sessions ||--o{ model_calls : "made"
+    sessions ||--o| session_changes : "latest snapshot"
+    model_providers ||--o{ model_calls : "served"
+
+    sessions {
+        uuid id PK
+        text agent
+        text task
+        text policy
+        text policy_digest
+        text status
+        jsonb created_by
+        jsonb context
+        text audit_path
+    }
+    model_calls {
+        uuid id PK
+        uuid session_id FK
+        text provider
+        text model
+        text outcome
+        bigint input_tokens
+        bigint output_tokens
+        text request_body
+        text response_body
+        text request_sha256
+    }
+    model_providers {
+        text name PK
+        text kind
+        text base_url
+        bytea api_key_ciphertext
+        text_array allowed_models
+        bool enabled
+    }
+    projects {
+        uuid id PK
+        text name
+        text repo_owner
+        text repo_name
+        text default_branch
+        text role
+        jsonb board
+        text notes
+    }
+    session_changes {
+        uuid session_id PK
+        jsonb changes
+    }
+    integrations {
+        text kind PK
+        jsonb config
+        bytea secret_ciphertext
+    }
+    admin_events {
+        bigint id PK
+        text actor
+        text action
+        text target
+        jsonb details
+    }
+```
 
 | Data | Where | Why |
 |---|---|---|
 | Session events | `data/audit/<session>.jsonl` | Tamper-evident hash chain; the authoritative record |
-| Session index | `sessions` table | List and search sessions; survives restarts |
-| Model providers | `model_providers` table | Keys encrypted at rest; managed from the UI |
-| LLM requests/responses | `model_calls` table | Full bodies (hashes are also in the audit chain) |
-| Configuration changes | `admin_events` table | Who changed which provider, when |
-| Master key | `data/master.key` or `$AGENTCORE_MASTER_KEY` | Decrypts provider keys; back it up |
+| Sessions, projects, providers, GitHub connection, model calls, changes, admin log | PostgreSQL (migrations in `crates/agentcore-store/migrations`) | Queryable state that survives restarts |
+| Repository mirrors and workspaces | `data/repos/`, `data/workspaces/` | Agent checkouts and agentcore's push source |
+| Master key | `data/master.key` or `$AGENTCORE_MASTER_KEY` | Decrypts provider keys and the GitHub token; back it up |
 
-On startup agentcore marks sessions that were running when it last stopped as
-`failed`, appends a closing `session_ended` event to their audit logs, and
-removes any sandbox containers left behind.
-
-## Team work
-
-### Sessions are conversations
-
-A session runs the agent in *turns*. After each turn, if the adapter can
-continue a conversation (`AgentAdapter::follow_up`; opencode uses
-`opencode run --continue`, CLI agents can declare `follow_up_args`), the
-session waits in `awaiting_input` with the sandbox kept alive. A human message
-starts the next turn; **Finish** ends the session; the policy's
-`idle_timeout_secs` and `max_session_secs` still apply.
-
-### Repository workspace
-
-```
-GitHub ──(token, as HTTP header via env)──► data/repos/<session>.git   (bare mirror, agentcore only)
-                                               │ git clone file://
-                                               ▼
-                                        data/workspaces/<session>      (agent's checkout, mounted at /workspace)
-```
-
-The checkout happens before any agent code exists in the directory. The
-workspace gets a local work branch (from the role's branch pattern), the commit
-identity from the GitHub settings, and an `origin` without credentials.
-
-### First prompt
-
-`compose_prompt` = role playbook + the team's convention files (read inside
-the sandbox, so a symlink cannot reach host files) + project notes + the
-role's checks + the issue with its comments + the operator's instructions +
-how to deliver. Its SHA-256, the role digest and the list of files are
-recorded in a `role_applied` event.
-
-### Delivery
-
-```
-Deliver (human) ─► checks in sandbox ─► git bundle base..HEAD (in sandbox)
-               ─► read bundle bytes ─► git fetch bundle into the bare mirror (host)
-               ─► push +refs/heads/<work branch> (token) ─► create/update PR
-               ─► move board card, comment on issue ─► `delivered` event
-```
-
-agentcore never runs git inside the agent-controlled checkout on the host:
-everything crossing the boundary is a bundle, which is plain data. Hooks and
-fsmonitor are disabled for every git command agentcore runs. Only the
-session's own branch is pushed.
-
-## Model gateway
-
-```
-agent ──POST /llm/{session}/{provider}/v1/messages──► agentcore
-        x-api-key: <session token>
-          1. token must belong to the live session          → 401
-          2. session running, under max_model_calls           → 403 / 429
-          3. provider configured and enabled                 → 404 / 403
-          4. model matches the provider's allowed_models     → 403
-          5. swap in the decrypted real key, strip the token
-        ──► upstream (Anthropic / OpenAI-compatible)
-        ◄── response streamed back chunk by chunk; aborted if the session stops
-          6. audit event `model_call` (model, status, tokens, duration,
-             SHA-256 of request and response) + full bodies in `model_calls`
-```
-
-agentcore gives every agent `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` and
-`OPENAI_BASE_URL` / `OPENAI_API_KEY` that point at the gateway, using the session
-token as the key, for the first enabled provider of each kind. The opencode
-adapter also writes these into opencode's provider config. Refused calls are
-recorded too. Because LLM traffic goes through agentcore, sandboxes can run on
-an internal network with no route to the internet.
-
-## Event pipeline
-
-Every state change is an `Event` and goes through `Session::emit`, which:
-
-1. appends it to the audit log. If that fails, the session is stopped
-   (**fail closed**: an unrecorded agent must not keep acting);
-2. updates in-memory state and history;
-3. logs it via `tracing` (`target = "agentcore::event"`);
-4. broadcasts it to SSE subscribers (the UI).
-
-The UI, the audit log and the operational logs are therefore three views of the
-same event sequence.
-
-## Life of an action
-
-```
-agent ──tools/call──► /mcp/{session}  (per-session bearer token)
-        ──► Action (normalised: absolute paths, no "..", lower-case hosts)
-        ──► event: action_requested
-        ──► policy.evaluate ──► event: policy_evaluated
-              deny             ──► outcome: denied
-              require_approval ──► event: approval_requested
-                                   wait for a human / timeout / stop
-                                   ──► event: approval_resolved
-              allow / approved ──► sandbox.exec | read_file | write_file
-        ──► event: action_completed (outcome; writes record a SHA-256 of the content)
-        ──► result to the agent (denials say "do not retry")
-```
-
-## Stopping
-
-`Session::stop(by, reason)` (UI button, `POST /sessions/{id}/stop`,
-`POST /stop-all`, time budget, server shutdown):
-
-1. records `stop_requested` with the principal and reason;
-2. cancels the session token, so no further actions are accepted;
-3. drops all pending approvals (their waiters resolve as rejected);
-4. `sandbox.kill()`: `docker rm --force` (SIGKILL to every process in the
-   container), or SIGKILL to every process group for the process backend.
-
-The run loop then records `session_ended` with status `stopped`.
-
-## Agents
+## Agents and adapters
 
 An agent is configured as an `AgentSpec` (`[[agents]]` in the config) and
 launched by an `AgentAdapter`, which turns spec + task into a `LaunchPlan`
-(program, args, env). agentcore injects:
+(program, args, env), and optionally a plan for follow-up turns.
+
+```mermaid
+flowchart LR
+    SPEC["[[agents]] spec"] --> AD{"adapter"}
+    AD -- "command" --> CMD["any CLI<br/>args with {task}<br/>follow_up_args"]
+    AD -- "opencode" --> OC["opencode run<br/>native tools denied<br/>gateways configured<br/>--continue for follow-ups"]
+    CMD --> PLAN["LaunchPlan + agentcore env"]
+    OC --> PLAN
+```
+
+agentcore injects into every agent's environment (not into the audited
+arguments):
 
 | Variable | Purpose |
 |---|---|
-| `AGENTCORE_GATEWAY_URL` | MCP endpoint for this session |
-| `AGENTCORE_GATEWAY_TOKEN` | Bearer token for that endpoint only |
+| `AGENTCORE_GATEWAY_URL`, `AGENTCORE_GATEWAY_TOKEN` | MCP tool gateway for this session, and its token |
+| `AGENTCORE_MODEL_GATEWAY_URL` | Model gateway base for this session |
+| `ANTHROPIC_*`, `OPENAI_*` | Standard SDK variables pointing at the model gateway |
 | `AGENTCORE_SESSION_ID`, `AGENTCORE_WORKSPACE` | Context |
 | `AGENTCORE_AI_GENERATED` | Marker for AI-generated output (Art. 50) |
 
 Adding a new agent:
 
-* **any CLI agent**: use the `command` adapter and point the agent's MCP
-  client at `$AGENTCORE_GATEWAY_URL`;
+* **any CLI agent**: use the `command` adapter, point its MCP client at
+  `$AGENTCORE_GATEWAY_URL` and its model SDK at the standard variables;
+  set `follow_up_args` if it can continue a conversation;
 * **deeper integration**: implement `AgentAdapter` (see `OpenCodeAdapter`,
-  which disables all of opencode's native file, shell and web tools (including
-  read/grep/glob, which would bypass path rules) so the model has to
-  use the policy-checked gateway tools) and register it in `AdapterRegistry`.
+  which disables all of opencode's native file, shell and web tools,
+  including read/grep/glob, so the model has to use the policy-checked
+  gateway tools) and register it in `AdapterRegistry`.
 
 Agents with built-in tools that bypass the gateway are still confined by the
-sandbox. The policy then governs only what goes through the gateway, so
-prefer disabling native side-effecting tools as the opencode adapter does.
+sandbox, but the policy only governs what goes through the gateway, so
+disable native side-effecting tools where the agent allows it.
 
 ## Sandbox backends
 
-Implement `SandboxProvider` + `Sandbox`. Candidates on the roadmap: Firecracker
-microVMs, Kubernetes pods (one per session), and remote sandboxes.
+| Backend | Isolation | Use |
+|---|---|---|
+| `docker` | Container per session: no capabilities, `no-new-privileges`, read-only root, non-root user, resource limits, `network=none` or an internal network; optional gVisor/Kata runtime | Production |
+| `process` | None: host processes in the workspace directory | Developing agentcore only |
+
+New backends implement `SandboxProvider` + `Sandbox` (spawn, exec,
+read/write file, kill, destroy, cleanup of orphans). Candidates: Firecracker
+microVMs, Kubernetes pods, remote sandboxes.
 
 ## Roadmap
 
-* **Egress proxy**: allow network access per policy `network` rules, instead
-  of all-or-nothing.
-* **Event-driven pickup**: agents that take cards labelled `agent` from the
-  *Ready* column automatically (within a WIP limit), and that react to PR review
-  comments by continuing their session.
+* **Event-driven pickup**: agents take cards labelled `agent` from the *Ready*
+  column automatically (within a WIP limit), and react to PR review comments
+  by continuing their session.
 * **GitHub App** authentication (per-installation tokens) instead of a token.
 * **Other trackers**: GitLab, Jira, Linear behind the same project/board model.
-* **Role editor** in the UI (roles are files today).
-* **OpenTelemetry export** of traces and events; SIEM forwarding of audit logs.
-* **SSO (OIDC)** for operators; per-team policies.
-* **Spend limits**: per-session and per-provider token/cost budgets.
-* **More from the UI**: operator management, agent definitions and a policy editor.
+* **Editors in the UI** for roles, policies, agents and operators.
+* **Egress proxy**: network access per policy `network` rules.
+* **OpenTelemetry export**; SIEM forwarding of audit logs.
+* **SSO (OIDC)** for operators.
+* **Spend limits**: token/cost budgets per session and provider.
 * **External anchoring** of audit chain heads (WORM storage / transparency log).

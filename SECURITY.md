@@ -13,6 +13,28 @@ Trust boundaries:
    through agentcore tools, and adds human approval and audit.
 3. **Operator API.** Only authenticated humans can start, approve or stop.
 
+```mermaid
+flowchart LR
+    subgraph UNTRUSTED["Untrusted"]
+        AG["Agent · model output ·<br/>repository content · issue text"]
+    end
+    subgraph TRUSTED["Trusted: agentcore host"]
+        AC["agentcore<br/>policy · approvals · audit"]
+        SEC[("Secrets<br/>master key · API keys ·<br/>GitHub token")]
+    end
+    subgraph PEOPLE["Authenticated people"]
+        OP["Operators<br/>viewer · operator · admin"]
+    end
+    AG -- "only via the gateways<br/>(session token, policy-checked)" --> AC
+    OP -- "operator token" --> AC
+    AC --- SEC
+    AC -- "secrets used here,<br/>never sent into the sandbox" --> EXT["GitHub · LLM providers"]
+```
+
+Prompt injection (malicious text in an issue, a file or a web page) is
+expected: it can change what the agent *tries*, not what it is *allowed* to
+do, and every attempt is recorded.
+
 ## Defaults
 
 * Containers: `--cap-drop=ALL`, `--security-opt=no-new-privileges`,

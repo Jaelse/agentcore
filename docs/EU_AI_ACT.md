@@ -38,6 +38,22 @@ the high-risk dates.
 | **Art. 50(2)** Marking AI-generated content | Synthetic content should be marked in a machine-readable way. | `AGENTCORE_AI_GENERATED=agentcore/ai-generated` is set for the agent and every command, so tooling (e.g. a git commit hook adding an `AI-Generated:` trailer) can mark output; write outcomes record content hashes, so audited output is attributable. | Configure your tooling to apply the marker (e.g. commit trailers, PR labels). |
 | **Art. 4** AI literacy | Staff dealing with AI systems need sufficient AI literacy. | Clear UI wording; documentation of limitations. | Train operators and approvers. |
 
+## Where humans oversee the agent (Art. 14)
+
+```mermaid
+flowchart LR
+    S["A person assigns the work<br/>(role and guardrails chosen)"] --> W["Agent works"]
+    W --> A{"Risky action?"}
+    A -- "yes" --> H1["Person approves<br/>or rejects"] --> W
+    W --> T["Turn ends"]
+    T --> H2["Person reviews, answers,<br/>redirects"] --> W
+    T --> H3["Person clicks Deliver<br/>(checks must pass)"] --> PR["Pull request:<br/>normal human review"]
+    W -. "any moment" .-> STOP["STOP"]
+```
+
+Every one of these interventions is attributed to an authenticated person and
+recorded in the hash-chained audit log.
+
 ## What an audit record looks like
 
 ```json

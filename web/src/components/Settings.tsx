@@ -270,7 +270,7 @@ function AddProvider({
           >
             <option value="anthropic">Anthropic</option>
             <option value="openai">OpenAI or OpenAI-compatible</option>
-            <option value="opencode_zen">OpenCode Zen (free models such as Big Pickle)</option>
+            <option value="opencode_zen">OpenCode Zen (e.g. Big Pickle)</option>
           </select>
         </label>
         <label>
@@ -292,7 +292,7 @@ function AddProvider({
         </label>
       </div>
       <label>
-        API key{kind === "opencode_zen" && " (optional: leave empty for Zen's free models)"}
+        API key{kind === "opencode_zen" && " (from opencode.ai/zen; the keyless free tier does not work through a proxy)"}
         <input type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} />
       </label>
       <p className="muted small">
@@ -301,7 +301,7 @@ function AddProvider({
       </p>
       <button
         className="btn primary"
-        disabled={busy || (!key.trim() && kind !== "opencode_zen") || !name.trim() || taken}
+        disabled={busy || !key.trim() || !name.trim() || taken}
       >
         {busy ? "Saving…" : "Add provider"}
       </button>
