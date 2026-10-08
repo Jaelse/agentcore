@@ -12,6 +12,14 @@ Trust boundaries:
 2. **Gateway policy (fine-grained boundary).** Governs what the agent may do
    through agentcore tools, and adds human approval and audit.
 3. **Operator API.** Only authenticated humans can start, approve or stop.
+4. **Departments** (multi-agent organisations). A worker can only message its
+   own department and use its own department's files; the department is
+   taken from the agent's identity, never from tool arguments. Other
+   departments are reached only through communicators, which have no tools
+   but messaging. This limits what a manipulated agent can reach directly;
+   it does not stop a communicator from *relaying* text it was given, so
+   treat messages between departments as untrusted input and use approvals
+   (`team_send_to_department`) where information must not leave a department.
 
 ```mermaid
 flowchart LR
@@ -89,6 +97,11 @@ do, and every attempt is recorded.
       branch protection and required reviews so agent PRs need human approval.
 - [ ] Store `data/` on an encrypted volume with backups; restrict who can read audit logs and terminal recordings (`data/recordings`): they contain whatever the agent printed.
 - [ ] Never use the `process` backend outside local development.
+- [ ] Several VMs: keep `internal_url` on a private network, use TLS and a
+      dedicated role for PostgreSQL (anyone who can write to it can direct
+      agents), and give every node the same master key and operator list.
+- [ ] Set organisation limits (departments, agents per department) and each
+      node's `max_agents` to what you can supervise and pay for.
 
 ## Known limitations
 
@@ -98,6 +111,11 @@ do, and every attempt is recorded.
   target inside the container.
 * Agents with native tools that bypass the gateway are only constrained by the
   sandbox, not by policy.
+* Node-to-node requests are plain HTTP to `internal_url` unless you put TLS in
+  front of it; they carry the operator's token.
+* Communicators are language models: they can be persuaded to pass on
+  information. The department boundary controls tools and data access, not
+  what text crosses it.
 
 ## Reporting vulnerabilities
 

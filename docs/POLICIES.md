@@ -81,10 +81,28 @@ the audit log proves which exact policy governed the session.
 | `supervised` | Every action needs approval (except secret access, which is denied). |
 | `project-management` | For the project-manager role: read the repository, manage issues and the board; milestones and public posts need approval. |
 | `marketing` | For the marketing role: write drafts under `/workspace/drafts/` only; public posts need approval. |
+| `department` | Default for the workers of a [department](MULTI_AGENT.md): team messaging and department files allowed, inspection commands and workspace files allowed, everything else needs approval, secrets and destructive commands denied. Longer limits (8 h, 2000 actions) for long-lived agents. |
+| `communicator` | For every communicator (`[org].communicator_policy`): only the messaging tools are allowed, everything else is denied. |
 
 The default policy also allows reading GitHub (`github_list_*`, `github_get_*`,
 `propose_pull_request`) and requires approval for GitHub writes. A role picks
 its policy with `policy = "..."`; see [Ways of working](WAYS_OF_WORKING.md).
+
+Department agents use tool calls named `team_list_colleagues`,
+`team_read_messages`, `team_send_message`, `team_send_to_department`
+(communicators only), `team_list_files`, `team_read_file` and
+`team_write_file`. `default` and `department` allow them. To have a person
+approve messages that leave a department, give communicators a policy that
+requires approval for `team_send_to_department`:
+
+```toml
+[[rules]]
+id = "approve-outgoing"
+description = "A person approves every message to another department."
+effect = "require_approval"
+kinds = ["tool_call"]
+tools = ["team_send_to_department"]
+```
 
 ## Caveats
 

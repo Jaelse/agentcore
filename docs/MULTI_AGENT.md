@@ -13,6 +13,7 @@ that share one PostgreSQL database.
 
 - [Concepts](#concepts)
 - [Building an organisation](#building-an-organisation)
+- [Writing your own templates](#writing-your-own-templates)
 - [Who may talk to whom](#who-may-talk-to-whom)
 - [Messages](#messages)
 - [Data, tools and guardrails per department](#data-tools-and-guardrails-per-department)
@@ -157,7 +158,58 @@ Admins build departments; operators can add the suggested agents; viewers
 see the suggestions.
 
 Teams add their own templates and paths by adding TOML files to
-`templates/` (`[templates].dir`); they are validated at startup.
+`templates/` (`[templates].dir`); they are validated at startup. See
+[Writing your own templates](#writing-your-own-templates).
+
+The company name and description (set in the builder, or with
+`PUT /api/v1/org/profile`) are given to every agent at the top of its first
+prompt, and `{company}` in template texts is replaced with the name.
+
+## Writing your own templates
+
+Department templates live in `templates/departments/*.toml`; each file holds
+any number of `[[departments]]`:
+
+```toml
+[[departments]]
+id = "engineering"                # unique; blueprints and pairs_with refer to it
+name = "Engineering"              # name of the department when created
+category = "build"                # build | grow | serve | run | lead
+summary = "Designs, builds and maintains the software."
+when_to_add = "First, if {company} builds software."   # shown in suggestions
+tools = ["sandbox", "files"]      # sandbox and/or files; messaging is always on
+policy = "department"             # optional; default: the `department` policy
+pairs_with = ["product", "qa"]    # suggested once this department exists
+mission = """Build and maintain {company}'s software. ..."""
+
+[[departments.agents]]
+name = "lead"                     # a-z 0-9 - _, how colleagues address it
+title = "Tech lead"
+core = true                       # part of a lean team (at least one per template)
+instructions = """..."""
+```
+
+Blueprints (growth paths) are one file each in `templates/blueprints/`:
+
+```toml
+id = "solo-developer"
+title = "Solo software engineer"
+level = "starter"                 # starter | growing | complete
+focus = "software"                # free text, shown to people
+audience = "You build software on your own and want AI colleagues to help."
+description = "..."
+
+[[stages]]
+title = "Your engineering department"
+description = "A tech lead and a developer."
+departments = ["engineering"]     # template ids; each at most once per blueprint
+```
+
+agentcore refuses to start if a template is invalid: duplicate ids, an
+unknown category, tool group, policy or referenced template, an invalid or
+duplicate agent name, or a template without a `core` agent. Templates are
+only a starting point: departments created from them can be changed freely
+and are not updated when the template changes.
 
 ## Who may talk to whom
 
@@ -396,7 +448,13 @@ indexed queries. The bus is one module (`cluster.rs`), so a dedicated broker
 
 ```mermaid
 erDiagram
-    org_settings ||--|| org_settings : "one row"
+    org_settings {
+        int max_departments
+        int max_agents_per_department
+        text company_name
+        text company_about
+        text blueprint
+    }
     departments ||--o{ org_agents : "members (1 communicator)"
     departments ||--o{ department_files : "shared data"
     org_agents ||--o| sessions : "current session"
@@ -413,6 +471,7 @@ erDiagram
         text_array tools
         text communicator_agent
         text state "active | paused"
+        text template "created from"
     }
     org_agents {
         uuid id PK
@@ -425,6 +484,8 @@ erDiagram
         text node FK
         uuid session_id
         text status
+        text note
+        text changed_by
     }
     org_messages {
         uuid id PK
@@ -442,6 +503,11 @@ erDiagram
         uuid agent_id PK
         timestamptz delivered_at
     }
+    department_files {
+        uuid department_id PK
+        text path PK
+        bytea content
+    }
     nodes {
         text name PK
         text internal_url
@@ -458,7 +524,7 @@ an admin.
 | Method & path | What |
 |---|---|
 | `GET /org` | Overview: settings, departments with their agents, nodes. |
-| `GET /org/stream` | SSE of change notifications (`agents`, `department`, `message`, `stop_all`); clients refetch what changed. |
+| `GET /org/stream` | SSE of change notifications (`agents`, `department`, `message`, `files`, `settings`, `stop_all`, `resync`); clients refetch what changed. |
 | `GET`/`PUT /org/settings` | Limits (admin). |
 | `POST /org/departments` | Create a department (and its communicator). |
 | `PUT`/`DELETE /org/departments/{id}` | Update; delete (only when all its agents are stopped). |
@@ -470,7 +536,11 @@ an admin.
 | `POST /stop-all` | Stop everything, on every node. |
 | `GET /org/messages?department=&agent=&after=&limit=` | Message feed (organisation, department or agent). |
 | `POST /org/messages` | A person sends a message: `{"to": {"agent": id} \| {"department": id} \| "all_departments", "text": ...}`. |
-| `GET /org/departments/{id}/files` · `GET /org/departments/{id}/files/{*path}` | Department files. |
+| `GET /org/departments/{id}/files` · `GET`/`PUT /org/departments/{id}/files/{*path}` | Department files (`PUT` body `{"content": ...}`, operators). |
+| `GET /org/templates` | Template categories, department templates and blueprints. |
+| `GET`/`PUT /org/profile` | Company name and description, chosen blueprint (admin to change). |
+| `GET /org/suggestions` | What to add next: the blueprint's next stage, related departments, more agents; `blocked` says when a limit prevents it. |
+| `POST /org/build` | Create departments from templates (admin): `{"profile", "departments": [ids], "size": "lean"\|"full", "agent", "communicator_agent", "start", "raise_limits", "dry_run"}`. Existing departments are skipped; a plan over the limits is refused with `409` (body has the plan) unless `raise_limits`. |
 
 ## Configuration
 
@@ -481,6 +551,10 @@ internal_url = "http://10.0.0.11:8080"   # how other nodes reach this one
 max_agents = 20                          # agents this node runs at once
 heartbeat_secs = 5
 node_timeout_secs = 30
+reconcile_millis = 2000                  # periodic reconcile pass
+
+[templates]
+dir = "templates"                        # departments/*.toml, blueprints/*.toml
 
 [org]
 communicator_policy = "communicator"     # policy for every communicator
@@ -488,7 +562,8 @@ default_max_departments = 10             # initial limits (then set in the UI)
 default_max_agents_per_department = 10
 ```
 
-A single-VM installation needs no `[cluster]` section.
+A single-VM installation needs no `[cluster]` section. Step-by-step setup of
+several VMs: [Deployment](DEPLOYMENT.md#several-vms).
 
 ## What is not there yet
 

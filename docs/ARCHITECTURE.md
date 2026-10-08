@@ -78,8 +78,8 @@ flowchart TD
 | **sandbox** | `SandboxProvider` creates a `Sandbox` that can spawn the agent (in a pseudo-terminal), run commands (streaming their output), read/write workspace files, list its processes, `pause()`/`resume()` and `kill()` everything. Backends: Docker (hardened), process (dev only). |
 | **roles** | Role (playbook) files, capability → tool mapping, check definitions, and composition of the agent's first prompt. |
 | **runtime** | `SessionManager` and `Session`: turns, policy gating, approvals, stop, pause/resume, the live view (`LiveHub`: terminal, recording, files, processes), change snapshots, checks, git bundle export, built-in adapters. |
-| **store** | PostgreSQL: session index, model providers, GitHub connection (secrets AES-256-GCM encrypted), projects, model calls, change snapshots, admin log. |
-| **server** | axum: operator API, SSE event and live streams, MCP tool gateway, model gateway (including the token stream for the live view), GitHub client and tools, repository checkout and delivery, auth, UI hosting. |
+| **store** | PostgreSQL: session index, model providers, GitHub connection (secrets AES-256-GCM encrypted), projects, model calls, change snapshots, admin log, organisations (departments, agents, messages, inboxes, department files, profile and limits), node registry. |
+| **server** | axum: operator API, SSE event and live streams, MCP tool gateway, model gateway (including the token stream for the live view), GitHub client and tools, repository checkout and delivery, auth, UI hosting, organisations (`org.rs`), templates (`templates.rs`), cluster (`cluster.rs`). |
 | **cli** | `agentcore serve`, `policy check/eval`, `audit verify/show`, `hash-token`. |
 
 ## Session lifecycle
@@ -465,6 +465,7 @@ erDiagram
 | Data | Where | Why |
 |---|---|---|
 | Session events | `data/audit/<session>.jsonl` | Tamper-evident hash chain; the authoritative record |
+| Organisations, messages, department files, nodes | PostgreSQL (migrations `0004`, `0005`; see [Multi-agent organisations](MULTI_AGENT.md#data-model)) | Shared by every node |
 | Sessions, projects, providers, GitHub connection, model calls, changes, admin log | PostgreSQL (migrations in `crates/agentcore-store/migrations`) | Queryable state that survives restarts |
 | Repository mirrors and workspaces | `data/repos/`, `data/workspaces/` | Agent checkouts and agentcore's push source |
 | Master key | `data/master.key` or `$AGENTCORE_MASTER_KEY` | Decrypts provider keys and the GitHub token; back it up |
@@ -531,7 +532,8 @@ microVMs, Kubernetes pods, remote sandboxes.
 Departments of agents, communicators, message routing and running on
 several VMs are described in [Multi-agent organisations](MULTI_AGENT.md).
 In short: `org.rs` (server) holds the API, the `team_*` tools and message
-routing; `cluster.rs` holds the node heartbeat, the `LISTEN/NOTIFY`
+routing; `templates.rs` loads department templates and growth paths, plans
+what to create and suggests what to add next; `cluster.rs` holds the node heartbeat, the `LISTEN/NOTIFY`
 listener, the reconciler that converges this node's sessions to the desired
 state in PostgreSQL, and request forwarding to the node that owns a session.
 
