@@ -8,6 +8,7 @@ summary = "Goals, priorities and coordination across departments."
 when_to_add = "When several departments need shared goals and someone to keep them aligned."
 tools = ["files"]
 pairs_with = ["product", "finance", "projects"]
+role = "project-manager"  # role on a linked repository (GitHub tools, playbook, delivery)
 mission = """
 Keep {company} pointed in one direction: write down goals and priorities, track
 progress across departments, prepare decisions for the people who lead the
@@ -40,6 +41,7 @@ summary = "Plans, schedules and coordinates projects across departments."
 when_to_add = "When projects span several departments or have customer deadlines."
 tools = ["files"]
 pairs_with = ["engineering", "design", "strategy", "success"]
+role = "project-manager"  # role on a linked repository (GitHub tools, playbook, delivery)
 mission = """
 Deliver {company}'s projects on time: plan them, track tasks and risks, and keep
 everyone involved informed.

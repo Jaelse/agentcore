@@ -50,6 +50,7 @@ fn config(dir: &std::path::Path, db_url: &str, bind: std::net::SocketAddr, bin: 
     config.storage.audit_fsync = false;
     config.policies.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../policies").into();
     config.templates.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../templates").into();
+    config.roles.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../roles").into();
     config.sandbox = SandboxConfig {
         backend: BackendKind::Process,
         ..Default::default()

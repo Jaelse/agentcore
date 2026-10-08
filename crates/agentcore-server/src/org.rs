@@ -581,7 +581,25 @@ impl ToolHandler for TeamTools {
 // ---- prompts ------------------------------------------------------------------------
 
 /// First prompt of a department agent.
-pub fn compose_prompt(org: &Org, agent: &OrgAgent, dept: &Department) -> String {
+/// The repository a department works on, as given to its workers.
+pub struct RepoInfo {
+    /// `owner/name`
+    pub repository: String,
+    pub base_branch: String,
+    /// The worker's own branch, when it has a checkout.
+    pub work_branch: Option<String>,
+    /// The role delivers pull requests.
+    pub delivers: bool,
+    /// GitHub tools the worker has.
+    pub tools: Vec<String>,
+}
+
+pub fn compose_prompt(
+    org: &Org,
+    agent: &OrgAgent,
+    dept: &Department,
+    repo: Option<&RepoInfo>,
+) -> String {
     let others: Vec<&str> = org
         .departments
         .iter()
@@ -641,6 +659,36 @@ pub fn compose_prompt(org: &Org, agent: &OrgAgent, dept: &Department) -> String 
                  Answers come back to you as messages.\n\n",
                 colleagues.join("\n")
             ));
+            if let Some(repo) = repo {
+                p.push_str(&format!(
+                    "## Your repository\n\nYour department works on the GitHub repository `{}` \
+                     (base branch `{}`).\n",
+                    repo.repository, repo.base_branch
+                ));
+                if let Some(branch) = &repo.work_branch {
+                    p.push_str(&format!(
+                        "It is checked out in your sandbox at /workspace, on your own branch \
+                         `{branch}`. Commit your work there.\n"
+                    ));
+                }
+                if repo.delivers {
+                    p.push_str(
+                        "Your work leaves the sandbox as a pull request that a person reviews: \
+                         when a change is ready, make sure the checks pass, then call \
+                         `propose_pull_request` with a title and description, and tell your \
+                         colleagues. Keep each change focused; start the next one after it is \
+                         delivered.\n",
+                    );
+                }
+                if !repo.tools.is_empty() {
+                    p.push_str(&format!(
+                        "GitHub tools you have: {}. Use issues to plan and track work so people \
+                         can follow it.\n",
+                        repo.tools.join(", ")
+                    ));
+                }
+                p.push('\n');
+            }
             p.push_str(
                 "## Working together\n\n\
                  - `team_send_message(to, text)`: a colleague's name, `communicator`, or `everyone`.\n\
@@ -702,7 +750,7 @@ pub fn compose_prompt(org: &Org, agent: &OrgAgent, dept: &Department) -> String 
 }
 
 /// Start the session of a department agent on this node.
-pub fn start_agent_session(
+pub async fn start_agent_session(
     state: &AppState,
     org: &Org,
     agent: &OrgAgent,
@@ -714,29 +762,122 @@ pub fn start_agent_session(
         AgentKind::Communicator => state.config.org.communicator_policy.clone(),
     };
     let label = format!("{}/{}", dept.name, agent.name);
+    let mut context = SessionContext {
+        department_id: Some(dept.id),
+        department_name: Some(dept.name.clone()),
+        org_agent_id: Some(agent.id),
+        org_agent_kind: Some(agent.kind.as_str().into()),
+        ..Default::default()
+    };
+    let mut options = SessionOptions {
+        models,
+        hide_sandbox_tools: agent.kind == AgentKind::Communicator || !dept.grants(TOOL_SANDBOX),
+        agent_label: Some(label),
+        ..Default::default()
+    };
+    let mut tools: Vec<Arc<dyn ToolHandler>> =
+        vec![Arc::new(TeamTools::new(state.store.clone(), agent, dept))];
+    let mut repo = None;
+    let mut mirror_cell = None;
+
+    // Workers of a department linked to a project get the repository: a
+    // checkout on their own branch (with sandbox access), GitHub tools for
+    // their role, the role's playbook and the team's conventions, and
+    // delivery as a pull request.
+    if agent.kind == AgentKind::Worker
+        && let Some(project_id) = dept.project_id
+    {
+        let project = state.project(project_id).await?;
+        let role = state.role(dept.role.as_deref().unwrap_or(&project.role))?;
+        let (gh, config, token) = state.require_github().await?;
+        let github = crate::teamwork::GitHubTools::new(Some(gh), &project, &role);
+        let github_tools: Vec<String> = github
+            .definitions()
+            .iter()
+            .filter_map(|d| d["name"].as_str().map(String::from))
+            .collect();
+        tools.push(Arc::new(github));
+        context.role = Some(role.name.clone());
+        context.project_id = Some(project.id);
+        context.project_name = Some(project.name.clone());
+        context.repository = Some(project.repository());
+        context.base_branch = Some(project.default_branch.clone());
+        let mut work_branch = None;
+        if dept.grants(TOOL_SANDBOX) {
+            let hint = Uuid::now_v7().simple().to_string();
+            let branch = role.branch_name(
+                None,
+                &format!("{} {} {}", dept.name, agent.name, &hint[hint.len() - 6..]),
+                &hint,
+            );
+            let (setup, cell) =
+                crate::teamwork::repository_setup(&project, &config, &token, branch.clone());
+            options.workspace = Some(setup);
+            options.work_item = Some(agentcore_roles::WorkItem {
+                repository: Some(project.repository()),
+                branch: Some(project.default_branch.clone()),
+                issue: None,
+                task: String::new(),
+                project_notes: project.notes.clone(),
+            });
+            context.work_branch = Some(branch.clone());
+            work_branch = Some(branch);
+            mirror_cell = Some(cell);
+        } else {
+            options.work_item = Some(agentcore_roles::WorkItem {
+                project_notes: project.notes.clone(),
+                ..Default::default()
+            });
+        }
+        repo = Some(RepoInfo {
+            repository: project.repository(),
+            base_branch: project.default_branch.clone(),
+            delivers: work_branch.is_some()
+                && role.delivery.kind == agentcore_roles::DeliveryKind::PullRequest,
+            work_branch,
+            tools: github_tools,
+        });
+        options.role = Some(role);
+    }
+    options.tools = Some(Arc::new(Toolset(tools)));
+    options.context = context;
     let session = state.manager.create(
         CreateSession {
             agent: agent.agent.clone(),
-            task: compose_prompt(org, agent, dept),
+            task: compose_prompt(org, agent, dept, repo.as_ref()),
             policy: Some(policy),
         },
         principal(&agent.changed_by),
-        SessionOptions {
-            models,
-            tools: Some(Arc::new(TeamTools::new(state.store.clone(), agent, dept))),
-            hide_sandbox_tools: agent.kind == AgentKind::Communicator || !dept.grants(TOOL_SANDBOX),
-            agent_label: Some(label),
-            context: SessionContext {
-                department_id: Some(dept.id),
-                department_name: Some(dept.name.clone()),
-                org_agent_id: Some(agent.id),
-                org_agent_kind: Some(agent.kind.as_str().into()),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
+        options,
     )?;
+    if let Some(cell) = mirror_cell {
+        let _ = cell.set(state.mirror_path(session.id()));
+    }
     Ok(session)
+}
+
+/// Several tool handlers as one: definitions are concatenated; a call goes
+/// to the handler that defines the tool.
+pub struct Toolset(pub Vec<Arc<dyn ToolHandler>>);
+
+#[async_trait]
+impl ToolHandler for Toolset {
+    fn definitions(&self) -> Vec<Value> {
+        self.0.iter().flat_map(|h| h.definitions()).collect()
+    }
+
+    async fn call(&self, tool: &str, arguments: &Value) -> Result<Value, String> {
+        for handler in &self.0 {
+            if handler
+                .definitions()
+                .iter()
+                .any(|d| d["name"].as_str() == Some(tool))
+            {
+                return handler.call(tool, arguments).await;
+            }
+        }
+        Err(format!("unknown tool `{tool}`"))
+    }
 }
 
 /// The principal behind a recorded name (`agentcore` = the system).
@@ -791,7 +932,19 @@ pub async fn put_settings(
     Ok(Json(json!(saved)))
 }
 
-fn check_department(state: &AppState, input: &mut DepartmentInput) -> ApiResult<()> {
+async fn check_department(state: &AppState, input: &mut DepartmentInput) -> ApiResult<()> {
+    if let Some(project_id) = input.project_id {
+        let project = state.project(project_id).await?;
+        let role = input
+            .role
+            .as_deref()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .unwrap_or(&project.role);
+        state.role(role)?;
+    } else if input.role.as_deref().is_some_and(|r| !r.trim().is_empty()) {
+        state.role(input.role.as_deref().unwrap_or_default().trim())?;
+    }
     if input.policy.trim().is_empty() {
         input.policy = if state.manager.policies().get("department").is_some() {
             "department".into()
@@ -834,7 +987,7 @@ pub async fn create_department(
     Json(mut input): Json<DepartmentInput>,
 ) -> ApiResult<impl IntoResponse> {
     caller.require_admin()?;
-    check_department(&state, &mut input)?;
+    check_department(&state, &mut input).await?;
     let dept = state.store.create_department(input, &caller.name).await?;
     notify(
         &state.store,
@@ -855,7 +1008,7 @@ pub async fn update_department(
     Json(mut input): Json<DepartmentInput>,
 ) -> ApiResult<Json<Value>> {
     caller.require_admin()?;
-    check_department(&state, &mut input)?;
+    check_department(&state, &mut input).await?;
     let dept = state
         .store
         .update_department(id, input, &caller.name)
@@ -1348,6 +1501,11 @@ pub struct BuildRequest {
     /// Start the new departments right away.
     #[serde(default)]
     pub start: bool,
+    /// Project (GitHub repository) to link the new departments to: those
+    /// whose template has a role on a repository (engineering, product,
+    /// marketing, ...).
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
     /// Raise the limits if the plan needs it (admins only).
     #[serde(default)]
     pub raise_limits: bool,
@@ -1383,6 +1541,9 @@ pub async fn build(
     if let Some(p) = &req.profile {
         check_blueprint(&state, p)?;
         profile = p.clone();
+    }
+    if let Some(project) = req.project_id {
+        state.project(project).await?;
     }
     let existing = state.store.list_departments().await?;
     let limits = state.store.org_settings().await?;
@@ -1435,8 +1596,10 @@ pub async fn build(
             tools: planned.tools.clone(),
             communicator_agent: communicator.clone(),
             template: Some(planned.template.clone()),
+            project_id: req.project_id.filter(|_| planned.role.is_some()),
+            role: planned.role.clone().filter(|_| req.project_id.is_some()),
         };
-        check_department(&state, &mut input)?;
+        check_department(&state, &mut input).await?;
         let dept = match state.store.create_department(input, &caller.name).await {
             Ok(d) => d,
             Err(err) => {

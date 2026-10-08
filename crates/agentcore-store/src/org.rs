@@ -38,6 +38,12 @@ pub struct DepartmentInput {
     /// Template the department is created from (kept for suggestions).
     #[serde(default)]
     pub template: Option<String>,
+    /// Project (GitHub repository) the department works on.
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
+    /// Role of its workers on the project (default: the project's role).
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -92,6 +98,8 @@ struct DepartmentRow {
     communicator_agent: String,
     state: String,
     template: Option<String>,
+    project_id: Option<Uuid>,
+    role: Option<String>,
     created_at: DateTime<Utc>,
     updated_by: String,
 }
@@ -108,6 +116,8 @@ impl From<DepartmentRow> for Department {
             communicator_agent: r.communicator_agent,
             state: r.state.parse().unwrap_or(DepartmentState::Active),
             template: r.template,
+            project_id: r.project_id,
+            role: r.role,
             created_at: r.created_at,
             updated_by: r.updated_by,
         }
@@ -214,7 +224,7 @@ impl From<NodeRow> for NodeInfo {
 }
 
 const DEPARTMENT_COLUMNS: &str = "id, name, description, mission, policy, tools, \
-    communicator_agent, state, template, created_at, updated_by";
+    communicator_agent, state, template, project_id, role, created_at, updated_by";
 const AGENT_COLUMNS: &str = "id, department_id, name, kind, agent, instructions, desired, \
     node, session_id, status, note, changed_by, created_at";
 const MESSAGE_SELECT: &str = "SELECT m.id, m.created_at, m.scope, m.from_agent, \
@@ -429,8 +439,9 @@ impl Store {
         let id = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO departments (id, name, description, mission, policy, tools,
-                                      communicator_agent, updated_by, template)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                                      communicator_agent, updated_by, template, project_id,
+                                      role)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(id)
         .bind(&input.name)
@@ -441,6 +452,14 @@ impl Store {
         .bind(input.communicator_agent.trim())
         .bind(actor)
         .bind(&input.template)
+        .bind(input.project_id)
+        .bind(
+            input
+                .role
+                .as_deref()
+                .map(str::trim)
+                .filter(|r| !r.is_empty()),
+        )
         .execute(&mut *tx)
         .await
         .map_err(|e| map_unique(e, format!("department `{}`", input.name)))?;
@@ -479,7 +498,8 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         let updated = sqlx::query(
             "UPDATE departments SET name = $2, description = $3, mission = $4, policy = $5,
-                 tools = $6, communicator_agent = $7, updated_at = now(), updated_by = $8
+                 tools = $6, communicator_agent = $7, updated_at = now(), updated_by = $8,
+                 project_id = $9, role = $10
              WHERE id = $1",
         )
         .bind(id)
@@ -490,6 +510,14 @@ impl Store {
         .bind(&input.tools)
         .bind(input.communicator_agent.trim())
         .bind(actor)
+        .bind(input.project_id)
+        .bind(
+            input
+                .role
+                .as_deref()
+                .map(str::trim)
+                .filter(|r| !r.is_empty()),
+        )
         .execute(&mut *tx)
         .await
         .map_err(|e| map_unique(e, format!("department `{}`", input.name)))?;

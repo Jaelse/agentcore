@@ -150,6 +150,13 @@ pub struct Department {
     /// Template the department was created from, if any.
     #[serde(default)]
     pub template: Option<String>,
+    /// Project (GitHub repository) the department works on.
+    #[serde(default)]
+    pub project_id: Option<uuid::Uuid>,
+    /// Role (playbook) of its workers on the project; default: the
+    /// project's role.
+    #[serde(default)]
+    pub role: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_by: String,
 }

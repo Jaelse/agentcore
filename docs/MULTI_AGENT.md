@@ -17,6 +17,7 @@ that share one PostgreSQL database.
 - [Who may talk to whom](#who-may-talk-to-whom)
 - [Messages](#messages)
 - [Data, tools and guardrails per department](#data-tools-and-guardrails-per-department)
+- [Working on a repository](#working-on-a-repository)
 - [Human oversight](#human-oversight)
 - [Limits](#limits)
 - [Running on several VMs](#running-on-several-vms)
@@ -300,6 +301,45 @@ flowchart LR
 The tool list an agent sees *is* its permission: a tool that is not offered is
 also refused if called.
 
+## Working on a repository
+
+A department can work on a **project**: a GitHub repository set up under
+Projects (see [Ways of working](WAYS_OF_WORKING.md)). Link it when creating
+or editing the department, or choose the repository in the builder: then
+every new department whose template has a role on a repository is linked.
+
+```mermaid
+flowchart LR
+    P["Project<br/>acme/shop"] --- E["Engineering<br/>role: developer"]
+    P --- PR["Product<br/>role: project-manager"]
+    P --- MK["Marketing<br/>role: marketing"]
+    E -- "each worker: own checkout<br/>and branch" --> W["agent/task-engineering-developer-…"]
+    W -- "propose_pull_request" --> D["Deliver (a person):<br/>checks · push · pull request"]
+    PR -- "GitHub tools:<br/>issues, milestones, board" --> GH["GitHub"]
+    MK -- "discussions, drafts" --> GH
+```
+
+What a worker in a linked department gets:
+
+| | With the `sandbox` tool group | Without |
+|---|---|---|
+| Checkout | Its own clone of the repository (base branch from the project) on its own branch `agent/task-<department>-<agent>-<id>`, prepared on the host before the agent starts, exactly as for project sessions | none |
+| GitHub tools | Those of the department's role (default: the project's role): developer → read issues, comment, propose a pull request; project-manager → manage issues, milestones and the board; marketing → discussions | same |
+| First prompt | The role's playbook, the team's convention files from the repository (`CONTRIBUTING.md`, `AGENTS.md`, ...), the project's notes, the role's checks, then the department part (mission, colleagues, the repository and how to deliver) | the role's playbook and the project's notes, then the department part |
+| Delivery | When the agent proposes a pull request, a person clicks **Deliver** in its session: the role's checks run, the branch is pushed with agentcore's GitHub credentials, the pull request is opened | – |
+
+Communicators never get the repository. Nothing reaches GitHub without
+passing the department's policy: GitHub writes need approval under the
+`department` and `default` policies, and code only leaves the sandbox
+through a delivery a person starts. Department templates for code-heavy
+functions (Engineering, QA, DevOps, Security, Data, AI/ML, Technical
+Writing) use the `default` policy, which allows the usual development tools
+in the sandbox.
+
+Each new session of an agent starts from a fresh checkout of the base
+branch on a new branch, so work should be delivered before a session ends
+(see the session limits in the policy).
+
 ## Data, tools and guardrails per department
 
 | | Set per department | Enforced by |
@@ -472,6 +512,8 @@ erDiagram
         text communicator_agent
         text state "active | paused"
         text template "created from"
+        uuid project_id FK "works on"
+        text role "role on the repository"
     }
     org_agents {
         uuid id PK
@@ -526,7 +568,7 @@ an admin.
 | `GET /org` | Overview: settings, departments with their agents, nodes. |
 | `GET /org/stream` | SSE of change notifications (`agents`, `department`, `message`, `files`, `settings`, `stop_all`, `resync`); clients refetch what changed. |
 | `GET`/`PUT /org/settings` | Limits (admin). |
-| `POST /org/departments` | Create a department (and its communicator). |
+| `POST /org/departments` | Create a department (and its communicator): `{"name", "description", "mission", "policy", "tools", "communicator_agent", "project_id"?, "role"?}`. |
 | `PUT`/`DELETE /org/departments/{id}` | Update; delete (only when all its agents are stopped). |
 | `POST /org/departments/{id}/agents` | Add a worker agent. |
 | `PUT`/`DELETE /org/agents/{id}` | Update instructions; remove (when stopped). |
@@ -540,7 +582,7 @@ an admin.
 | `GET /org/templates` | Template categories, department templates and blueprints. |
 | `GET`/`PUT /org/profile` | Company name and description, chosen blueprint (admin to change). |
 | `GET /org/suggestions` | What to add next: the blueprint's next stage, related departments, more agents; `blocked` says when a limit prevents it. |
-| `POST /org/build` | Create departments from templates (admin): `{"profile", "departments": [ids], "size": "lean"\|"full", "agent", "communicator_agent", "start", "raise_limits", "dry_run"}`. Existing departments are skipped; a plan over the limits is refused with `409` (body has the plan) unless `raise_limits`. |
+| `POST /org/build` | Create departments from templates (admin): `{"profile", "departments": [ids], "size": "lean"\|"full", "agent", "communicator_agent", "project_id", "start", "raise_limits", "dry_run"}`; with `project_id`, new departments whose template has a role are linked to that project. Existing departments are skipped; a plan over the limits is refused with `409` (body has the plan) unless `raise_limits`. |
 
 ## Configuration
 
@@ -567,8 +609,11 @@ several VMs: [Deployment](DEPLOYMENT.md#several-vms).
 
 ## What is not there yet
 
-* Linking a department to a GitHub project, so its workers get repository
-  checkouts and GitHub tools as in [Ways of working](WAYS_OF_WORKING.md).
+* Scheduled check-ins and organisation goals that keep agents working
+  without a person or a message waking them; continuing an agent in a fresh
+  session when its time budget runs out.
+* Read-only business data (analytics, revenue, support tickets) for the
+  departments that steer the company.
 * Moving a running agent between nodes (live migration of a sandbox).
 * Per-department model provider and spend limits.
 * A dedicated message broker for very large organisations.

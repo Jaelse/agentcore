@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ApiError, api } from "../api";
-import type { Blueprint, BuildPlan, Me, OrgOverview, SystemCard, TemplateCatalog } from "../types";
+import type { Blueprint, BuildPlan, Me, OrgOverview, Project, SystemCard, TemplateCatalog } from "../types";
 
 export type BuildMode = "small" | "stages" | "all" | "pick";
 
@@ -58,6 +58,8 @@ export function OrgBuilder({ me, card, org, initialMode, initialPick, onDone, on
   const [size, setSize] = useState<"lean" | "full">("lean");
   const [agent, setAgent] = useState(card.agents[0]?.name ?? "");
   const [startNow, setStartNow] = useState(false);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [projectId, setProjectId] = useState<string>("");
   const [raise, setRaise] = useState(false);
   const [plan, setPlan] = useState<BuildPlan | null>(null);
   const [busy, setBusy] = useState(false);
@@ -65,6 +67,10 @@ export function OrgBuilder({ me, card, org, initialMode, initialPick, onDone, on
 
   useEffect(() => {
     api.templates().then(setCatalog).catch(onError);
+    api
+      .projects()
+      .then((p) => setProjects(p))
+      .catch(() => setProjects([]));
   }, [onError]);
 
   const bp = catalog?.blueprints.find((b) => b.id === blueprint) ?? null;
@@ -107,7 +113,7 @@ export function OrgBuilder({ me, card, org, initialMode, initialPick, onDone, on
     }
     let cancelled = false;
     api
-      .build({ profile, departments, size, agent, dry_run: true })
+      .build({ profile, departments, size, agent, project_id: projectId || null, dry_run: true })
       .then((r) => {
         if (!cancelled) setPlan(r.plan);
       })
@@ -116,7 +122,7 @@ export function OrgBuilder({ me, card, org, initialMode, initialPick, onDone, on
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, departments.join(","), size, agent, company, about, blueprint]);
+  }, [step, departments.join(","), size, agent, company, about, blueprint, projectId]);
 
   if (!catalog) return <div className="empty">Loading templates…</div>;
   const template = (id: string) => catalog.departments.find((d) => d.id === id);
@@ -124,7 +130,15 @@ export function OrgBuilder({ me, card, org, initialMode, initialPick, onDone, on
   const create = async () => {
     setBusy(true);
     try {
-      const r = await api.build({ profile, departments, size, agent, start: startNow, raise_limits: raise });
+      const r = await api.build({
+        profile,
+        departments,
+        size,
+        agent,
+        project_id: projectId || null,
+        start: startNow,
+        raise_limits: raise,
+      });
       for (const e of r.errors ?? []) onError(new Error(`${e.department}${e.agent ? `/${e.agent}` : ""}: ${e.error}`));
       onDone(r.created?.[0]?.id ?? null);
     } catch (err) {
@@ -324,6 +338,30 @@ export function OrgBuilder({ me, card, org, initialMode, initialPick, onDone, on
                 </select>
               </label>
             </div>
+            <label>
+              Works on a GitHub repository
+              <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+                <option value="">No repository</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.repo_owner}/{p.repo_name})
+                  </option>
+                ))}
+              </select>
+            </label>
+            {projects.length === 0 ? (
+              <p className="muted small">
+                To let departments work on an app, create a project for its repository under Projects first.
+              </p>
+            ) : (
+              projectId && (
+                <p className="muted small">
+                  Engineering-type departments get a checkout of the repository on their own branch and deliver pull
+                  requests that a person reviews; product, support and marketing-type departments get GitHub tools
+                  for issues and the board.
+                </p>
+              )
+            )}
             <label className="inline-check">
               <input type="checkbox" checked={startNow} onChange={(e) => setStartNow(e.target.checked)} /> Start the new
               departments right away
@@ -358,6 +396,12 @@ export function OrgBuilder({ me, card, org, initialMode, initialPick, onDone, on
                       <strong>{d.name}</strong>
                       {d.exists ? <span className="tag tone-ok">already there</span> : <span className="tag">new</span>}
                     </div>
+                    {!d.exists && projectId && d.role && (
+                      <span className="small ok-text">
+                        on the repository as {d.role}
+                        {d.tools.includes("sandbox") ? " · own checkout, pull requests" : " · GitHub tools"}
+                      </span>
+                    )}
                     <span className="small">{d.description}</span>
                     {!d.exists && (
                       <ul className="checks small">

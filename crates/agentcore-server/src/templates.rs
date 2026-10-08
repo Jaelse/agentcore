@@ -66,6 +66,9 @@ pub struct DepartmentTemplate {
     /// Departments it usually works with (template ids).
     #[serde(default)]
     pub pairs_with: Vec<String>,
+    /// Role of its workers on a linked repository (`roles/*.toml`).
+    #[serde(default)]
+    pub role: Option<String>,
     pub agents: Vec<TemplateAgent>,
 }
 
@@ -242,6 +245,11 @@ impl Catalog {
         self.blueprints.iter().find(|b| b.id == id)
     }
 
+    /// Roles the templates refer to (checked against the role set).
+    pub fn roles(&self) -> impl Iterator<Item = &str> {
+        self.departments.iter().filter_map(|t| t.role.as_deref())
+    }
+
     /// Policies the templates refer to (checked against the policy set).
     pub fn policies(&self) -> impl Iterator<Item = &str> {
         self.departments.iter().filter_map(|t| t.policy.as_deref())
@@ -274,6 +282,8 @@ pub struct PlannedDepartment {
     pub mission: String,
     pub tools: Vec<String>,
     pub policy: Option<String>,
+    /// Role on a linked repository; departments without one are not linked.
+    pub role: Option<String>,
     pub agents: Vec<PlannedAgent>,
     /// Already in the organisation: it is left as it is.
     pub exists: bool,
@@ -347,6 +357,7 @@ pub fn plan(
             mission: fill(&template.mission, profile),
             tools: template.tools.clone(),
             policy: template.policy.clone(),
+            role: template.role.clone(),
             agents: agents_for(template, size)
                 .into_iter()
                 .map(|a| PlannedAgent {
@@ -572,6 +583,8 @@ mod tests {
             communicator_agent: "x".into(),
             state: agentcore_core::DepartmentState::Active,
             template: Some(template.into()),
+            project_id: None,
+            role: None,
             created_at: chrono::Utc::now(),
             updated_by: "a".into(),
         }

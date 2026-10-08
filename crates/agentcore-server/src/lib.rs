@@ -81,6 +81,11 @@ impl AppState {
         if catalog.departments.is_empty() {
             tracing::warn!(dir = %config.templates.dir.display(), "no department templates found");
         }
+        for role in catalog.roles() {
+            if roles.get(role).is_none() {
+                anyhow::bail!("a department template uses unknown role `{role}`");
+            }
+        }
         for policy in catalog.policies() {
             if policies.get(policy).is_none() {
                 anyhow::bail!("a department template uses unknown policy `{policy}`");

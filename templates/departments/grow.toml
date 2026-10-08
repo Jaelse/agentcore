@@ -8,6 +8,7 @@ summary = "Positioning, campaigns and demand generation."
 when_to_add = "When the product is ready for people to find it."
 tools = ["files"]
 pairs_with = ["content", "sales", "product", "design"]
+role = "marketing"  # role on a linked repository (GitHub tools, playbook, delivery)
 mission = """
 Make the right people know about {company} and want it. Own positioning and
 messaging, plan campaigns, and measure what works. Never publish anything
@@ -40,6 +41,7 @@ summary = "Articles, newsletters, social posts and other content."
 when_to_add = "When marketing needs a steady flow of content."
 tools = ["files"]
 pairs_with = ["marketing", "design", "communications"]
+role = "marketing"  # role on a linked repository (GitHub tools, playbook, delivery)
 mission = """
 Create useful, accurate content for {company}'s audience: articles, newsletters,
 social posts and case studies, in a consistent voice. Drafts are reviewed by a
@@ -124,6 +126,7 @@ summary = "Press, announcements and public reputation."
 when_to_add = "When you have news to announce or a reputation to protect."
 tools = ["files"]
 pairs_with = ["marketing", "content", "legal"]
+role = "marketing"  # role on a linked repository (GitHub tools, playbook, delivery)
 mission = """
 Tell {company}'s story to the public and press, prepare announcements, and keep
 messages consistent and accurate. Nothing goes out without human approval.
@@ -146,6 +149,7 @@ summary = "Users, developers and fans around the product."
 when_to_add = "When users talk to each other: forums, Discord, open source."
 tools = ["files"]
 pairs_with = ["support", "content", "product"]
+role = "marketing"  # role on a linked repository (GitHub tools, playbook, delivery)
 mission = """
 Build and look after {company}'s community: welcome people, answer questions,
 collect feedback for product, and organise community programmes.

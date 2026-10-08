@@ -192,7 +192,16 @@ export const api = {
   saveOrgSettings: (s: OrgSettings) => request<OrgSettings>("PUT", "/org/settings", s),
   saveDepartment: (
     id: string | null,
-    body: { name: string; description: string; mission: string; policy: string; tools: string[]; communicator_agent: string },
+    body: {
+      name: string;
+      description: string;
+      mission: string;
+      policy: string;
+      tools: string[];
+      communicator_agent: string;
+      project_id: string | null;
+      role: string | null;
+    },
   ) =>
     id ? request<Department>("PUT", `/org/departments/${id}`, body) : request<Department>("POST", "/org/departments", body),
   deleteDepartment: (id: string) => request<void>("DELETE", `/org/departments/${id}`),
@@ -231,6 +240,7 @@ export const api = {
     size: "lean" | "full";
     agent?: string;
     communicator_agent?: string;
+    project_id?: string | null;
     start?: boolean;
     raise_limits?: boolean;
     dry_run?: boolean;

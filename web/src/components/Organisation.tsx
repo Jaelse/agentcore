@@ -9,8 +9,10 @@ import type {
   OrgAgent,
   OrgMessage,
   OrgOverview,
+  Project,
   Suggestion,
   SystemCard,
+  TeamRole,
 } from "../types";
 import { type BuildMode, OrgBuilder } from "./OrgBuilder";
 
@@ -370,6 +372,17 @@ function DepartmentRoom({
 }) {
   const [editing, setEditing] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [repo, setRepo] = useState<Project | null>(null);
+  useEffect(() => {
+    if (!dept.project_id) {
+      setRepo(null);
+      return;
+    }
+    api
+      .projects()
+      .then((ps) => setRepo(ps.find((p) => p.id === dept.project_id) ?? null))
+      .catch(() => setRepo(null));
+  }, [dept.project_id]);
   const canOperate = me.role !== "viewer";
   const isAdmin = me.role === "admin";
   const workers = dept.agents.filter((a) => a.kind === "worker");
@@ -413,6 +426,17 @@ function DepartmentRoom({
             <span className="chip" title="Agent the communicator runs">
               📡 communicator: {dept.communicator_agent}
             </span>
+            {repo && (
+              <a
+                className="chip mono"
+                href={`https://github.com/${repo.repo_owner}/${repo.repo_name}`}
+                target="_blank"
+                rel="noreferrer"
+                title={`Works on this repository as ${dept.role ?? repo.role}`}
+              >
+                ⎇ {repo.repo_owner}/{repo.repo_name} · {dept.role ?? repo.role}
+              </a>
+            )}
           </div>
           {dept.mission && (
             <details>
@@ -675,6 +699,15 @@ function DepartmentForm({
   const [policy, setPolicy] = useState(department?.policy ?? "");
   const [tools, setTools] = useState<string[]>(department?.tools ?? ["files"]);
   const [communicator, setCommunicator] = useState(department?.communicator_agent ?? card.agents[0]?.name ?? "");
+  const [projectId, setProjectId] = useState(department?.project_id ?? "");
+  const [role, setRole] = useState(department?.role ?? "");
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [roles, setRoles] = useState<TeamRole[]>([]);
+  useEffect(() => {
+    api.projects().then(setProjects).catch(() => setProjects([]));
+    api.roles().then(setRoles).catch(() => setRoles([]));
+  }, []);
+  const project = projects.find((p) => p.id === projectId);
   const [busy, setBusy] = useState(false);
   return (
     <form
@@ -691,6 +724,8 @@ function DepartmentForm({
               policy,
               tools,
               communicator_agent: communicator,
+              project_id: projectId || null,
+              role: projectId && role ? role : null,
             }),
           );
         } catch (err) {
@@ -741,6 +776,38 @@ function DepartmentForm({
           </label>
         ))}
       </fieldset>
+      <div className="grid-2">
+        <label>
+          Works on project (GitHub repository)
+          <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+            <option value="">None</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name} ({p.repo_owner}/{p.repo_name})
+              </option>
+            ))}
+          </select>
+        </label>
+        {projectId && (
+          <label>
+            Role on the repository
+            <select value={role} onChange={(e) => setRole(e.target.value)}>
+              <option value="">Project default ({project?.role ?? "?"})</option>
+              {roles.map((r) => (
+                <option key={r.name} value={r.name}>
+                  {r.title || r.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
+      {projectId && (
+        <p className="muted small">
+          Its agents get GitHub tools for the role{tools.includes("sandbox") ? ", and each a checkout of the repository on its own branch; their work is delivered as a pull request that a person reviews" : ""}.
+          {!tools.includes("sandbox") && " Grant Sandbox to give them a checkout."}
+        </p>
+      )}
       <label>
         Communicator runs
         <select value={communicator} onChange={(e) => setCommunicator(e.target.value)}>

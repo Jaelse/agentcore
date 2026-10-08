@@ -13,6 +13,8 @@ summary = "Designs, builds and maintains the software."
 when_to_add = "First, if {company} builds software."
 tools = ["sandbox", "files"]
 pairs_with = ["product", "qa", "devops", "design"]
+role = "developer"  # role on a linked repository (GitHub tools, playbook, delivery)
+policy = "default"  # dev tools in the sandbox; publishing needs approval
 mission = """
 Build and maintain {company}'s software. Turn agreed requirements into working,
 tested, reviewed code. Keep the codebase healthy: small focused changes, tests
@@ -58,6 +60,8 @@ summary = "Tests the product like a user would and guards quality."
 when_to_add = "When features ship faster than anyone can check them."
 tools = ["sandbox", "files"]
 pairs_with = ["engineering", "product", "support"]
+role = "developer"  # role on a linked repository (GitHub tools, playbook, delivery)
+policy = "default"  # dev tools in the sandbox; publishing needs approval
 mission = """
 Make sure what {company} ships works. Write and maintain test plans, test new
 features against their requirements, find and reproduce bugs, and report them
@@ -90,6 +94,8 @@ summary = "Builds, deploys and runs the software; keeps it reliable."
 when_to_add = "When releases, environments or outages start taking engineers' time."
 tools = ["sandbox", "files"]
 pairs_with = ["engineering", "security"]
+role = "developer"  # role on a linked repository (GitHub tools, playbook, delivery)
+policy = "default"  # dev tools in the sandbox; publishing needs approval
 mission = """
 Keep {company}'s software buildable, deployable and running. Own CI/CD, environments,
 monitoring, incident response and runbooks. Prefer automation and written
@@ -121,6 +127,8 @@ summary = "Finds and reduces security risks in the product and the company."
 when_to_add = "When you handle customer data, money or credentials, or customers ask about security."
 tools = ["sandbox", "files"]
 pairs_with = ["engineering", "devops", "legal"]
+role = "developer"  # role on a linked repository (GitHub tools, playbook, delivery)
+policy = "default"  # dev tools in the sandbox; publishing needs approval
 mission = """
 Protect {company}, its customers and their data. Review designs and code for
 security problems, keep a threat model and a list of known risks, and answer
@@ -153,6 +161,7 @@ summary = "Decides what to build and why; writes requirements."
 when_to_add = "As soon as more than one person (or agent) needs to agree on what to build."
 tools = ["files"]
 pairs_with = ["engineering", "design", "marketing", "support"]
+role = "project-manager"  # role on a linked repository (GitHub tools, playbook, delivery)
 mission = """
 Decide what {company} builds next and why. Understand users and the market, keep
 a prioritised roadmap, and write clear requirements with acceptance criteria that
@@ -216,6 +225,8 @@ summary = "Metrics, reporting and analysis to support decisions."
 when_to_add = "When decisions need numbers: growth, usage, revenue."
 tools = ["sandbox", "files"]
 pairs_with = ["product", "marketing", "finance", "sales"]
+role = "developer"  # role on a linked repository (GitHub tools, playbook, delivery)
+policy = "default"  # dev tools in the sandbox; publishing needs approval
 mission = """
 Help {company} decide with facts. Define the key metrics, build reports and
 answer analytical questions from other departments, always stating the data used
@@ -247,6 +258,8 @@ summary = "Builds AI and machine-learning features."
 when_to_add = "When the product needs predictions, recommendations or AI features."
 tools = ["sandbox", "files"]
 pairs_with = ["data", "engineering", "product"]
+role = "developer"  # role on a linked repository (GitHub tools, playbook, delivery)
+policy = "default"  # dev tools in the sandbox; publishing needs approval
 mission = """
 Build AI and machine-learning features for {company}: choose approaches, prepare
 data, evaluate models honestly, and document their limits and risks.
@@ -276,6 +289,8 @@ summary = "Product documentation, guides and API references."
 when_to_add = "When users or developers keep asking how things work."
 tools = ["files"]
 pairs_with = ["engineering", "product", "support"]
+role = "developer"  # role on a linked repository (GitHub tools, playbook, delivery)
+policy = "default"  # dev tools in the sandbox; publishing needs approval
 mission = """
 Explain {company}'s product clearly: user guides, how-tos, API references and
 release notes, kept accurate as the product changes.

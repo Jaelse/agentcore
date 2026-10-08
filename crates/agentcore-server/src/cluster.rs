@@ -316,7 +316,7 @@ async fn start_agent(
     let Some(dept) = org.department(agent.department_id) else {
         return Ok(());
     };
-    match org::start_agent_session(state, org, agent, dept, models) {
+    match org::start_agent_session(state, org, agent, dept, models).await {
         Ok(session) => {
             tracing::info!(
                 agent = %agent.name,

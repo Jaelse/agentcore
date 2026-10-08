@@ -101,6 +101,8 @@ export interface Department {
   communicator_agent: string;
   state: "active" | "paused";
   template: string | null;
+  project_id: string | null;
+  role: string | null;
   created_at: string;
   updated_by: string;
   agents: OrgAgent[];
@@ -197,6 +199,7 @@ export interface PlannedDepartment {
   mission: string;
   tools: string[];
   policy: string | null;
+  role: string | null;
   agents: { name: string; title: string; instructions: string }[];
   exists: boolean;
 }

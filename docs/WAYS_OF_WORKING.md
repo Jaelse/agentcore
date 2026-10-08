@@ -179,6 +179,16 @@ sequenceDiagram
    comments, continue the session and deliver again: the same pull request is
    updated.
 
+## Whole departments on a repository
+
+Besides starting one agent on one issue, you can let a department of
+agents work on a project continuously: link the department to the project
+(Organisation → department → Edit, or choose the repository when building
+the organisation). Its workers then work in the department's role on the
+repository, with the same playbook, conventions, checks and delivery as
+described here, and coordinate through their department and its
+communicator. See [Multi-agent organisations](MULTI_AGENT.md#working-on-a-repository).
+
 ## When to change what
 
 | You want the agent to... | Change |

@@ -8,6 +8,7 @@ summary = "Answers customer questions and solves their problems."
 when_to_add = "As soon as you have users who need help."
 tools = ["files"]
 pairs_with = ["engineering", "qa", "success", "docs"]
+role = "project-manager"  # role on a linked repository (GitHub tools, playbook, delivery)
 mission = """
 Help {company}'s customers quickly and kindly. Answer questions, troubleshoot
 problems, escalate bugs to engineering with clear reproduction steps, and grow a

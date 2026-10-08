@@ -58,7 +58,7 @@ impl AppState {
             }))
     }
 
-    async fn require_github(&self) -> ApiResult<(GitHub, GitHubConfig, String)> {
+    pub(crate) async fn require_github(&self) -> ApiResult<(GitHub, GitHubConfig, String)> {
         self.github().await?.ok_or_else(|| {
             ApiError::new(
                 StatusCode::PRECONDITION_FAILED,
@@ -67,20 +67,20 @@ impl AppState {
         })
     }
 
-    async fn project(&self, id: Uuid) -> ApiResult<Project> {
+    pub(crate) async fn project(&self, id: Uuid) -> ApiResult<Project> {
         self.store
             .get_project(id)
             .await?
             .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, format!("project {id} not found")))
     }
 
-    fn role(&self, name: &str) -> ApiResult<Arc<Role>> {
+    pub(crate) fn role(&self, name: &str) -> ApiResult<Arc<Role>> {
         self.roles
             .get(name)
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, format!("unknown role `{name}`")))
     }
 
-    fn mirror_path(&self, session: SessionId) -> PathBuf {
+    pub(crate) fn mirror_path(&self, session: SessionId) -> PathBuf {
         self.config
             .storage
             .data_dir
@@ -201,7 +201,7 @@ pub struct GitHubTools {
 }
 
 impl GitHubTools {
-    fn new(gh: Option<GitHub>, project: &Project, role: &Role) -> Self {
+    pub(crate) fn new(gh: Option<GitHub>, project: &Project, role: &Role) -> Self {
         let allowed = role
             .capabilities
             .iter()
@@ -1161,6 +1161,31 @@ pub async fn deliver_session(
     .await;
     state.delivering.lock().await.remove(&id);
     Ok(Json(result?))
+}
+
+/// A workspace setup that clones `project` into the session's workspace on
+/// `work_branch`. Set the returned cell to the session's mirror path right
+/// after the session is created.
+pub(crate) fn repository_setup(
+    project: &Project,
+    config: &GitHubConfig,
+    token: &str,
+    work_branch: String,
+) -> (Arc<dyn WorkspaceSetup>, Arc<std::sync::OnceLock<PathBuf>>) {
+    let cell: Arc<std::sync::OnceLock<PathBuf>> = Arc::default();
+    let setup = LazyMirrorSetup {
+        cell: cell.clone(),
+        inner: GitRepoSetup {
+            config: config.clone(),
+            token: token.to_string(),
+            owner: project.repo_owner.clone(),
+            repo: project.repo_name.clone(),
+            branch: project.default_branch.clone(),
+            work_branch,
+            mirror: PathBuf::new(),
+        },
+    };
+    (Arc::new(setup), cell)
 }
 
 #[cfg(test)]

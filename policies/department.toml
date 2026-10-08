@@ -47,3 +47,19 @@ description = "Inspect and process files in the workspace."
 effect = "allow"
 kinds = ["exec"]
 commands = ["ls*", "cat *", "head *", "tail *", "wc *", "grep *", "rg *", "find *", "pwd", "echo *", "diff *", "sort *", "uniq *", "jq *", "python3 *", "python *"]
+
+# ---- departments linked to a GitHub project ---------------------------------
+
+[[rules]]
+id = "allow-github-reads"
+description = "Reading issues, milestones, the board and discussions of the linked repository."
+effect = "allow"
+kinds = ["tool_call"]
+tools = ["github_list_*", "github_get_*", "propose_pull_request"]
+
+[[rules]]
+id = "approve-github-writes"
+description = "Comments and changes on GitHub are visible to the whole team: a person approves."
+effect = "require_approval"
+kinds = ["tool_call"]
+tools = ["github_comment_*", "github_create_*", "github_update_*", "github_set_*"]
