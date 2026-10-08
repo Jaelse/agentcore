@@ -87,6 +87,14 @@ case "$0" in
 esac
 "###;
 
+/// Calls the model once per turn (25 input and 15 output tokens).
+const SPENDER: &str = r#"
+curl -sN "$ANTHROPIC_BASE_URL/v1/messages" -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H 'anthropic-version: 2023-06-01' -H 'content-type: application/json' \
+  -d '{"model":"claude-test","stream":true,"max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'
+echo
+"#;
+
 /// Runs a script on the first turn and on every message (`$0` = text).
 fn agent(name: &str, script: &str) -> AgentSpec {
     let first = format!("{CALL}\nset -- \"$0\"\n{script}\necho \"{name} turn: $0\" | head -c 300");
@@ -149,6 +157,7 @@ fn config(dir: &std::path::Path, db_url: &str, bind: std::net::SocketAddr, node:
         agent("idle-bot", ""),
         agent("goal-bot", GOAL_WORKER),
         agent("retro-bot", RETRO),
+        agent("spender", SPENDER),
     ];
     config
 }
@@ -1379,6 +1388,231 @@ async fn retrospective_proposes_people_decide() {
     assert!(m["signals"].is_array());
 
     node.ok("POST", &format!("/org/agents/{bot_id}/stop"), None)
+        .await;
+    node.cluster.cancel();
+}
+
+/// An Anthropic-style upstream that reports 25 input and 15 output tokens.
+async fn mock_model() -> String {
+    use axum::response::IntoResponse;
+    let app = axum::Router::new().route(
+        "/v1/messages",
+        axum::routing::post(|| async {
+            let sse = concat!(
+                "event: message_start\n",
+                "data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-test\",\"usage\":{\"input_tokens\":25,\"output_tokens\":1}}}\n\n",
+                "event: content_block_delta\n",
+                "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"MODEL-ANSWER\"}}\n\n",
+                "event: message_delta\n",
+                "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":15}}\n\n",
+            );
+            ([("content-type", "text/event-stream")], sse).into_response()
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn budgets_price_calls_and_stop_spending() {
+    let Some((_, db_url)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let node = start(dir.path(), &db_url, "n1", 10).await;
+    let upstream = mock_model().await;
+    node.ok(
+        "POST",
+        "/providers",
+        Some(json!({
+            "name": "anthropic", "kind": "anthropic", "base_url": upstream,
+            "api_key": "sk-real-key", "allowed_models": ["claude-*"],
+        })),
+    )
+    .await;
+
+    // Prices: the most specific one wins (claude-* over *).
+    let (code, _) = node
+        .call(
+            "PUT",
+            "/org/prices",
+            "alice-token",
+            Some(json!({ "provider": "anthropic", "model": "*", "input_per_mtok": 0, "output_per_mtok": 0 })),
+        )
+        .await;
+    assert_eq!(code, 403, "admins set prices");
+    for (model, input, output) in [("*", 0.0, 0.0), ("claude-*", 4000.0, 20000.0)] {
+        node.ok(
+            "PUT",
+            "/org/prices",
+            Some(json!({
+                "provider": "anthropic", "model": model,
+                "input_per_mtok": input, "output_per_mtok": output,
+            })),
+        )
+        .await;
+    }
+    node.ok("PUT", "/org/currency", Some(json!({ "currency": "eur" })))
+        .await;
+
+    let ops = node
+        .ok("POST", "/org/departments", Some(department("Ops", &[])))
+        .await;
+    let ops_id = ops["id"].as_str().unwrap().to_string();
+    // 25 × 4000 + 15 × 20000 micros = 0.40 per call; 1.00 per day pauses.
+    let budget = node
+        .ok(
+            "POST",
+            "/org/budgets",
+            Some(json!({
+                "department_id": ops_id, "period": "day",
+                "limit_micros": 1_000_000, "action": "pause",
+            })),
+        )
+        .await;
+    let budget_id = budget["id"].as_str().unwrap().to_string();
+    let spender = node
+        .ok(
+            "POST",
+            &format!("/org/departments/{ops_id}/agents"),
+            Some(json!({ "name": "spender", "agent": "spender" })),
+        )
+        .await;
+    let sid = spender["id"].as_str().unwrap().to_string();
+    node.ok("POST", &format!("/org/agents/{sid}/start"), None)
+        .await;
+    let session = node
+        .wait_agent(&sid, "spender waiting", |a| a["status"] == "awaiting_input")
+        .await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let out = output(&node.events(&session).await);
+    assert!(out.contains("MODEL-ANSWER"), "{out}");
+
+    // Two more calls: 1.20 spent, over the limit.
+    for i in 0..2 {
+        node.ok(
+            "POST",
+            "/org/messages",
+            Some(json!({ "to": { "agent": sid }, "text": format!("again {i}") })),
+        )
+        .await;
+        for _ in 0..200 {
+            let a = node.agent(&sid).await;
+            let calls = node.ok("GET", &format!("/sessions/{session}"), None).await["session"]
+                ["model_calls"]
+                .as_i64()
+                .unwrap_or(0);
+            if calls >= i + 2 && a["status"] == "awaiting_input" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    // The heartbeat notices: the department is paused by the budget.
+    let mut dept = Value::Null;
+    for _ in 0..100 {
+        let org = node.ok("GET", "/org", None).await;
+        dept = org["departments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["id"] == ops_id.as_str())
+            .unwrap()
+            .clone();
+        if dept["state"] == "paused" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(dept["state"], "paused", "{dept}");
+    assert_eq!(dept["updated_by"], "budget");
+    let spending = node.ok("GET", "/org/spending", None).await;
+    assert_eq!(spending["currency"], "EUR");
+    assert_eq!(
+        spending["budgets"][0]["spent_micros"], 1_200_000,
+        "{spending}"
+    );
+    assert_eq!(
+        spending["budgets"][0]["paused_departments"][0],
+        ops_id.as_str()
+    );
+    assert_eq!(spending["unpriced_calls"], 0);
+    let metrics = node.ok("GET", "/org/metrics?days=1", None).await;
+    assert!(
+        metrics["signals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["kind"] == "budget_used_up"),
+        "{}",
+        metrics["signals"]
+    );
+    let ops_metrics = metrics["metrics"]["departments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == ops_id.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(ops_metrics["cost_micros"], 1_200_000);
+
+    // Resumed by hand, the work goes on, but model calls are refused.
+    node.ok("POST", &format!("/org/departments/{ops_id}/resume"), None)
+        .await;
+    node.wait_agent(&sid, "spender resumed", |a| a["status"] == "awaiting_input")
+        .await;
+    node.ok(
+        "POST",
+        "/org/messages",
+        Some(json!({ "to": { "agent": sid }, "text": "once more" })),
+    )
+    .await;
+    let mut out = String::new();
+    for _ in 0..200 {
+        out = output(&node.events(&session).await);
+        if out.contains("used up") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(out.contains("budget of 1.00 EUR is used up"), "{out}");
+
+    // A higher limit lets it spend again.
+    node.ok(
+        "PUT",
+        &format!("/org/budgets/{budget_id}"),
+        Some(json!({ "limit_micros": 10_000_000 })),
+    )
+    .await;
+    node.ok(
+        "POST",
+        "/org/messages",
+        Some(json!({ "to": { "agent": sid }, "text": "and again" })),
+    )
+    .await;
+    for _ in 0..200 {
+        out = output(&node.events(&session).await);
+        if out.matches("MODEL-ANSWER").count() >= 4 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(out.matches("MODEL-ANSWER").count(), 4, "{out}");
+    let spending = node.ok("GET", "/org/spending", None).await;
+    assert_eq!(spending["budgets"][0]["spent_micros"], 1_600_000);
+    assert!(
+        spending["budgets"][0]["paused_departments"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    node.ok("POST", &format!("/org/agents/{sid}/stop"), None)
         .await;
     node.cluster.cancel();
 }

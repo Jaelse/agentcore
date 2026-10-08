@@ -176,6 +176,15 @@ pub enum ProposalAction {
         agent: Option<OrgAgentId>,
         text: String,
     },
+    /// Set (or replace) a spending budget; `limit` in the organisation's
+    /// currency.
+    SetBudget {
+        #[serde(default)]
+        department: Option<DepartmentId>,
+        period: BudgetPeriod,
+        limit: f64,
+        action: BudgetAction,
+    },
     /// Change the organisation's limits.
     SetLimits {
         #[serde(default)]
@@ -187,7 +196,7 @@ pub enum ProposalAction {
 
 impl ProposalAction {
     /// Every kind, for settings and validation.
-    pub const KINDS: [&'static str; 10] = [
+    pub const KINDS: [&'static str; 11] = [
         "update_instructions",
         "add_agent",
         "remove_agent",
@@ -197,6 +206,7 @@ impl ProposalAction {
         "update_check_in",
         "create_goal",
         "send_message",
+        "set_budget",
         "set_limits",
     ];
 
@@ -211,6 +221,7 @@ impl ProposalAction {
             Self::UpdateCheckIn { .. } => "update_check_in",
             Self::CreateGoal { .. } => "create_goal",
             Self::SendMessage { .. } => "send_message",
+            Self::SetBudget { .. } => "set_budget",
             Self::SetLimits { .. } => "set_limits",
         }
     }
@@ -222,6 +233,7 @@ impl ProposalAction {
             Self::AddAgent { .. }
                 | Self::RemoveAgent { .. }
                 | Self::UpdateDepartment { .. }
+                | Self::SetBudget { .. }
                 | Self::SetLimits { .. }
         )
     }
@@ -257,6 +269,133 @@ pub struct Proposal {
     pub result: Option<Vec<ActionResult>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// Price of a model per million tokens. `model` is an exact name, a prefix
+/// ending in `*`, or `*` for every model of the provider.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelPrice {
+    pub provider: String,
+    pub model: String,
+    pub input_per_mtok: f64,
+    pub output_per_mtok: f64,
+    pub updated_at: DateTime<Utc>,
+    pub updated_by: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BudgetPeriod {
+    Day,
+    Week,
+    Month,
+}
+
+impl BudgetPeriod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Day => "day",
+            Self::Week => "week",
+            Self::Month => "month",
+        }
+    }
+}
+
+impl std::str::FromStr for BudgetPeriod {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "day" => Ok(Self::Day),
+            "week" => Ok(Self::Week),
+            "month" => Ok(Self::Month),
+            other => Err(format!("unknown budget period `{other}`")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BudgetAction {
+    /// Tell people when the warning level and the limit are reached.
+    Warn,
+    /// Also pause the work and block model calls when the limit is reached.
+    Pause,
+}
+
+impl BudgetAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Warn => "warn",
+            Self::Pause => "pause",
+        }
+    }
+}
+
+impl std::str::FromStr for BudgetAction {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "warn" => Ok(Self::Warn),
+            "pause" => Ok(Self::Pause),
+            other => Err(format!("unknown budget action `{other}`")),
+        }
+    }
+}
+
+/// A spending limit on model calls for the organisation (no department)
+/// or one department, per calendar period (UTC).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Budget {
+    pub id: Uuid,
+    pub department_id: Option<DepartmentId>,
+    pub period: BudgetPeriod,
+    /// In millionths of the organisation's currency.
+    pub limit_micros: i64,
+    pub action: BudgetAction,
+    pub warn_percent: u32,
+    pub updated_at: DateTime<Utc>,
+    pub updated_by: String,
+}
+
+/// A budget and how much of it the current period used.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BudgetStatus {
+    #[serde(flatten)]
+    pub budget: Budget,
+    pub period_start: DateTime<Utc>,
+    pub period_end: DateTime<Utc>,
+    pub spent_micros: i64,
+    /// Departments this budget paused and will resume next period.
+    pub paused_departments: Vec<DepartmentId>,
+    /// Start of the period in which it ran out (until released).
+    pub exhausted_period: Option<DateTime<Utc>>,
+}
+
+impl BudgetStatus {
+    pub fn used(&self) -> f64 {
+        self.spent_micros as f64 / self.budget.limit_micros.max(1) as f64
+    }
+
+    pub fn exhausted(&self) -> bool {
+        self.spent_micros >= self.budget.limit_micros
+    }
+
+    pub fn warning(&self) -> bool {
+        self.used() * 100.0 >= f64::from(self.budget.warn_percent)
+    }
+
+    /// Model calls in this budget's scope are refused.
+    pub fn blocks(&self) -> bool {
+        self.budget.action == BudgetAction::Pause && self.exhausted()
+    }
+
+    /// Applies to work of this department (an organisation budget applies
+    /// to everything).
+    pub fn covers(&self, department: Option<DepartmentId>) -> bool {
+        self.budget.department_id.is_none() || self.budget.department_id == department
+    }
 }
 
 #[cfg(test)]

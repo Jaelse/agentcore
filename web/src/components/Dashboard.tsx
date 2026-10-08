@@ -9,6 +9,12 @@ export function compact(n: number) {
   return Math.round(n).toLocaleString();
 }
 
+/** Money from micros: 12.35 EUR. */
+export function money(micros: number, currency: string) {
+  const v = micros / 1e6;
+  return `${v >= 1000 ? compact(v) : v.toFixed(2)} ${currency}`;
+}
+
 export function duration(secs: number | null) {
   if (secs === null || Number.isNaN(secs)) return "–";
   if (secs < 60) return `${Math.round(secs)} s`;
@@ -54,7 +60,19 @@ function columnPath(x: number, y: number, w: number, h: number) {
 }
 
 /** One measure per day: columns from one baseline, hover for the value. */
-function DailyColumns({ title, days, value, unit }: { title: string; days: DayMetrics[]; value: (d: DayMetrics) => number; unit: string }) {
+export function DailyColumns({
+  title,
+  days,
+  value,
+  unit,
+  format = compact,
+}: {
+  title: string;
+  days: DayMetrics[];
+  value: (d: DayMetrics) => number;
+  unit: string;
+  format?: (n: number) => string;
+}) {
   const [ref, width] = useWidth<HTMLDivElement>();
   const [hover, setHover] = useState<number | null>(null);
   const height = 120;
@@ -72,12 +90,12 @@ function DailyColumns({ title, days, value, unit }: { title: string; days: DayMe
     <figure className="viz-card" ref={ref}>
       <figcaption>
         <span>{title}</span>
-        <strong>{compact(total)}</strong>
+        <strong>{format(total)}</strong>
       </figcaption>
-      <svg width={width} height={height} role="img" aria-label={`${title}: ${compact(total)} in ${days.length} days`}>
+      <svg width={width} height={height} role="img" aria-label={`${title}: ${format(total)} in ${days.length} days`}>
         <line className="viz-grid" x1={0} x2={width} y1={top} y2={top} />
         <text className="viz-axis" x={0} y={top - 4}>
-          {compact(max)}
+          {format(max)}
         </text>
         <line className="viz-baseline" x1={0} x2={width} y1={top + plotH} y2={top + plotH} />
         {days.map((d, i) => {
@@ -105,7 +123,7 @@ function DailyColumns({ title, days, value, unit }: { title: string; days: DayMe
         <div className="viz-tooltip" style={{ left: Math.min(Math.max(hover * band + band / 2, 60), width - 60) }}>
           <span className="muted">{dayLabel(days[hover].day)}</span>
           <strong>
-            {values[hover].toLocaleString()} {unit}
+            {format === compact ? values[hover].toLocaleString() : format(values[hover])} {unit}
           </strong>
         </div>
       )}
@@ -187,6 +205,8 @@ export function Dashboard({
   const activeGoals = m.goals.filter((g) => g.status === "active");
   const moving = activeGoals.filter((g) => g.progress_reports > 0).length;
   const maxTokens = Math.max(...depts.map((d) => d.tokens), 1);
+  const spend = sum((d) => d.cost_micros);
+  const cur = data.currency;
 
   return (
     <div className="session dashboard">
@@ -252,22 +272,27 @@ export function Dashboard({
       <div className="stat-row">
         <Tile label="Agents working" value={String(working)} note={`${asleep} asleep`} />
         <Tile label="Agent-hours" value={hours.toFixed(1)} note="sessions running" />
+        <Tile
+          label={`Spend (${cur})`}
+          value={spend > 0 ? (spend / 1e6 >= 1000 ? compact(spend / 1e6) : (spend / 1e6).toFixed(2)) : "–"}
+          note={spend > 0 ? `${data.budgets.length} budget(s)` : "set prices to see it"}
+          trend={spend > 0 ? m.daily.map((d) => d.cost_micros) : undefined}
+        />
         <Tile label="Tokens" value={compact(sum((d) => d.tokens))} note={`${compact(sum((d) => d.model_calls))} model calls`} trend={m.daily.map((d) => d.tokens)} />
         <Tile label="Messages" value={compact(sum((d) => d.messages))} note={`${compact(sum((d) => d.inter_department))} between departments`} trend={m.daily.map((d) => d.messages)} />
         <Tile label="Wait for a reply" value={duration(avgWait)} note="average, message to recipient" />
         <Tile label="Goals moving" value={`${moving}/${activeGoals.length}`} note="with progress reports" />
-        <Tile
-          label="Improvements"
-          value={String(m.proposals.applied)}
-          note={`applied · ${m.proposals.open + m.proposals.changes_requested} waiting`}
-        />
       </div>
 
       <div className="viz-grid-3">
         <DailyColumns title="Sessions" days={m.daily} value={(d) => d.sessions} unit="sessions" />
         <DailyColumns title="Messages" days={m.daily} value={(d) => d.messages} unit="messages" />
         <DailyColumns title="Tokens" days={m.daily} value={(d) => d.tokens} unit="tokens" />
-        <DailyColumns title="Model calls" days={m.daily} value={(d) => d.model_calls} unit="calls" />
+        {spend > 0 ? (
+          <DailyColumns title={`Spend (${cur})`} days={m.daily} value={(d) => d.cost_micros} unit="" format={(n) => money(n, cur)} />
+        ) : (
+          <DailyColumns title="Model calls" days={m.daily} value={(d) => d.model_calls} unit="calls" />
+        )}
         <DailyColumns title="Failed sessions" days={m.daily} value={(d) => d.failed_sessions} unit="failed" />
         <DailyColumns title="Denied actions" days={m.daily} value={(d) => d.denied} unit="denied" />
       </div>
@@ -283,6 +308,7 @@ export function Dashboard({
                 <th>Sessions</th>
                 <th>Agent-hours</th>
                 <th>Tokens</th>
+                <th>Spend</th>
                 <th title="sent / received">Messages</th>
                 <th title="average time until the recipient got it">Wait</th>
                 <th>Failed</th>
@@ -313,6 +339,7 @@ export function Dashboard({
                       <em>{compact(d.tokens)}</em>
                     </div>
                   </td>
+                  <td>{d.cost_micros > 0 ? money(d.cost_micros, cur) : "–"}</td>
                   <td>
                     {d.messages_sent} / {d.messages_received}
                   </td>
@@ -342,6 +369,7 @@ export function Dashboard({
                   <th>Sessions</th>
                   <th>Hours</th>
                   <th>Tokens</th>
+                  <th>Spend</th>
                   <th>Sent</th>
                   <th>Last active</th>
                 </tr>
@@ -363,6 +391,7 @@ export function Dashboard({
                       </td>
                       <td>{a.agent_hours.toFixed(1)}</td>
                       <td>{compact(a.tokens)}</td>
+                      <td>{a.cost_micros > 0 ? money(a.cost_micros, cur) : "–"}</td>
                       <td>{a.messages_sent}</td>
                       <td className="muted">{ago(a.last_active)}</td>
                     </tr>

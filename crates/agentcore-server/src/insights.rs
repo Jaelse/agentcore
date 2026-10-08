@@ -486,9 +486,82 @@ fn hours(secs: f64) -> String {
 }
 
 /// Look for inefficiencies in the metrics.
-pub fn signals(m: &Metrics, check_ins: &[OrgSchedule]) -> Vec<Signal> {
+pub fn signals(
+    m: &Metrics,
+    check_ins: &[OrgSchedule],
+    budgets: &[agentcore_core::BudgetStatus],
+    currency: &str,
+) -> Vec<Signal> {
     let now = chrono::Utc::now();
     let mut out = Vec::new();
+    let money = |micros: i64| crate::budgets::money(micros, currency);
+    for b in budgets {
+        let scope = b
+            .budget
+            .department_id
+            .and_then(|id| m.departments.iter().find(|d| d.id == id))
+            .map_or("The organisation".to_string(), |d| d.name.clone());
+        let period = b.budget.period.as_str();
+        if b.exhausted() {
+            out.push(Signal {
+                severity: "high",
+                kind: "budget_used_up",
+                title: format!(
+                    "{scope} used up its {period} budget ({} of {})",
+                    money(b.spent_micros),
+                    money(b.budget.limit_micros)
+                ),
+                detail: if b.blocks() {
+                    format!(
+                        "Work is paused and model calls are refused until {}.",
+                        b.period_end.format("%Y-%m-%d %H:%M UTC")
+                    )
+                } else {
+                    "The budget only warns; work continues.".into()
+                },
+                suggestion: "Find what used the most (departments and agents below) before \
+                             raising the budget."
+                    .into(),
+                department_id: b.budget.department_id,
+                agent_id: None,
+                goal_id: None,
+            });
+        } else if b.warning() {
+            out.push(Signal {
+                severity: "medium",
+                kind: "budget_warning",
+                title: format!(
+                    "{scope} used {:.0}% of its {period} budget",
+                    b.used() * 100.0
+                ),
+                detail: format!(
+                    "{} of {}; the period ends {}.",
+                    money(b.spent_micros),
+                    money(b.budget.limit_micros),
+                    b.period_end.format("%Y-%m-%d %H:%M UTC")
+                ),
+                suggestion: "Pause what is least important, or make check-ins less frequent."
+                    .into(),
+                department_id: b.budget.department_id,
+                agent_id: None,
+                goal_id: None,
+            });
+        }
+    }
+    let tokens: i64 = m.daily.iter().map(|d| d.tokens).sum();
+    let cost: i64 = m.daily.iter().map(|d| d.cost_micros).sum();
+    if tokens > 0 && cost == 0 {
+        out.push(Signal {
+            severity: "low",
+            kind: "unpriced",
+            title: format!("{} tokens used, but their cost is unknown", compact(tokens)),
+            detail: "No prices are set for the models in use.".into(),
+            suggestion: "Set prices under Spending, then price past calls.".into(),
+            department_id: None,
+            agent_id: None,
+            goal_id: None,
+        });
+    }
     let dept_name = |id: Uuid| {
         m.departments
             .iter()
@@ -746,6 +819,16 @@ pub async fn validate_actions(state: &AppState, actions: &[ProposalAction]) -> R
                 }
                 _ => return Err(at("give either `department` or `agent`".into())),
             },
+            ProposalAction::SetBudget {
+                department, limit, ..
+            } => {
+                if let Some(d) = department {
+                    dept(*d).map_err(at)?;
+                }
+                if !limit.is_finite() || *limit <= 0.0 {
+                    return Err(at("`limit` is an amount above zero".into()));
+                }
+            }
             ProposalAction::SetLimits { .. } => {}
         }
     }
@@ -1059,6 +1142,34 @@ async fn apply_one(state: &AppState, action: &ProposalAction, by: &str) -> Resul
                 .map_err(|e| e.to_string())?;
             Ok(format!("message sent to {}", m.to_name))
         }
+        ProposalAction::SetBudget {
+            department,
+            period,
+            limit,
+            action,
+        } => {
+            let b = store
+                .set_budget(
+                    agentcore_store::BudgetInput {
+                        department_id: *department,
+                        period: *period,
+                        limit_micros: (limit * 1e6).round() as i64,
+                        action: *action,
+                        warn_percent: 80,
+                    },
+                    by,
+                )
+                .await
+                .map_err(e)?;
+            let currency = store.currency().await.map_err(e)?;
+            notify(store, json!({ "kind": "budget" })).await;
+            Ok(format!(
+                "budget of {} per {} ({})",
+                crate::budgets::money(b.limit_micros, &currency),
+                b.period.as_str(),
+                b.action.as_str()
+            ))
+        }
         ProposalAction::SetLimits {
             max_departments,
             max_agents_per_department,
@@ -1127,8 +1238,9 @@ const ACTIONS_HELP: &str = "Each change is an object with `kind` and its fields 
     start|pause|resume|stop}; update_department {department, mission?, policy?, tools?}; \
     create_check_in {department, agent?, name, message, every_minutes}; update_check_in \
     {check_in, message?, every_minutes?, enabled?}; create_goal {title, description?, \
-    department?}; send_message {department | agent, text}; set_limits {max_departments?, \
-    max_agents_per_department?}.";
+    department?}; send_message {department | agent, text}; set_budget {department?, period: \
+    day|week|month, limit (in the organisation's currency), action: warn|pause}; set_limits \
+    {max_departments?, max_agents_per_department?}.";
 
 #[async_trait]
 impl ToolHandler for InsightsTools {
@@ -1138,8 +1250,9 @@ impl ToolHandler for InsightsTools {
                 "insights_metrics",
                 "How the organisation is doing over the last `days` (default 14): per day, per \
                  department and per agent (sessions, failures, agent-hours, model calls, tokens, \
-                 messages, waiting times, denied actions, approvals, progress reports, data \
-                 queries), goals, proposals, and signals of likely inefficiencies.",
+                 cost, messages, waiting times, denied actions, approvals, progress reports, \
+                 data queries), goals, proposals, budgets with how much is used, and signals of \
+                 likely inefficiencies.",
                 json!({ "days": { "type": "integer", "minimum": 1, "maximum": 90 } }),
                 &[],
             ),
@@ -1220,8 +1333,13 @@ impl ToolHandler for InsightsTools {
                 let days = arguments["days"].as_u64().unwrap_or(14).clamp(1, 90) as u32;
                 let metrics = store.org_metrics(days).await.map_err(e)?;
                 let check_ins = store.list_schedules(None).await.map_err(e)?;
-                let signals = signals(&metrics, &check_ins);
-                Ok(json!({ "metrics": metrics, "signals": signals }))
+                let budgets = store.budget_statuses().await.map_err(e)?;
+                let currency = store.currency().await.map_err(e)?;
+                let signals = signals(&metrics, &check_ins, &budgets, &currency);
+                Ok(json!({
+                    "metrics": metrics, "signals": signals, "budgets": budgets,
+                    "currency": currency,
+                }))
             }
             "insights_org" => {
                 let check_ins = store.list_schedules(None).await.map_err(e)?;
@@ -1378,8 +1496,12 @@ pub async fn metrics(
 ) -> ApiResult<Json<Value>> {
     let metrics = state.store.org_metrics(q.days.unwrap_or(14)).await?;
     let check_ins = state.store.list_schedules(None).await?;
-    let signals = signals(&metrics, &check_ins);
-    Ok(Json(json!({ "metrics": metrics, "signals": signals })))
+    let budgets = state.store.budget_statuses().await?;
+    let currency = state.store.currency().await?;
+    let signals = signals(&metrics, &check_ins, &budgets, &currency);
+    Ok(Json(json!({
+        "metrics": metrics, "signals": signals, "budgets": budgets, "currency": currency,
+    })))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1762,6 +1884,7 @@ mod tests {
             agent_hours: 0.0,
             model_calls: 0,
             tokens: 0,
+            cost_micros: 0,
             messages_sent: 0,
             messages_received: 0,
             avg_wait_secs: None,
@@ -1790,6 +1913,7 @@ mod tests {
             agent_hours: 9.0,
             model_calls: 10,
             tokens: 300_000,
+            cost_micros: 0,
             messages_sent: 0,
             last_active: None,
         };
@@ -1811,7 +1935,10 @@ mod tests {
             goals: vec![goal],
             proposals: ProposalCounts::default(),
         };
-        let kinds: Vec<&str> = signals(&m, &[]).iter().map(|s| s.kind).collect();
+        let kinds: Vec<&str> = signals(&m, &[], &[], "USD")
+            .iter()
+            .map(|s| s.kind)
+            .collect();
         for kind in [
             "idle_department",
             "unread_mail",
@@ -1822,7 +1949,11 @@ mod tests {
         ] {
             assert!(kinds.contains(&kind), "{kind} in {kinds:?}");
         }
-        assert_eq!(signals(&m, &[])[0].severity, "high", "most severe first");
+        assert_eq!(
+            signals(&m, &[], &[], "USD")[0].severity,
+            "high",
+            "most severe first"
+        );
         // A check-in means the idle department is expected to wake up.
         let check_in = OrgSchedule {
             id: Uuid::now_v7(),
@@ -1837,7 +1968,7 @@ mod tests {
             created_by: "a".into(),
         };
         assert!(
-            !signals(&m, &[check_in])
+            !signals(&m, &[check_in], &[], "USD")
                 .iter()
                 .any(|s| s.kind == "idle_department")
         );

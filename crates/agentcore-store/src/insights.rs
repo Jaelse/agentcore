@@ -762,6 +762,8 @@ pub struct DayMetrics {
     pub failed_sessions: i64,
     pub model_calls: i64,
     pub tokens: i64,
+    /// What the model calls cost (micros of the organisation's currency).
+    pub cost_micros: i64,
     pub denied: i64,
     pub approvals: i64,
     pub progress_reports: i64,
@@ -781,6 +783,7 @@ pub struct DepartmentMetrics {
     pub agent_hours: f64,
     pub model_calls: i64,
     pub tokens: i64,
+    pub cost_micros: i64,
     pub messages_sent: i64,
     pub messages_received: i64,
     /// Average time a message waited for its recipient (seconds).
@@ -807,6 +810,7 @@ pub struct AgentMetrics {
     pub agent_hours: f64,
     pub model_calls: i64,
     pub tokens: i64,
+    pub cost_micros: i64,
     pub messages_sent: i64,
     pub last_active: Option<DateTime<Utc>>,
 }
@@ -865,6 +869,9 @@ impl Store {
                  (SELECT COALESCE(sum(COALESCE(c.input_tokens, 0) + COALESCE(c.output_tokens, 0)), 0)::bigint
                     FROM model_calls c JOIN s ON s.id = c.session_id
                    WHERE c.started_at >= d.day AND c.started_at < d.day + interval '1 day') AS tokens,
+                 (SELECT COALESCE(sum(c.cost_micros), 0)::bigint
+                    FROM model_calls c JOIN s ON s.id = c.session_id
+                   WHERE c.started_at >= d.day AND c.started_at < d.day + interval '1 day') AS cost_micros,
                  (SELECT count(*) FROM org_activity a WHERE a.kind = 'denied'
                    AND a.at >= d.day AND a.at < d.day + interval '1 day') AS denied,
                  (SELECT count(*) FROM org_activity a WHERE a.kind = 'approval'
@@ -897,6 +904,9 @@ impl Store {
                  (SELECT COALESCE(sum(COALESCE(c.input_tokens, 0) + COALESCE(c.output_tokens, 0)), 0)::bigint
                     FROM model_calls c JOIN s ON s.id = c.session_id
                    WHERE s.dept = d.id::text AND c.started_at >= $1) AS tokens,
+                 (SELECT COALESCE(sum(c.cost_micros), 0)::bigint
+                    FROM model_calls c JOIN s ON s.id = c.session_id
+                   WHERE s.dept = d.id::text AND c.started_at >= $1) AS cost_micros,
                  (SELECT count(*) FROM org_messages m WHERE m.from_department = d.id
                    AND m.from_agent IS NOT NULL AND m.created_at >= $1) AS messages_sent,
                  (SELECT count(*) FROM org_inbox i JOIN org_messages m ON m.id = i.message_id
@@ -941,6 +951,9 @@ impl Store {
                  (SELECT COALESCE(sum(COALESCE(c.input_tokens, 0) + COALESCE(c.output_tokens, 0)), 0)::bigint
                     FROM model_calls c JOIN s ON s.id = c.session_id
                    WHERE s.agent = a.id::text AND c.started_at >= $1) AS tokens,
+                 (SELECT COALESCE(sum(c.cost_micros), 0)::bigint
+                    FROM model_calls c JOIN s ON s.id = c.session_id
+                   WHERE s.agent = a.id::text AND c.started_at >= $1) AS cost_micros,
                  (SELECT count(*) FROM org_messages m WHERE m.from_agent = a.id
                    AND m.created_at >= $1) AS messages_sent,
                  greatest(

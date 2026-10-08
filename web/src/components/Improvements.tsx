@@ -12,10 +12,11 @@ const KIND_LABELS: Record<string, string> = {
   update_check_in: "Change a check-in",
   create_goal: "Add a goal",
   send_message: "Send a message",
+  set_budget: "Set a budget",
   set_limits: "Change the limits",
 };
 
-const ADMIN_KINDS = ["add_agent", "remove_agent", "update_department", "set_limits"];
+const ADMIN_KINDS = ["add_agent", "remove_agent", "update_department", "set_budget", "set_limits"];
 
 const STATUS: Record<ProposalStatus, { label: string; cls: string }> = {
   open: { label: "waiting for you", cls: "status-awaiting_input" },
@@ -84,6 +85,10 @@ function describe(a: ProposalAction, org: OrgOverview): { title: string; body?: 
       return { title: `New goal “${String(a.title)}”${a.department ? ` for ${dept(a.department)}` : ""}`, body: a.description ? String(a.description) : undefined };
     case "send_message":
       return { title: `Message to ${a.agent ? agent(a.agent) : dept(a.department)}`, body: String(a.text ?? "") };
+    case "set_budget":
+      return {
+        title: `Budget for ${a.department ? dept(a.department) : "the whole organisation"}: ${String(a.limit)} per ${String(a.period)} (${a.action === "pause" ? "pause when used up" : "warn only"})`,
+      };
     case "set_limits":
       return {
         title: `Limits: ${a.max_departments ?? "same"} departments, ${a.max_agents_per_department ?? "same"} agents each`,

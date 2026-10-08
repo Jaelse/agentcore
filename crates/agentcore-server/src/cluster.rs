@@ -111,6 +111,10 @@ async fn heartbeat(state: AppState, cancel: CancellationToken) {
             Ok(_) => {}
             Err(err) => tracing::warn!(error = %err, "checking for lost nodes failed"),
         }
+        // Any node may check budgets; each step is claimed by one node.
+        if let Err(err) = crate::budgets::evaluate(&state).await {
+            tracing::warn!(error = %err, "checking budgets failed");
+        }
         // Any node may send due check-ins; each is claimed by exactly one.
         if let Err(err) = run_check_ins(&state).await {
             tracing::warn!(error = %err, "sending check-ins failed");

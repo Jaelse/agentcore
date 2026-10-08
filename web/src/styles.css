@@ -455,3 +455,19 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
 @media (max-width: 640px) {
   .signal { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Spending */
+.meter { position: relative; height: 10px; border-radius: 5px; background: color-mix(in srgb, var(--viz-series) 18%, var(--surface)); overflow: visible; }
+.meter > span { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 5px; background: var(--viz-series); }
+.meter > span.meter-warning { background: var(--sev-warning); }
+.meter > span.meter-critical { background: var(--sev-critical); }
+.meter > i { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--muted); opacity: 0.6; }
+.hbar-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.hbar-list li { display: grid; grid-template-columns: minmax(80px, 140px) minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 13px; }
+.hbar-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hbar-track { height: 12px; }
+.hbar { display: block; height: 12px; border-radius: 0 4px 4px 0; background: var(--viz-series); min-width: 2px; }
+.hbar-value { font-variant-numeric: tabular-nums; }
+.price-form { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(160px, 2fr) repeat(2, minmax(80px, 1fr)) auto; gap: 8px; align-items: center; }
+.price-form.currency-form { grid-template-columns: auto auto; justify-content: start; }
+@media (max-width: 640px) { .price-form { grid-template-columns: 1fr 1fr; } }

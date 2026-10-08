@@ -665,6 +665,9 @@ pub struct StartContext<'a> {
     pub messages: &'a [OrgMessage],
     /// Business data the department may read.
     pub data_sources: &'a [agentcore_core::DataSource],
+    /// Budgets that cover this department, and the currency.
+    pub budgets: &'a [agentcore_core::BudgetStatus],
+    pub currency: &'a str,
 }
 
 /// Where an agent keeps its working notes (department files).
@@ -854,6 +857,36 @@ pub fn compose_prompt(
             );
         }
     }
+    let budgets: Vec<_> = start
+        .budgets
+        .iter()
+        .filter(|b| b.covers(Some(dept.id)))
+        .collect();
+    if !budgets.is_empty() {
+        p.push_str(
+            "\n## Budget\n\nModel calls cost money. Work economically: plan before you act, \
+             avoid repeating work, and stop when a task is done.\n\n",
+        );
+        for b in budgets {
+            let money = |m| crate::budgets::money(m, start.currency);
+            p.push_str(&format!(
+                "- {} budget per {}: {} of {} used{}.\n",
+                if b.budget.department_id.is_some() {
+                    "Your department's"
+                } else {
+                    "The organisation's"
+                },
+                b.budget.period.as_str(),
+                money(b.spent_micros),
+                money(b.budget.limit_micros),
+                if b.budget.action == agentcore_core::BudgetAction::Pause {
+                    "; when it is used up, work pauses until the next period"
+                } else {
+                    ""
+                },
+            ));
+        }
+    }
     if agent.kind == AgentKind::Worker && !start.data_sources.is_empty() {
         p.push_str(
             "\n## Business data\n\nRead-only data your department may use (`data_list_sources`, \
@@ -1032,6 +1065,8 @@ pub async fn start_agent_session(
     }
     options.tools = Some(Arc::new(Toolset(tools)));
     options.context = context;
+    let budgets = state.store.budget_statuses().await?;
+    let currency = state.store.currency().await?;
     // Messages that arrived while the agent was not running start it off.
     let pending = state.store.pending_messages(agent.id).await?;
     let start = StartContext {
@@ -1039,6 +1074,8 @@ pub async fn start_agent_session(
         continuing,
         messages: &pending,
         data_sources: &data_sources,
+        budgets: &budgets,
+        currency: &currency,
     };
     let session = state.manager.create(
         CreateSession {

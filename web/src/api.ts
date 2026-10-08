@@ -40,6 +40,10 @@ import type {
   Proposal,
   ProposalAction,
   ProposalStatus,
+  Spending,
+  ModelPrice,
+  BudgetPeriod,
+  BudgetAction,
 } from "./types";
 
 const TOKEN_KEY = "agentcore.token";
@@ -305,6 +309,18 @@ export const api = {
   deleteDataSource: (id: string) => request<void>("DELETE", `/org/data-sources/${id}`),
   testDataSource: (id: string, args?: Record<string, unknown>) =>
     request<{ ok: boolean; result?: unknown; error?: string }>("POST", `/org/data-sources/${id}/test`, args ?? {}),
+  spending: (days = 30) => request<Spending>("GET", `/org/spending?days=${days}`),
+  setPrice: (body: { provider: string; model: string; input_per_mtok: number; output_per_mtok: number }) =>
+    request<ModelPrice>("PUT", "/org/prices", body),
+  deletePrice: (provider: string, model: string) =>
+    request<void>("DELETE", `/org/prices?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}`),
+  pricePastCalls: () => request<{ priced: number }>("POST", "/org/prices/backfill"),
+  setCurrency: (currency: string) => request<{ currency: string }>("PUT", "/org/currency", { currency }),
+  createBudget: (body: { department_id: string | null; period: BudgetPeriod; limit_micros: number; action: BudgetAction; warn_percent: number }) =>
+    request<unknown>("POST", "/org/budgets", body),
+  updateBudget: (id: string, body: Partial<{ limit_micros: number; action: BudgetAction; warn_percent: number }>) =>
+    request<unknown>("PUT", `/org/budgets/${id}`, body),
+  deleteBudget: (id: string) => request<void>("DELETE", `/org/budgets/${id}`),
   pauseAll: () => request<void>("POST", "/org/pause-all"),
   resumeAll: () => request<void>("POST", "/org/resume-all"),
   messages: (q: { department?: string; agent?: string; limit?: number } = {}) => {

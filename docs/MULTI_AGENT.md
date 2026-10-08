@@ -21,6 +21,7 @@ that share one PostgreSQL database.
 - [Goals, check-ins and agents that keep going](#goals-check-ins-and-agents-that-keep-going)
 - [Business data](#business-data)
 - [Metrics, the retrospective and improvements](#metrics-the-retrospective-and-improvements)
+- [Spending and budgets](#spending-and-budgets)
 - [Human oversight](#human-oversight)
 - [Limits](#limits)
 - [Running on several VMs](#running-on-several-vms)
@@ -490,6 +491,7 @@ proposals (`insights_proposals`). They change nothing themselves: they
 | `update_check_in` | `check_in`, `message`?, `every_minutes`?, `enabled`? | operator |
 | `create_goal` | `title`, `description`?, `department`? | operator |
 | `send_message` | `department` or `agent`, `text` | operator |
+| `set_budget` | `department`?, `period` (`day`/`week`/`month`), `limit` (currency), `action` (`warn`/`pause`) | admin |
 | `add_agent` | `department`, `name`, `agent`?, `instructions` | admin |
 | `remove_agent` | `agent` (stopped first) | admin |
 | `update_department` | `department`, `mission`?, `policy`?, `tools`? | admin |
@@ -523,6 +525,43 @@ it can check in the metrics whether the change helped.
 from an agent whose changes are all of ticked kinds is applied at once, in
 the name of "auto-apply (allowed by <admin>)". Everything else waits for a
 person.
+
+## Spending and budgets
+
+*Organisation → Spending* shows what model calls cost and limits it.
+
+**Prices.** An admin sets the price per million input and output tokens per
+provider and model: an exact model name, a prefix ending in `*`
+(`claude-sonnet-*`), or `*` for every model of the provider; the most
+specific price wins. Every call through the model gateway is **priced when
+it is recorded** (`model_calls.cost_micros`, millionths of the currency), so
+a later price change does not rewrite history. Calls made before a price
+existed can be priced afterwards (*Price them with the current prices*).
+The currency is a label set once (default `USD`).
+
+**Budgets.** A budget limits the spending of the whole organisation or one
+department per calendar day, week (from Monday) or month, in UTC. Each
+scope has at most one budget per period; setting it again replaces it.
+
+| | `warn` | `pause` |
+|---|---|---|
+| At `warn_percent` (default 80 %) | people see a warning on the dashboard | the same |
+| At the limit | people see it was used up | the departments in scope are **paused** (marked as paused by the budget) and the model gateway **refuses** their calls with `403` and the reason |
+| Next period, or a higher limit | — | the departments the budget paused are resumed (unless a person changed them since) and calls go through |
+
+Each node checks budgets on its heartbeat (every `heartbeat_secs`); each
+step (warn, pause, resume) is claimed by exactly one node. The gateway reads
+the usage with at most 5 seconds of delay, so the calls in flight when a
+limit is reached can take the spending slightly over it. Resuming a paused
+department by hand does not lift the block: raise the limit or wait for the
+next period.
+
+Agents covered by a budget see it in their prompt (*Budget: 2.10 of 5.00
+EUR used this month*) and are asked to work economically. Costs appear per
+day, department and agent on the dashboard, and the retrospective sees them
+too: it can propose a `set_budget` change (admin to apply), and signals warn
+when a budget is nearly or fully used, or when tokens are used without
+prices.
 
 ## Data, tools and guardrails per department
 
@@ -688,6 +727,7 @@ erDiagram
     nodes ||--o{ sessions : "owns"
     departments ||--o{ org_goals : "owns (optional)"
     org_proposals }o--o| org_agents : "proposed by"
+    departments ||--o{ budgets : "limits (or the whole org)"
     departments ||--o{ org_schedules : "check-ins"
     org_agents ||--o{ org_schedules : "addressed to (optional)"
 
@@ -760,6 +800,23 @@ erDiagram
         text decided_by
         jsonb result
     }
+    budgets {
+        uuid id PK
+        uuid department_id FK "null: whole organisation"
+        text period "day | week | month"
+        bigint limit_micros
+        text action "warn | pause"
+        int warn_percent
+        timestamptz warned_period
+        timestamptz exhausted_period
+        uuid_array paused_departments
+    }
+    model_prices {
+        text provider PK
+        text model PK "name, prefix*, or *"
+        numeric input_per_mtok
+        numeric output_per_mtok
+    }
     org_schedules {
         uuid id PK
         uuid department_id FK
@@ -808,13 +865,18 @@ an admin.
 | Method & path | What |
 |---|---|
 | `GET /org` | Overview: settings, departments with their agents, goals, check-ins, nodes. |
-| `GET /org/stream` | SSE of change notifications (`agents`, `department`, `message`, `files`, `settings`, `goals`, `checkins`, `proposals`, `data_sources`, `stop_all`, `resync`); clients refetch what changed. |
+| `GET /org/stream` | SSE of change notifications (`agents`, `department`, `message`, `files`, `settings`, `goals`, `checkins`, `proposals`, `data_sources`, `budget`, `stop_all`, `resync`); clients refetch what changed. |
 | `GET`/`POST /org/goals` | Goals; create `{"title", "description", "department_id"?}` (operators). |
 | `PUT`/`DELETE /org/goals/{id}` | Change `title`, `description`, `department_id` (`null` clears it), `status` (`active`\|`achieved`\|`dropped`); delete. |
 | `POST /org/goals/{id}/progress` | A person records progress: `{"text"}`. |
 | `GET`/`POST /org/departments/{id}/checkins` | Check-ins of a department; create `{"name", "message", "every_minutes", "agent_id"?, "first_run_at"?}` (operators; default first run: one interval from now). |
 | `PUT`/`DELETE /org/checkins/{id}` | Change `name`, `message`, `every_minutes`, `enabled`; delete. |
-| `GET /org/metrics?days=` | Metrics of the last `days` (1–365, default 14) and signals. |
+| `GET /org/metrics?days=` | Metrics of the last `days` (1–365, default 14), budgets, currency and signals. |
+| `GET /org/spending?days=` | Currency, prices, budgets with their usage this period, calls without a price. |
+| `PUT /org/prices` · `DELETE /org/prices?provider=&model=` | Set `{"provider", "model", "input_per_mtok", "output_per_mtok"}`; delete (admin). |
+| `POST /org/prices/backfill` | Price recorded calls that have no price yet (admin). |
+| `PUT /org/currency` | `{"currency": "EUR"}` (admin). |
+| `POST /org/budgets` · `PUT`/`DELETE /org/budgets/{id}` | Set `{"department_id"?, "period", "limit_micros", "action", "warn_percent"?}` (replaces the one for that scope and period); change `limit_micros`, `action`, `warn_percent`; delete (resumes what it paused). Admin. |
 | `GET`/`POST /org/proposals?status=` | Proposals; a person writes one: `{"title", "problem", "evidence", "solution", "actions"}` (operators). |
 | `GET`/`PUT /org/proposals/{id}` | One proposal; a person changes it (`title`, `problem`, `evidence`, `solution`, `actions`, `note`) as a new revision. |
 | `POST /org/proposals/{id}/apply` | Apply `{"revision"}` (operators; admin-only changes need an admin; `409` if it was revised or decided). |
@@ -868,10 +930,9 @@ several VMs: [Deployment](DEPLOYMENT.md#several-vms).
 
 * Check-ins at a time of day (cron-like); today they run every N minutes
   from when they were created or last run.
-* Money: tokens are counted, but not priced; budgets and spend limits per
-  department are the next step.
+* Prices are entered by hand; they are not fetched from providers.
 * Ready-made connectors for popular services (Stripe, Plausible, ...): today
   they are added as HTTP sources.
 * Moving a running agent between nodes (live migration of a sandbox).
-* Per-department model provider and spend limits.
+* Per-department model providers.
 * A dedicated message broker for very large organisations.

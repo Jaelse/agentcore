@@ -11,6 +11,7 @@ mod crypto;
 mod insights;
 mod org;
 mod rhythm;
+mod spending;
 mod teamwork;
 #[doc(hidden)]
 pub mod testing;
@@ -37,6 +38,7 @@ pub use org::{
     MessageFilter, NewMessage, ORG_CHANNEL, RESERVED_NAMES, valid_agent_name,
 };
 pub use rhythm::{GoalInput, GoalUpdate, ScheduleInput, ScheduleUpdate};
+pub use spending::{BudgetInput, BudgetUpdate, PriceInput};
 pub use teamwork::{
     BoardColumns, BoardConfig, GitHubConfig, GitHubConnection, GitHubUpdate, Project, ProjectInput,
 };
@@ -583,13 +585,16 @@ impl Store {
     // ---- model calls ----------------------------------------------------------
 
     pub async fn insert_model_call(&self, call: &ModelCallRecord) -> Result<()> {
-        sqlx::query(
+        sqlx::query(sqlx::AssertSqlSafe(format!(
             "INSERT INTO model_calls (id, session_id, provider, model, method, path, http_status,
-                 outcome, detail, input_tokens, output_tokens, started_at, duration_ms,
-                 request_body, response_body, bodies_truncated, request_sha256, response_sha256)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-                     $17, $18)",
-        )
+                     outcome, detail, input_tokens, output_tokens, started_at, duration_ms,
+                     request_body, response_body, bodies_truncated, request_sha256, response_sha256,
+                     cost_micros)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+                         $17, $18, {})",
+            // Priced now: later price changes do not rewrite history.
+            spending::price_sql("$3", "$4", "$10::bigint", "$11::bigint")
+        )))
         .bind(call.id)
         .bind(call.session_id)
         .bind(&call.provider)

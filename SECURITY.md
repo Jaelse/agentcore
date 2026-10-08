@@ -90,6 +90,9 @@ do, and every attempt is recorded.
       separately from the database backups. Losing it makes stored provider
       keys unrecoverable; leaking it together with a DB dump exposes them.
 - [ ] Use provider API keys with spending limits, and set `allowed_models`.
+      Set model prices and an organisation budget with `pause` as a second
+      line of defence (the provider's limit stays the hard one: calls in
+      flight can take a budget slightly over).
 - [ ] Use a dedicated PostgreSQL role and TLS (`?sslmode=require`) for remote databases.
 - [ ] Restrict access to the `model_calls` table: it contains prompts and responses.
 - [ ] Use a dedicated bot account or fine-grained token for GitHub with access

@@ -644,6 +644,7 @@ export interface DayMetrics {
   failed_sessions: number;
   model_calls: number;
   tokens: number;
+  cost_micros: number;
   denied: number;
   approvals: number;
   progress_reports: number;
@@ -661,6 +662,7 @@ export interface DepartmentMetrics {
   agent_hours: number;
   model_calls: number;
   tokens: number;
+  cost_micros: number;
   messages_sent: number;
   messages_received: number;
   avg_wait_secs: number | null;
@@ -685,6 +687,7 @@ export interface AgentMetrics {
   agent_hours: number;
   model_calls: number;
   tokens: number;
+  cost_micros: number;
   messages_sent: number;
   last_active: string | null;
 }
@@ -711,4 +714,42 @@ export interface OrgMetrics {
     proposals: { open: number; changes_requested: number; applied: number; rejected: number; failed: number };
   };
   signals: Signal[];
+  budgets: BudgetStatus[];
+  currency: string;
+}
+
+export type BudgetPeriod = "day" | "week" | "month";
+export type BudgetAction = "warn" | "pause";
+
+export interface BudgetStatus {
+  id: string;
+  department_id: string | null;
+  period: BudgetPeriod;
+  limit_micros: number;
+  action: BudgetAction;
+  warn_percent: number;
+  updated_at: string;
+  updated_by: string;
+  period_start: string;
+  period_end: string;
+  spent_micros: number;
+  paused_departments: string[];
+  exhausted_period: string | null;
+}
+
+export interface ModelPrice {
+  provider: string;
+  model: string;
+  input_per_mtok: number;
+  output_per_mtok: number;
+  updated_at: string;
+  updated_by: string;
+}
+
+export interface Spending {
+  currency: string;
+  prices: ModelPrice[];
+  budgets: BudgetStatus[];
+  unpriced_calls: number;
+  days: number;
 }

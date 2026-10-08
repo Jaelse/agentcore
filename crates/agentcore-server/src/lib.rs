@@ -7,6 +7,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod budgets;
 pub mod catalog;
 pub mod cluster;
 pub mod config;
@@ -260,6 +261,18 @@ pub fn router(state: AppState) -> Router {
         .route("/org/checkins/{id}/run", post(org::run_check_in))
         .route("/org/goals", get(org::list_goals).post(org::create_goal))
         .route("/org/metrics", get(insights::metrics))
+        .route("/org/spending", get(budgets::spending))
+        .route(
+            "/org/prices",
+            put(budgets::put_price).delete(budgets::delete_price),
+        )
+        .route("/org/prices/backfill", post(budgets::price_past_calls))
+        .route("/org/currency", put(budgets::put_currency))
+        .route("/org/budgets", post(budgets::create_budget))
+        .route(
+            "/org/budgets/{id}",
+            put(budgets::update_budget).delete(budgets::delete_budget),
+        )
         .route(
             "/org/proposals",
             get(insights::list_proposals).post(insights::create_proposal),
