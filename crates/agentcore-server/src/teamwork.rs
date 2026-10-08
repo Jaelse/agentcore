@@ -975,7 +975,7 @@ pub async fn list_projects(
 
 fn validate_project(state: &AppState, input: &ProjectInput) -> ApiResult<()> {
     state.role(&input.role)?;
-    if !state.manager.agents().any(|a| a.name == input.agent) {
+    if state.manager.agent(&input.agent).is_none() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             format!("unknown agent `{}`", input.agent),

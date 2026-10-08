@@ -161,6 +161,10 @@ master key.
 
 ## `[[agents]]`
 
+Agents can also be added without editing this file, from the
+[agent catalogue](AGENT_CATALOG.md) in the web UI. An agent defined here wins
+over an added one of the same name.
+
 | Key | Meaning |
 |---|---|
 | `name` | Unique name shown in the UI |
@@ -168,11 +172,25 @@ master key.
 | `description` | Shown in the UI |
 | `image` | Sandbox image override |
 | `command` | Program (opencode adapter: defaults to `opencode`) |
-| `args` | Arguments; `{task}`, `{workspace}`, `{gateway_url}`, `{session_id}` are substituted. The first turn's `{task}` is the composed prompt (role, conventions, issue, task). |
+| `args` | Arguments; placeholders are substituted (table below). The first turn's `{task}` is the composed prompt (role, conventions, issue, task). Never `{gateway_token}`: arguments are audited. |
 | `follow_up_args` | `command` adapter: arguments for follow-up turns (`{task}` = the human's message). Empty = single run. opencode continues with `--continue` automatically. |
 | `env` | Extra environment; values may use `{env:NAME}` to pass an agentcore environment variable. Not audited (secrets are fine), but model keys belong in the model gateway, not here. |
 | `policy` | Default guardrail policy for this agent |
 | `tty` | Run the agent in a pseudo-terminal for the live view (default `true`); set `false` for agents that misbehave in a terminal |
+| `files` | Files written before each turn: path (relative to the agent's `$HOME`, or absolute) → content. Contents may use every placeholder including `{gateway_token}`; they are not audited. |
+| `provider` | Model provider (by name) for `{model_base_url}`/`{openai_base_url}` |
+| `protocol` | Provider kind to pick a provider by when `provider` is not set (`anthropic`, `openai`) |
+| `model` | Model name for `{model}` |
+
+| Placeholder | Value |
+|---|---|
+| `{task}` | The task or follow-up message |
+| `{workspace}`, `{home}`, `{session_id}` | Workspace and home inside the sandbox, the session id |
+| `{gateway_url}` | MCP tool gateway of the session |
+| `{model}`, `{provider}`, `{protocol}` | The agent's model, provider name and provider kind |
+| `{model_base_url}`, `{openai_base_url}` | The provider on the model gateway (without / with `/v1`) |
+| `{gateway_token}` | Session token for both gateways: `env` and `files` only |
+| `{env:NAME}` | An environment variable of agentcore (`env` only) |
 
 ```toml
 [[agents]]
@@ -187,6 +205,19 @@ adapter = "command"
 command = "my-agent"
 args = ["--prompt", "{task}"]
 follow_up_args = ["--continue", "--prompt", "{task}"]
+
+[[agents]]
+name = "my-mcp-agent"
+adapter = "command"
+command = "my-agent"
+protocol = "anthropic"
+model = "claude-sonnet-4-5"
+args = ["--model", "{model}", "{task}"]
+[agents.env]
+MY_AGENT_BASE_URL = "{model_base_url}"
+MY_AGENT_API_KEY = "{gateway_token}"
+[agents.files]
+".my-agent/mcp.json" = '{ "url": "{gateway_url}", "token": "{gateway_token}" }'
 ```
 
 ## Guardrail limits (per policy)

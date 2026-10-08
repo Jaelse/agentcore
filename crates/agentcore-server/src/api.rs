@@ -53,12 +53,16 @@ pub async fn system_card(State(state): State<AppState>, _caller: Caller) -> Json
     let mut agents: Vec<_> = state
         .manager
         .agents()
+        .into_iter()
         .map(|a| {
             json!({
                 "name": a.name,
                 "adapter": a.adapter,
                 "description": a.description,
                 "policy": a.policy,
+                "catalog": a.catalog,
+                "provider": a.provider,
+                "model": a.model,
             })
         })
         .collect();

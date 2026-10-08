@@ -156,6 +156,10 @@ async fn listen(state: AppState, cancel: CancellationToken) {
 }
 
 async fn on_notification(state: &AppState, payload: &Value) {
+    if payload["kind"] == "agents_installed" {
+        // An admin added, changed or removed a catalogue agent somewhere.
+        state.reload_agents().await;
+    }
     if payload["kind"] == "stop_all" && payload["origin"].as_str() != Some(&state.node) {
         // The emergency stop also covers sessions outside departments.
         let by = payload["by"].as_str().unwrap_or("agentcore");

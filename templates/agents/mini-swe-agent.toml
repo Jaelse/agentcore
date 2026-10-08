@@ -1,0 +1,38 @@
+# See codex.toml for the placeholders.
+id = "mini-swe-agent"
+name = "mini-SWE-agent"
+vendor = "SWE-agent team (Princeton & Stanford)"
+summary = "Minimal bash-only agent for fixing issues."
+description = """
+A deliberately small agent that solves software tasks with nothing but
+shell commands, from the SWE-bench research team. It runs once per task.
+It uses its own shell inside the sandbox, so agentcore's policy does not
+see its individual commands (the sandbox, the model gateway, the live
+terminal and the recording still do).
+"""
+domains = ["software", "research"]
+homepage = "https://mini-swe-agent.com"
+repository = "https://github.com/SWE-agent/mini-swe-agent"
+license = "MIT"
+license_url = "https://github.com/SWE-agent/mini-swe-agent/blob/main/LICENSE.md"
+package = "PyPI: mini-swe-agent"
+verified_version = "2.4.6"
+protocols = ["anthropic", "openai"]
+suggested_models = ["claude-sonnet-4-5", "gpt-5.1"]
+guardrails = "sandbox"
+conversation = false
+
+[spec]
+command = "mini"
+tty = false
+args = ["--yolo", "--exit-immediately", "--cost-limit", "0", "--model", "{protocol}/{model}", "--task", "{task}",
+        "--output", "{home}/.mini-swe-agent/last.traj.json"]
+
+[spec.env]
+OPENAI_API_KEY = "{gateway_token}"
+OPENAI_API_BASE = "{openai_base_url}"
+ANTHROPIC_API_KEY = "{gateway_token}"
+ANTHROPIC_API_BASE = "{model_base_url}"
+MSWEA_CONFIGURED = "true"
+MSWEA_COST_TRACKING = "ignore_errors"
+LITELLM_LOCAL_MODEL_COST_MAP = "True"

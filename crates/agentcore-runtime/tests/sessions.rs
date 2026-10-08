@@ -46,6 +46,7 @@ fn agent(name: &str, script: &str) -> AgentSpec {
         policy: None,
         tty: None,
         follow_up_args: vec![],
+        ..Default::default()
     }
 }
 

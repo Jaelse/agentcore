@@ -38,7 +38,7 @@ flowchart LR
 | See what the agent does | **Live view**, like a screen share: the agent's own terminal, the command it is running with its output, the model's reasoning, text and tool calls as they stream, the files it changes and the processes in its sandbox. Finished sessions can be **replayed** from a tamper-evident terminal recording. Plus a timeline of every action, policy verdict, approval and outcome. |
 | One-click stop, pause | **STOP AGENT** per session and **Stop all agents** globally: kills the sandbox, denies pending approvals, and records who pressed it. Also enforced by time and action budgets. **Pause** freezes the agent and everything it runs, **Resume** continues exactly where it was. |
 | Multi-agent organisations | **Departments** (rooms) of agents with their own mission, tools, data and policy. Agents talk freely inside a department; departments talk only through their **communicator** agents. Watch every message, talk to any agent, pause or stop an agent, a department or everything. Admin-set limits on departments and agents. Runs on one or several VMs sharing PostgreSQL. **Templates** for 28 business functions and growth paths let you start with one software department and grow step by step, or create a complete company at once; the organisation then suggests what to add next. See [docs/MULTI_AGENT.md](docs/MULTI_AGENT.md). |
-| Any agent | `AgentAdapter` trait; built-in `command` (any CLI) and `opencode` adapters. |
+| Any agent | **Agent catalogue**: add popular open-source agents (opencode, Codex CLI, Qwen Code, goose, fast-agent, Aider, mini-SWE-agent; MIT/Apache-2.0 only) from the web UI with a provider and a model; agentcore wires each one to its model gateway and, where the agent supports it, its policy-checked tools. See [docs/AGENT_CATALOG.md](docs/AGENT_CATALOG.md). Your own agents: the `command` adapter (any CLI) or an `AgentAdapter`. |
 | User policies | TOML policies with allow / deny / require-approval rules over commands, paths, hosts and tools; deny-overrides semantics; limits. |
 | HITL | Approve or reject with a comment from the UI; timeouts count as rejection. |
 | Logging & tracing | Hash-chained JSONL audit log per session (fail-closed), including every model call with request/response hashes; full LLM traffic and configuration changes in PostgreSQL; structured `tracing` logs (JSON); integrity check and export from the UI/CLI. |
@@ -152,13 +152,15 @@ agentcore hash-token '<token>'
 | `web/` | React + TypeScript web UI (Vite) |
 | `policies/` | Guardrail policies: `default`, `read-only`, `supervised`, `project-management`, `marketing`, `department`, `communicator` |
 | `roles/` | Roles: `developer`, `project-manager`, `marketing` |
-| `templates/` | Department templates (`departments/`) and growth paths (`blueprints/`) for building an organisation |
+| `templates/` | Department templates (`departments/`), growth paths (`blueprints/`) and the agent catalogue (`agents/`) |
+| `sandbox-image/` | The image agents run in, and `install-agents.sh` to add catalogue agents |
 | `docs/` | Architecture, policies, EU AI Act mapping |
 
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md): components, session lifecycle, the life of an action, the live view and pausing, gateways, repository and delivery, data model, adding agents and sandbox backends.
 - [Multi-agent organisations](docs/MULTI_AGENT.md): departments, communicators, building from templates and growing, who may talk to whom, oversight, limits, and running on several VMs.
+- [Agent catalogue](docs/AGENT_CATALOG.md): the open-source agents you can add, how they are connected and guarded, their licenses, and how to add your own.
 - [Ways of working](docs/WAYS_OF_WORKING.md): guardrails vs. roles vs. checks, writing your own roles, how agents fit sprints and kanban.
 - [Deployment](docs/DEPLOYMENT.md): topology, install, several VMs, macOS notes, operations.
 - [Configuration](docs/CONFIGURATION.md): every setting and environment variable.

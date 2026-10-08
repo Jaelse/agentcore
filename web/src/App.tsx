@@ -117,7 +117,12 @@ export default function App() {
       )}
       {view === "settings" ? (
         <main className="main settings-main">
-          <Settings me={me} onError={handleError} />
+          <Settings
+            me={me}
+            card={card}
+            onAgentsChanged={() => api.systemCard().then(setCard).catch(handleError)}
+            onError={handleError}
+          />
         </main>
       ) : view === "org" ? (
         <Organisation

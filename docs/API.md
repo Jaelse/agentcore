@@ -163,6 +163,17 @@ data: {"frame":"model_delta","call_id":"…","kind":"thinking","text":"Let me ru
 the session is over (also sent at once for finished sessions); use
 `/recording` for the replay.
 
+## Agents (`/api/v1/agents`)
+
+| Method & path | Role | What |
+|---|---|---|
+| `GET /agents/catalog` | viewer | The [agent catalogue](AGENT_CATALOG.md): each entry with license, protocols, guardrail level, verified version, and the names it was added as |
+| `GET /agents` | viewer | Every agent: from the configuration file (`source: config`) and added from the catalogue (`source: catalog`) |
+| `POST /agents` | admin | Add a catalogue agent: `{"catalog": "codex", "name": "codex", "provider": "openai", "model": "gpt-5.1", "policy"?, "image"?, "description"?}`. The provider must be of a kind the agent speaks; the model must pass the provider's allow-list. |
+| `PUT /agents/{name}` | admin | Change `provider`, `model`, `policy`, `image`, `description`, `enabled` (re-created from the current catalogue entry) |
+| `DELETE /agents/{name}` | admin | Remove an added agent (running sessions continue) |
+| `POST /agents/{name}/check` | operator | Start a throwaway sandbox and look for the agent's program: `{"available", "path", "version", "hint"}` |
+
 ## Organisations (`/api/v1/org`)
 
 Departments, their agents, messages and department files, plus control at

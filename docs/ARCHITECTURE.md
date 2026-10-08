@@ -498,6 +498,11 @@ arguments):
 
 Adding a new agent:
 
+* **from the catalogue**: popular open-source agents are ready-made recipes
+  (`templates/agents/*.toml`) that an admin adds in the UI; see
+  [Agent catalogue](AGENT_CATALOG.md). A recipe is a `command`-adapter spec
+  with placeholders for the model gateway, the tool gateway and the session
+  token, plus config files written into the agent's home before each turn;
 * **any CLI agent**: use the `command` adapter, point its MCP client at
   `$AGENTCORE_GATEWAY_URL` and its model SDK at the standard variables;
   set `follow_up_args` if it can continue a conversation;

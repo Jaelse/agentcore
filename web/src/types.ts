@@ -220,6 +220,58 @@ export interface Suggestion {
   blocked: string | null;
 }
 
+export interface CatalogAgent {
+  id: string;
+  name: string;
+  vendor: string;
+  summary: string;
+  description: string;
+  domains: string[];
+  homepage: string;
+  repository: string;
+  license: string;
+  license_url: string;
+  package: string;
+  verified_version: string;
+  protocols: ProviderKind[];
+  suggested_models: string[];
+  guardrails: "full" | "sandbox";
+  conversation: boolean;
+  installed: string[];
+}
+
+export interface AgentEntry {
+  source: "config" | "catalog";
+  catalog?: string;
+  enabled: boolean;
+  shadowed_by_config?: boolean;
+  updated_at?: string;
+  updated_by?: string;
+  spec: {
+    name: string;
+    adapter: string;
+    description: string;
+    command: string | null;
+    policy: string | null;
+    provider: string | null;
+    model: string | null;
+    image: string | null;
+    catalog: string | null;
+    conversation: boolean;
+  };
+}
+
+export interface AgentCheck {
+  agent: string;
+  program: string;
+  available: boolean;
+  path: string | null;
+  version: string | null;
+  image: string | null;
+  backend: string;
+  hint: string | null;
+}
+
 export type MessageTo = { agent: string } | { department: string } | "all_departments";
 
 export interface CheckResult {

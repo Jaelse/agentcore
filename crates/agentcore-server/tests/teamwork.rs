@@ -242,6 +242,7 @@ async fn agent_works_an_issue_and_delivers_a_pull_request() {
         policy: None,
         tty: None,
         follow_up_args: vec!["-c".into(), TURN_TWO.into(), "{task}".into()],
+        ..Default::default()
     }];
     let state = AppState::new(config).await.unwrap();
     let app = router(state.clone());

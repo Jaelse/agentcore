@@ -1,0 +1,27 @@
+# See codex.toml for the placeholders. Uses agentcore's built-in opencode
+# adapter, which configures opencode's tools and providers itself.
+id = "opencode"
+name = "opencode"
+vendor = "SST / Anomaly"
+summary = "Open-source coding agent for the terminal, any model provider."
+description = """
+A coding agent that works with Anthropic, OpenAI and many other providers.
+All of opencode's own file, shell and web tools are denied, so it works
+through agentcore's policy-checked tools.
+"""
+domains = ["software"]
+homepage = "https://opencode.ai"
+repository = "https://github.com/sst/opencode"
+license = "MIT"
+license_url = "https://github.com/sst/opencode/blob/dev/LICENSE"
+package = "npm: opencode-ai"
+verified_version = "1.18.35"
+protocols = ["anthropic", "openai"]
+suggested_models = ["claude-sonnet-4-5", "gpt-5.1"]
+guardrails = "full"
+conversation = true
+
+[spec]
+adapter = "opencode"
+command = "opencode"
+args = ["run", "--model", "{protocol}/{model}", "{task}"]

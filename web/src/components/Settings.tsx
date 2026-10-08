@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
-import type { AdminEvent, Me, ProviderInfo, ProviderKind } from "../types";
+import type { AdminEvent, Me, ProviderInfo, ProviderKind, SystemCard } from "../types";
+import { AgentCatalog } from "./AgentCatalog";
 import { GitHubSettings, RolesOverview } from "./TeamSettings";
 
 const DEFAULT_URL: Record<ProviderKind, string> = {
@@ -27,7 +28,17 @@ const splitModels = (text: string) =>
     .map((m) => m.trim())
     .filter(Boolean);
 
-export function Settings({ me, onError }: { me: Me; onError: (err: unknown) => void }) {
+export function Settings({
+  me,
+  card,
+  onAgentsChanged,
+  onError,
+}: {
+  me: Me;
+  card: SystemCard;
+  onAgentsChanged: () => void;
+  onError: (err: unknown) => void;
+}) {
   const [providers, setProviders] = useState<ProviderInfo[] | null>(null);
   const [history, setHistory] = useState<AdminEvent[]>([]);
   const isAdmin = me.role === "admin";
@@ -65,6 +76,17 @@ export function Settings({ me, onError }: { me: Me; onError: (err: unknown) => v
       </section>
 
       {isAdmin && <AddProvider existing={providers ?? []} onAdded={refresh} onError={onError} />}
+
+      <AgentCatalog
+        me={me}
+        card={card}
+        providers={providers ?? []}
+        onChanged={() => {
+          refresh();
+          onAgentsChanged();
+        }}
+        onError={onError}
+      />
 
       <GitHubSettings me={me} onError={onError} onChanged={refresh} />
 

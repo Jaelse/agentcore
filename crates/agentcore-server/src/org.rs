@@ -818,7 +818,7 @@ fn check_department(state: &AppState, input: &mut DepartmentInput) -> ApiResult<
 }
 
 fn check_agent_spec(state: &AppState, name: &str) -> ApiResult<()> {
-    if state.manager.agents().any(|a| a.name == name.trim()) {
+    if state.manager.agent(name.trim()).is_some() {
         Ok(())
     } else {
         Err(ApiError::new(
@@ -1368,7 +1368,8 @@ pub async fn build(
         None => state
             .manager
             .agents()
-            .map(|a| a.name.clone())
+            .into_iter()
+            .map(|a| a.name)
             .min()
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "no agents are configured"))?,
     };

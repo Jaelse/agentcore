@@ -7,6 +7,7 @@
 
 pub mod api;
 pub mod auth;
+pub mod catalog;
 pub mod cluster;
 pub mod config;
 mod error;
@@ -55,6 +56,8 @@ pub struct AppState {
     pub cluster_http: reqwest::Client,
     /// Department templates and blueprints.
     pub templates: Arc<templates::Catalog>,
+    /// Open-source agents that can be added from the web UI.
+    pub agent_catalog: Arc<catalog::AgentCatalog>,
 }
 
 impl AppState {
@@ -83,6 +86,13 @@ impl AppState {
                 anyhow::bail!("a department template uses unknown policy `{policy}`");
             }
         }
+        let agent_catalog = catalog::AgentCatalog::load_dir(&config.templates.dir.join("agents"))
+            .with_context(|| {
+            format!(
+                "loading the agent catalogue from {}",
+                config.templates.dir.join("agents").display()
+            )
+        })?;
         let provider = config.sandbox.provider()?;
         let cipher = Cipher::load_or_create(&config.master_key_file())?;
         let store = Store::connect(&config.database_url()?, cipher)
@@ -128,7 +138,7 @@ impl AppState {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .context("building cluster HTTP client")?;
-        Ok(Self {
+        let state = Self {
             manager: Arc::new(manager),
             config: Arc::new(config),
             store,
@@ -140,7 +150,10 @@ impl AppState {
             reconcile: Arc::default(),
             cluster_http,
             templates: Arc::new(catalog),
-        })
+            agent_catalog: Arc::new(agent_catalog),
+        };
+        state.reload_agents().await;
+        Ok(state)
     }
 }
 
@@ -206,6 +219,13 @@ pub fn router(state: AppState) -> Router {
         .route("/sessions/{id}/changes", get(teamwork::changes))
         .route("/sessions/{id}/checks", post(teamwork::run_checks))
         .route("/sessions/{id}/deliver", post(teamwork::deliver_session))
+        .route("/agents", get(catalog::list_agents).post(catalog::install))
+        .route("/agents/catalog", get(catalog::list_catalog))
+        .route(
+            "/agents/{name}",
+            put(catalog::update).delete(catalog::uninstall),
+        )
+        .route("/agents/{name}/check", post(catalog::check))
         .route("/org", get(org::overview))
         .route("/org/stream", get(org::stream))
         .route("/org/templates", get(org::templates))
@@ -254,6 +274,11 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .nest("/api/v1", api)
         .route("/mcp/{id}", post(mcp::handle).get(mcp::method_not_allowed))
+        // Some MCP clients (fast-agent) append `/mcp` to every server URL.
+        .route(
+            "/mcp/{id}/mcp",
+            post(mcp::handle).get(mcp::method_not_allowed),
+        )
         .route("/llm/{id}/{provider}/{*rest}", any(llm::proxy))
         .fallback_service(ui)
         .layer(RequestBodyLimitLayer::new(32 * 1024 * 1024))

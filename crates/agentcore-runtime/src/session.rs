@@ -738,6 +738,7 @@ impl Session {
             session_id: self.id,
             task,
             workspace: WORKSPACE.into(),
+            home: sandbox.home(),
             gateway_url: format!(
                 "{}/mcp/{}",
                 config.gateway_url.trim_end_matches('/'),

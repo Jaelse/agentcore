@@ -35,7 +35,10 @@ pub struct CreateSession {
 pub struct SessionManager {
     config: Arc<RuntimeConfig>,
     policies: PolicySet,
-    agents: HashMap<String, AgentSpec>,
+    /// `[[agents]]` from the configuration file.
+    configured: HashMap<String, AgentSpec>,
+    /// Agents added from the catalogue (from the database; replaced as a whole).
+    installed: RwLock<HashMap<String, AgentSpec>>,
     adapters: AdapterRegistry,
     provider: Arc<dyn SandboxProvider>,
     sessions: RwLock<HashMap<SessionId, Arc<Session>>>,
@@ -53,19 +56,13 @@ impl SessionManager {
             return Err(RuntimeError::UnknownPolicy(config.default_policy.clone()));
         }
         for spec in &agents {
-            if adapters.get(&spec.adapter).is_none() {
-                return Err(RuntimeError::UnknownAdapter(spec.adapter.clone()));
-            }
-            if let Some(policy) = &spec.policy
-                && policies.get(policy).is_none()
-            {
-                return Err(RuntimeError::UnknownPolicy(policy.clone()));
-            }
+            check_spec(spec, &policies, &adapters)?;
         }
         Ok(Self {
             config: Arc::new(config),
             policies,
-            agents: agents.into_iter().map(|a| (a.name.clone(), a)).collect(),
+            configured: agents.into_iter().map(|a| (a.name.clone(), a)).collect(),
+            installed: RwLock::default(),
             adapters,
             provider,
             sessions: RwLock::new(HashMap::new()),
@@ -80,8 +77,60 @@ impl SessionManager {
         &self.policies
     }
 
-    pub fn agents(&self) -> impl Iterator<Item = &AgentSpec> {
-        self.agents.values()
+    /// Every agent that can be started: configured ones, then installed
+    /// ones (a configured agent wins over an installed one of the same name).
+    pub fn agents(&self) -> Vec<AgentSpec> {
+        let installed = self.installed.read().unwrap_or_else(|p| p.into_inner());
+        let mut list: Vec<AgentSpec> = self
+            .configured
+            .values()
+            .cloned()
+            .chain(
+                installed
+                    .values()
+                    .filter(|a| !self.configured.contains_key(&a.name))
+                    .cloned(),
+            )
+            .collect();
+        list.sort_by(|a, b| a.name.cmp(&b.name));
+        list
+    }
+
+    pub fn agent(&self, name: &str) -> Option<AgentSpec> {
+        self.configured.get(name).cloned().or_else(|| {
+            self.installed
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(name)
+                .cloned()
+        })
+    }
+
+    /// Whether an agent comes from the configuration file.
+    pub fn is_configured(&self, name: &str) -> bool {
+        self.configured.contains_key(name)
+    }
+
+    /// Check an agent definition against the known adapters and policies.
+    pub fn check_agent(&self, spec: &AgentSpec) -> Result<(), RuntimeError> {
+        check_spec(spec, &self.policies, &self.adapters)
+    }
+
+    /// Replace the installed agents. Invalid ones are skipped and returned
+    /// with the reason; sessions already running keep their definition.
+    pub fn set_installed(&self, specs: Vec<AgentSpec>) -> Vec<(String, RuntimeError)> {
+        let mut errors = Vec::new();
+        let mut map = HashMap::new();
+        for spec in specs {
+            match self.check_agent(&spec) {
+                Ok(()) => {
+                    map.insert(spec.name.clone(), spec);
+                }
+                Err(err) => errors.push((spec.name.clone(), err)),
+            }
+        }
+        *self.installed.write().unwrap_or_else(|p| p.into_inner()) = map;
+        errors
     }
 
     pub fn sandbox_provider(&self) -> Arc<dyn SandboxProvider> {
@@ -100,9 +149,7 @@ impl SessionManager {
         options: SessionOptions,
     ) -> Result<Arc<Session>, RuntimeError> {
         let spec = self
-            .agents
-            .get(&request.agent)
-            .cloned()
+            .agent(&request.agent)
             .ok_or_else(|| RuntimeError::UnknownAgent(request.agent.clone()))?;
         let policy_name = request
             .policy
@@ -185,4 +232,21 @@ impl SessionManager {
         }
         count
     }
+}
+
+fn check_spec(
+    spec: &AgentSpec,
+    policies: &PolicySet,
+    adapters: &AdapterRegistry,
+) -> Result<(), RuntimeError> {
+    if adapters.get(&spec.adapter).is_none() {
+        return Err(RuntimeError::UnknownAdapter(spec.adapter.clone()));
+    }
+    if let Some(policy) = &spec.policy
+        && policies.get(policy).is_none()
+    {
+        return Err(RuntimeError::UnknownPolicy(policy.clone()));
+    }
+    spec.validate()?;
+    Ok(())
 }

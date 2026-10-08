@@ -1,0 +1,50 @@
+# See codex.toml for the placeholders.
+id = "fast-agent"
+name = "fast-agent"
+vendor = "fast-agent project"
+summary = "Lightweight MCP-native assistant for any task."
+description = """
+A small, MCP-native agent: it only has the tools it is connected to, here
+agentcore's tools (and a department's team tools). Good for analysis,
+writing and coordination work in any department.
+"""
+domains = ["general", "business", "research"]
+homepage = "https://fast-agent.ai"
+repository = "https://github.com/evalstate/fast-agent"
+license = "Apache-2.0"
+license_url = "https://github.com/evalstate/fast-agent/blob/main/LICENSE"
+package = "PyPI: fast-agent-mcp"
+verified_version = "0.10.43"
+protocols = ["anthropic", "openai"]
+suggested_models = ["claude-sonnet-4-5", "gpt-5.1"]
+guardrails = "full"
+conversation = true
+
+[spec]
+command = "fast-agent"
+tty = false
+args = ["go", "--servers", "agentcore", "--model", "{protocol}.{model}", "--message", "{task}"]
+follow_up_args = ["go", "--servers", "agentcore", "--model", "{protocol}.{model}", "--resume", "--message", "{task}"]
+
+[spec.env]
+FAST_AGENT_HOME = "{home}/.fast-agent"
+
+[spec.files]
+".fast-agent/fast-agent.yaml" = '''
+default_model: "{protocol}.{model}"
+anthropic:
+  api_key: "{gateway_token}"
+  base_url: "{model_base_url}"
+openai:
+  api_key: "{gateway_token}"
+  base_url: "{openai_base_url}"
+logger:
+  progress_display: false
+mcp:
+  servers:
+    agentcore:
+      transport: http
+      url: "{gateway_url}"
+      headers:
+        Authorization: "Bearer {gateway_token}"
+'''

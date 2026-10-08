@@ -22,6 +22,9 @@ import type {
   OrgProfile,
   Suggestion,
   TemplateCatalog,
+  AgentCheck,
+  AgentEntry,
+  CatalogAgent,
   Me,
   ModelCallRecord,
   PendingApproval,
@@ -202,6 +205,23 @@ export const api = {
   deleteAgent: (id: string) => request<void>("DELETE", `/org/agents/${id}`),
   controlAgent: (id: string, control: "start" | "pause" | "resume" | "stop") =>
     request<OrgAgent>("POST", `/org/agents/${id}/${control}`),
+  agentCatalog: () => request<{ agents: CatalogAgent[]; allowed_licenses: string[] }>("GET", "/agents/catalog"),
+  agentList: () => request<AgentEntry[]>("GET", "/agents"),
+  installAgent: (body: {
+    catalog: string;
+    name: string;
+    provider: string;
+    model: string;
+    policy?: string;
+    image?: string;
+    description?: string;
+  }) => request<unknown>("POST", "/agents", body),
+  updateAgentInstall: (
+    name: string,
+    body: Partial<{ provider: string; model: string; policy: string; image: string; enabled: boolean }>,
+  ) => request<unknown>("PUT", `/agents/${encodeURIComponent(name)}`, body),
+  uninstallAgent: (name: string) => request<void>("DELETE", `/agents/${encodeURIComponent(name)}`),
+  checkAgent: (name: string) => request<AgentCheck>("POST", `/agents/${encodeURIComponent(name)}/check`),
   templates: () => request<TemplateCatalog>("GET", "/org/templates"),
   suggestions: () => request<Suggestion[]>("GET", "/org/suggestions"),
   saveProfile: (p: OrgProfile) => request<OrgProfile>("PUT", "/org/profile", p),

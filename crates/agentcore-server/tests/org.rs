@@ -68,6 +68,7 @@ fn agent(name: &str, script: &str) -> AgentSpec {
         policy: None,
         tty: Some(false),
         follow_up_args: vec!["-c".into(), follow, "{task}".into()],
+        ..Default::default()
     }
 }
 

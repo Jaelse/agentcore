@@ -6,6 +6,7 @@
 //! * `model_calls`: every LLM request/response relayed by the model gateway.
 //! * `admin_events`: who changed configuration.
 
+mod agents;
 mod crypto;
 mod org;
 mod teamwork;
@@ -23,6 +24,7 @@ use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::types::Json;
 use uuid::Uuid;
 
+pub use agents::InstalledAgent;
 pub use crypto::{Cipher, MASTER_KEY_ENV};
 pub use org::{
     AgentInput, AgentScope, COMMUNICATOR_NAME, DepartmentInput, FileInfo, MAX_FILE_BYTES,

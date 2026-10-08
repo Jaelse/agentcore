@@ -110,7 +110,13 @@ do, and every attempt is recorded.
   host symlink tricks. Policies match the requested path, not a symlink's
   target inside the container.
 * Agents with native tools that bypass the gateway are only constrained by the
-  sandbox, not by policy.
+  sandbox, not by policy. In the [agent catalogue](docs/AGENT_CATALOG.md#guardrail-levels)
+  these are marked *Sandbox only* (Aider, mini-SWE-agent); the others have
+  their native side-effecting tools switched off by their launch recipe,
+  which depends on each agent's configuration options: re-verify when you
+  upgrade an agent.
+* Catalogue agents are third-party software installed into the sandbox
+  image; pin their versions (the install script does) and review upgrades.
 * Node-to-node requests are plain HTTP to `internal_url` unless you put TLS in
   front of it; they carry the operator's token.
 * Communicators are language models: they can be persuaded to pass on

@@ -36,6 +36,7 @@ flowchart LR
 ```sh
 git clone <this repository> && cd agentcore
 docker build -t agentcore-sandbox:latest sandbox-image      # image agents run in (includes opencode)
+#   more agents from the catalogue: --build-arg AGENTS="codex goose"  or  AGENTS=all
 cp deploy/agentcore.toml.example deploy/agentcore.toml
 docker compose run --rm agentcore hash-token 'a-long-random-token'
 #   → put the hash into [[server.operators]] (role = "admin") in deploy/agentcore.toml
@@ -47,7 +48,9 @@ docker compose up -d
 
 Then open the UI, sign in with your token and, in **Settings**:
 
-1. add a model provider (Anthropic, OpenAI or OpenCode Zen with an API key);
+1. add a model provider (Anthropic, OpenAI or OpenCode Zen with an API key),
+   and under **Agents** add the open-source agents you want
+   ([Agent catalogue](AGENT_CATALOG.md));
 2. connect GitHub (token of a bot account or a fine-grained token);
 3. in **Projects**, create a project for a repository and its board, and/or
 4. in **Organisation**, build departments of agents from templates

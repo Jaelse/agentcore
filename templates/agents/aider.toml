@@ -1,0 +1,41 @@
+# See codex.toml for the placeholders.
+id = "aider"
+name = "Aider"
+vendor = "Aider project"
+summary = "AI pair programmer that edits code and commits in git."
+description = """
+Edits files directly and commits each change to git with a descriptive
+message. Aider has no MCP support: it works with its own tools inside the
+sandbox, so agentcore's policy does not see its individual edits (the
+sandbox, the model gateway, the live terminal and the recording still do).
+"""
+domains = ["software"]
+homepage = "https://aider.chat"
+repository = "https://github.com/Aider-AI/aider"
+license = "Apache-2.0"
+license_url = "https://github.com/Aider-AI/aider/blob/main/LICENSE.txt"
+package = "PyPI: aider-chat"
+verified_version = "0.86.2"
+protocols = ["anthropic", "openai"]
+suggested_models = ["claude-sonnet-4-5", "gpt-5.1"]
+guardrails = "sandbox"
+conversation = true
+
+[spec]
+command = "aider"
+tty = false
+args = ["--model", "{protocol}/{model}", "--yes-always", "--no-check-update", "--analytics-disable",
+        "--no-show-release-notes", "--no-show-model-warnings", "--no-pretty", "--no-gitignore",
+        "--chat-history-file", "{home}/.aider.chat.history.md", "--input-history-file", "{home}/.aider.input.history",
+        "--message", "{task}"]
+follow_up_args = ["--model", "{protocol}/{model}", "--yes-always", "--no-check-update", "--analytics-disable",
+                  "--no-show-release-notes", "--no-show-model-warnings", "--no-pretty", "--no-gitignore",
+                  "--chat-history-file", "{home}/.aider.chat.history.md", "--input-history-file", "{home}/.aider.input.history",
+                  "--restore-chat-history", "--message", "{task}"]
+
+[spec.env]
+OPENAI_API_KEY = "{gateway_token}"
+OPENAI_API_BASE = "{openai_base_url}"
+ANTHROPIC_API_KEY = "{gateway_token}"
+ANTHROPIC_API_BASE = "{model_base_url}"
+LITELLM_LOCAL_MODEL_COST_MAP = "True"
