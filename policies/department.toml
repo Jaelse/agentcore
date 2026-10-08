@@ -28,6 +28,13 @@ kinds = ["exec"]
 commands = ["rm -rf /*", "rm -rf ~*", "sudo *", "su *", "mkfs*", "dd *of=/dev/*", "* | sh", "* | bash", "curl *| *sh*", "wget *| *sh*"]
 
 [[rules]]
+id = "allow-insights"
+description = "Reading granted business data and the organisation's metrics, and proposing improvements (people apply them)."
+effect = "allow"
+kinds = ["tool_call"]
+tools = ["data_list_sources", "data_query", "insights_*"]
+
+[[rules]]
 id = "allow-team"
 description = "Messages to colleagues and the department's shared files."
 effect = "allow"

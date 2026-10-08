@@ -108,7 +108,10 @@ impl std::str::FromStr for DepartmentState {
 /// Tool groups a department can grant its workers. Messaging is always on.
 pub const TOOL_SANDBOX: &str = "sandbox";
 pub const TOOL_FILES: &str = "files";
-pub const TOOL_GROUPS: [&str; 2] = [TOOL_SANDBOX, TOOL_FILES];
+/// Read the organisation's metrics and structure, and propose improvements
+/// (the retrospective).
+pub const TOOL_INSIGHTS: &str = "insights";
+pub const TOOL_GROUPS: [&str; 3] = [TOOL_SANDBOX, TOOL_FILES, TOOL_INSIGHTS];
 
 /// Limits set by an admin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

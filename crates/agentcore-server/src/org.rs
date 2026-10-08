@@ -14,7 +14,9 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
-use agentcore_core::org::{Party, RouteError, TOOL_FILES, TOOL_SANDBOX, Target, route};
+use agentcore_core::org::{
+    Party, RouteError, TOOL_FILES, TOOL_INSIGHTS, TOOL_SANDBOX, Target, route,
+};
 use agentcore_core::{
     AgentKind, DeliveredMessage, Department, DepartmentId, DepartmentState, Desired, OrgAgent,
     OrgAgentId, OrgMessage, OrgProfile, OrgSettings, Principal, SessionContext,
@@ -280,7 +282,7 @@ pub fn delivered(message: &OrgMessage) -> DeliveredMessage {
 
 // ---- the agents' team tools -----------------------------------------------------
 
-fn def(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
+pub(crate) fn def(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
     json!({
         "name": name,
         "description": description,
@@ -432,7 +434,7 @@ impl TeamTools {
     }
 }
 
-fn text_arg(args: &Value, key: &str) -> Result<String, String> {
+pub(crate) fn text_arg(args: &Value, key: &str) -> Result<String, String> {
     args.get(key)
         .and_then(Value::as_str)
         .map(String::from)
@@ -575,6 +577,18 @@ impl ToolHandler for TeamTools {
                     .report_goal_progress(goal.id, &report, &by)
                     .await
                     .map_err(|e| e.to_string())?;
+                let detail = goal.id.to_string();
+                let _ = self
+                    .store
+                    .record_activity(agentcore_store::Activity {
+                        department: Some(me.department_id),
+                        agent: Some(me.id),
+                        session: None,
+                        kind: "progress",
+                        value: None,
+                        detail: Some(&detail),
+                    })
+                    .await;
                 notify(&self.store, json!({ "kind": "goals" })).await;
                 Ok(json!({ "goal": updated.title, "recorded": true }))
             }
@@ -649,6 +663,8 @@ pub struct StartContext<'a> {
     pub continuing: Option<&'a str>,
     /// Messages that arrived while the agent was asleep.
     pub messages: &'a [OrgMessage],
+    /// Business data the department may read.
+    pub data_sources: &'a [agentcore_core::DataSource],
 }
 
 /// Where an agent keeps its working notes (department files).
@@ -838,6 +854,34 @@ pub fn compose_prompt(
             );
         }
     }
+    if agent.kind == AgentKind::Worker && !start.data_sources.is_empty() {
+        p.push_str(
+            "\n## Business data\n\nRead-only data your department may use (`data_list_sources`, \
+             `data_query`). Base decisions on it and say which source and query numbers come \
+             from.\n\n",
+        );
+        for s in start.data_sources {
+            p.push_str(&format!(
+                "- **{}** ({}): {}\n",
+                s.name,
+                s.kind.as_str(),
+                s.description
+            ));
+        }
+    }
+    if agent.kind == AgentKind::Worker && dept.grants(TOOL_INSIGHTS) {
+        p.push_str(
+            "\n## Improving the organisation\n\nYou can see how the whole organisation works \
+             (`insights_metrics`, `insights_org`, `insights_messages`). Find what is inefficient \
+             (wasted agent time or tokens, slow responses, failing agents, goals without \
+             progress, needless approvals or denials) and propose improvements with \
+             `insights_propose`: the problem, the evidence from the metrics, the solution and \
+             the concrete changes. Nothing changes until a person applies it. When people ask \
+             for changes, revise the proposal with `insights_revise`; when they reject one, do \
+             not propose it again unless something changed. After a change was applied, check \
+             in the metrics whether it helped.\n",
+        );
+    }
     if agent.kind == AgentKind::Worker && dept.grants(TOOL_FILES) {
         p.push_str(&format!(
             "\n## Your notes\n\nKeep your working notes in the department file `{}`: what you \
@@ -903,6 +947,27 @@ pub async fn start_agent_session(
     };
     let mut tools: Vec<Arc<dyn ToolHandler>> =
         vec![Arc::new(TeamTools::new(state.store.clone(), agent, dept))];
+    let data_sources = match agent.kind {
+        AgentKind::Worker => state.store.data_sources_for(dept.id).await?,
+        AgentKind::Communicator => Vec::new(),
+    };
+    if agent.kind == AgentKind::Worker {
+        // Business data granted to the department (checked on every call).
+        if !data_sources.is_empty() {
+            tools.push(Arc::new(crate::insights::DataTools::new(
+                state.store.clone(),
+                agent.id,
+                dept.id,
+            )));
+        }
+        // The retrospective: metrics, structure and proposals.
+        if dept.grants(TOOL_INSIGHTS) {
+            tools.push(Arc::new(crate::insights::InsightsTools::new(
+                state.clone(),
+                agent.id,
+            )));
+        }
+    }
     let mut repo = None;
     let mut mirror_cell = None;
 
@@ -973,6 +1038,7 @@ pub async fn start_agent_session(
         repo: repo.as_ref(),
         continuing,
         messages: &pending,
+        data_sources: &data_sources,
     };
     let session = state.manager.create(
         CreateSession {
@@ -1048,6 +1114,14 @@ pub async fn overview(State(state): State<AppState>, _caller: Caller) -> ApiResu
         "departments": departments,
         "goals": org.goals,
         "check_ins": state.store.list_schedules(None).await?,
+        "data_sources": state.store.list_data_sources().await?,
+        "proposals_pending": state
+            .store
+            .list_proposals(None)
+            .await?
+            .iter()
+            .filter(|p| p.status.is_pending())
+            .count(),
         "nodes": state.store.list_nodes(state.config.cluster.node_timeout_secs).await?,
         "communicator_policy": state.config.org.communicator_policy,
     })))
@@ -1212,7 +1286,10 @@ pub async fn put_settings(
     Ok(Json(json!(saved)))
 }
 
-async fn check_department(state: &AppState, input: &mut DepartmentInput) -> ApiResult<()> {
+pub(crate) async fn check_department(
+    state: &AppState,
+    input: &mut DepartmentInput,
+) -> ApiResult<()> {
     if let Some(project_id) = input.project_id {
         let project = state.project(project_id).await?;
         let role = input
@@ -1250,7 +1327,7 @@ async fn check_department(state: &AppState, input: &mut DepartmentInput) -> ApiR
     check_agent_spec(state, &input.communicator_agent)
 }
 
-fn check_agent_spec(state: &AppState, name: &str) -> ApiResult<()> {
+pub(crate) fn check_agent_spec(state: &AppState, name: &str) -> ApiResult<()> {
     if state.manager.agent(name.trim()).is_some() {
         Ok(())
     } else {
@@ -1389,7 +1466,7 @@ pub enum Control {
 }
 
 /// Apply a control to the agents in scope; returns the changed agents.
-async fn control_agents(
+pub(crate) async fn control_agents(
     state: &AppState,
     scope: AgentScope,
     control: Control,
@@ -1805,6 +1882,18 @@ pub struct BuildRequest {
 /// Check-ins that keep a new department working towards the goals: a daily
 /// one for its lead, and a weekly review for Strategy.
 pub fn default_check_ins(template: &str, lead: OrgAgentId) -> Vec<ScheduleInput> {
+    if template == "retrospective" {
+        return vec![ScheduleInput {
+            name: "daily retrospective".into(),
+            message: "Daily retrospective. Read the metrics and signals, find what costs the \
+                      organisation the most time or money for the least result, and propose \
+                      improvements (or revise the ones people sent back)."
+                .into(),
+            every_minutes: 24 * 60,
+            agent_id: Some(lead),
+            first_run_at: None,
+        }];
+    }
     let mut check_ins = vec![ScheduleInput {
         name: "daily".into(),
         message: "Daily check-in. Read the goals, your notes and new messages. Decide the most \

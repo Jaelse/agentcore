@@ -199,6 +199,12 @@ Goals (`/org/goals`) and scheduled check-ins
 organisation working without a person writing to it; see
 [Goals, check-ins and agents that keep going](MULTI_AGENT.md#goals-check-ins-and-agents-that-keep-going).
 
+Metrics (`GET /org/metrics?days=`), improvement proposals
+(`/org/proposals`, apply / change / send back / reject, `/org/auto-apply`)
+and business data sources (`/org/data-sources`): see
+[Business data](MULTI_AGENT.md#business-data) and
+[Metrics, the retrospective and improvements](MULTI_AGENT.md#metrics-the-retrospective-and-improvements).
+
 `dry_run` returns the plan only. A plan that does not fit the limits is
 refused with `409` (the body holds the plan) unless `raise_limits` is set.
 

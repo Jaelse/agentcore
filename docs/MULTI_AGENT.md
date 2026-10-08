@@ -19,6 +19,8 @@ that share one PostgreSQL database.
 - [Data, tools and guardrails per department](#data-tools-and-guardrails-per-department)
 - [Working on a repository](#working-on-a-repository)
 - [Goals, check-ins and agents that keep going](#goals-check-ins-and-agents-that-keep-going)
+- [Business data](#business-data)
+- [Metrics, the retrospective and improvements](#metrics-the-retrospective-and-improvements)
 - [Human oversight](#human-oversight)
 - [Limits](#limits)
 - [Running on several VMs](#running-on-several-vms)
@@ -110,7 +112,7 @@ flowchart LR
 
 ### The catalogue
 
-28 department templates in five groups (`templates/departments/*.toml`):
+29 department templates in five groups (`templates/departments/*.toml`):
 
 | Group | Departments |
 |---|---|
@@ -118,7 +120,7 @@ flowchart LR
 | Growth | Marketing, Content, Sales, Partnerships, Communications & PR, Community |
 | Customers | Customer Support, Customer Success |
 | Operations | Operations, Finance, Legal & Compliance, People & HR, Recruiting, Procurement, Supply Chain & Logistics |
-| Leadership | Strategy & Leadership, Project Management, Market Research |
+| Leadership | Strategy & Leadership, Project Management, Market Research, Retrospective |
 
 Each template has a mission (`{company}` is replaced with the company
 name), the tools it needs (engineering-type departments get a sandbox;
@@ -298,6 +300,8 @@ flowchart LR
 | `team_send_to_department` | ❌ | ✅ | `department`: a department name or `all`. |
 | `team_list_files`, `team_read_file`, `team_write_file` | if the department grants `files` | ❌ | The department's shared files. |
 | `team_list_goals` | ✅ | ❌ | The organisation's goals with their latest progress. |
+| `data_list_sources`, `data_query` | if the department was granted a data source | ❌ | Read-only business data (see [Business data](#business-data)). |
+| `insights_metrics`, `insights_org`, `insights_messages`, `insights_proposals`, `insights_propose`, `insights_revise` | if the department grants `insights` | ❌ | The retrospective: metrics, structure, messages, and proposals (see [below](#metrics-the-retrospective-and-improvements)). |
 | `team_report_progress` | ✅ | ❌ | `goal` (id or title), `text`: replaces the goal's latest progress note. |
 | `run_command`, `read_file`, `write_file`, `list_files` | if the department grants `sandbox` | ❌ | Commands and files in the agent's own sandbox. |
 
@@ -393,13 +397,140 @@ The builder can set both up: *A goal for the organisation* creates the first
 goal, and *Keep it running* adds a daily check-in for the lead of each new
 department and a weekly review in Strategy.
 
+## Business data
+
+Departments that steer the company need facts: revenue, sign-ups, usage,
+support tickets. An admin adds **data sources** under *Organisation →
+Business data* and ticks the departments that may read each one:
+
+| Kind | What agents do | Configure |
+|---|---|---|
+| **Table** | read an uploaded CSV with `filter` (`{column: value}`), `contains`, `columns`, `limit`, `offset` | the file (≤ 5 MB, first row = column names) |
+| **PostgreSQL** | run one `SELECT` (`sql`) | a connection string, ideally of a user that can only read |
+| **HTTP API** | `GET` a `path` below the base URL | base URL, header name and value (e.g. `Authorization: Bearer …`), optional allowed path prefixes, a path for *Try it* |
+
+Workers of a granted department get `data_list_sources` and `data_query`,
+and their prompt lists the sources with their descriptions. Guarantees:
+
+* **Read-only.** SQL runs in a `READ ONLY` transaction with a 15 s statement
+  timeout, one statement only, wrapped so at most `max_rows` (default 200,
+  at most 1000) rows come back; the transaction is rolled back. HTTP
+  sources only `GET`, never follow redirects (the key cannot be sent
+  elsewhere) and return at most 256 KB. Tables are read in memory.
+* **Secrets stay on the server.** Connection strings and API keys are
+  encrypted with the master key (like provider keys) and never shown to
+  agents or in the API (only a hint like `…ales`).
+* **Grants are checked on every call**, so taking a department off a source
+  (or turning the source off) takes effect at once.
+* **Every query is recorded** (`org_activity`, kind `data_query`) and shows
+  up in the metrics; the tool call itself is in the session's audit log.
+
+Admins can *Try it* with their own query before granting a source.
+
+## Metrics, the retrospective and improvements
+
+### Metrics
+
+*Organisation → Dashboard* shows how the organisation did over the last 7,
+14 or 30 days, all measured from what agents did:
+
+* figures: agents working and asleep, agent-hours (time sessions ran),
+  tokens and model calls, messages (and between departments), the average
+  wait until a message reached its recipient, goals with progress, applied
+  improvements;
+* per day: sessions, messages, tokens, model calls, failed sessions, denied
+  actions;
+* per department and per agent: sessions, failures, agent-hours, tokens,
+  messages sent and received, waiting messages, denied actions, approvals
+  and how long they waited, progress reports, data queries, last activity;
+* goals: on track, slowing (no progress for a week) or stalled (two weeks).
+
+Sessions, model calls and messages come from their tables; denied actions,
+approvals (with their waiting time), goal progress reports and data queries
+are recorded in `org_activity` as they happen. `GET /org/metrics?days=`
+returns the same numbers.
+
+### Signals
+
+Patterns that usually mean waste are listed first, most severe first, each
+with what usually helps:
+
+| Signal | When |
+|---|---|
+| messages pile up | ≥ 5 messages wait in a department whose agents are all stopped |
+| failing agent | ≥ 2 failed sessions and at least half of its sessions |
+| stale goal | an active goal without progress for 7 days (high after 14) |
+| idle department | workers, but no sessions, no messages and no check-in in the period |
+| slow responses | messages wait more than an hour on average |
+| policy mismatch | ≥ 5 denied actions in a department |
+| slow approvals | approvals wait more than an hour on average |
+| spend without output | an agent used > 200K tokens or > 8 agent-hours but sent no messages |
+
+*Ask for a fix* sends the signal to the retrospective agent.
+
+### The retrospective
+
+A department granted the **`insights`** tool group (the *Retrospective*
+template: one agent, `retro`, and a daily check-in) watches the whole
+organisation. Its workers can read the metrics and signals
+(`insights_metrics`), the structure with ids, policies and agents
+(`insights_org`), any department's messages (`insights_messages`) and the
+proposals (`insights_proposals`). They change nothing themselves: they
+**propose** (`insights_propose`) with
+
+* the **problem** (what is inefficient), the **evidence** (numbers), the
+  **solution**,
+* and the **changes** that apply it, from a closed set:
+
+| Change | Fields | Needs |
+|---|---|---|
+| `update_instructions` | `agent`, `instructions` | operator |
+| `control_agent` | `agent`, `control` (`start`/`pause`/`resume`/`stop`) | operator |
+| `create_check_in` | `department`, `agent`?, `name`, `message`, `every_minutes` | operator |
+| `update_check_in` | `check_in`, `message`?, `every_minutes`?, `enabled`? | operator |
+| `create_goal` | `title`, `description`?, `department`? | operator |
+| `send_message` | `department` or `agent`, `text` | operator |
+| `add_agent` | `department`, `name`, `agent`?, `instructions` | admin |
+| `remove_agent` | `agent` (stopped first) | admin |
+| `update_department` | `department`, `mission`?, `policy`?, `tools`? | admin |
+| `set_limits` | `max_departments`?, `max_agents_per_department`? | admin |
+
+References are checked when the proposal is made and again when it is
+applied.
+
+### Deciding
+
+*Organisation → Improvements* lists the proposals. For each, a person can:
+
+* **Apply** it: the changes run in order, in the name and with the
+  permissions of that person (a viewer cannot apply; admin-only changes
+  need an admin). The first change that fails stops the rest; the result
+  of each change is shown. Applying names the revision the person reviewed,
+  so a proposal revised in the meantime is not applied by surprise (`409`),
+  and two people applying at once apply it once.
+* **Change it**: edit the texts and the changes; it becomes a new revision
+  (the old one is kept in the history), then apply it.
+* **Send it back** with what should change: the proposer gets a message,
+  wakes up and revises it (`insights_revise`).
+* **Reject** it, with a reason the proposer is told so it does not propose
+  it again.
+
+The proposer is told when its proposal is applied (or a change failed), so
+it can check in the metrics whether the change helped.
+
+**Apply without asking.** An admin can tick kinds of change (for example
+*Add a goal*, *Change a check-in*) under *Apply without asking*. A proposal
+from an agent whose changes are all of ticked kinds is applied at once, in
+the name of "auto-apply (allowed by <admin>)". Everything else waits for a
+person.
+
 ## Data, tools and guardrails per department
 
 | | Set per department | Enforced by |
 |---|---|---|
 | **Mission** | Text given to every agent of the department in its first prompt. | Prompt |
-| **Tools** | `sandbox` (commands and files in the agent's own sandbox) and/or `files` (department files). Messaging is always available. | Tool gateway (`tools/list` and `tools/call`) |
-| **Data** | Department files: a small shared file store (PostgreSQL, so every node sees it) that only that department's workers can read and write. Each worker also has its own sandbox workspace. | Gateway: the department is taken from the agent's identity, never from tool arguments |
+| **Tools** | `sandbox` (commands and files in the agent's own sandbox), `files` (department files) and/or `insights` (the organisation's metrics and proposing improvements). Messaging is always available. | Tool gateway (`tools/list` and `tools/call`) |
+| **Data** | Department files: a small shared file store (PostgreSQL, so every node sees it) that only that department's workers can read and write. Each worker also has its own sandbox workspace. [Business data](#business-data) sources granted to the department, read-only. | Gateway: the department is taken from the agent's identity, never from tool arguments |
 | **Guardrails** | A policy (allow / deny / require approval, limits) for its workers. Communicators use the `communicator` policy. | Policy engine, per action |
 | **Agent kind** | Which configured `[[agents]]` (e.g. `opencode`) each member runs, plus member-specific instructions. | Runtime |
 
@@ -556,6 +687,7 @@ erDiagram
     nodes ||--o{ org_agents : "placed on"
     nodes ||--o{ sessions : "owns"
     departments ||--o{ org_goals : "owns (optional)"
+    org_proposals }o--o| org_agents : "proposed by"
     departments ||--o{ org_schedules : "check-ins"
     org_agents ||--o{ org_schedules : "addressed to (optional)"
 
@@ -594,6 +726,39 @@ erDiagram
         text progress "latest note"
         text progress_by
         timestamptz progress_at
+    }
+    data_sources {
+        uuid id PK
+        text name UK
+        text kind "postgres | http | table"
+        jsonb config "base_url, header, paths, max_rows, rows"
+        bytea secret_ciphertext "encrypted"
+        uuid_array departments "may read it"
+        bool enabled
+    }
+    org_activity {
+        bigint id PK
+        timestamptz at
+        uuid department_id
+        uuid agent_id
+        text kind "denied | approval | progress | data_query"
+        bigint value "approval wait (ms)"
+        text detail
+    }
+    org_proposals {
+        uuid id PK
+        text title
+        text problem
+        text evidence
+        text solution
+        jsonb actions "the changes"
+        text status "open | changes_requested | applied | rejected | failed"
+        int revision
+        jsonb history
+        text feedback
+        uuid proposer_agent FK
+        text decided_by
+        jsonb result
     }
     org_schedules {
         uuid id PK
@@ -643,12 +808,21 @@ an admin.
 | Method & path | What |
 |---|---|
 | `GET /org` | Overview: settings, departments with their agents, goals, check-ins, nodes. |
-| `GET /org/stream` | SSE of change notifications (`agents`, `department`, `message`, `files`, `settings`, `goals`, `checkins`, `stop_all`, `resync`); clients refetch what changed. |
+| `GET /org/stream` | SSE of change notifications (`agents`, `department`, `message`, `files`, `settings`, `goals`, `checkins`, `proposals`, `data_sources`, `stop_all`, `resync`); clients refetch what changed. |
 | `GET`/`POST /org/goals` | Goals; create `{"title", "description", "department_id"?}` (operators). |
 | `PUT`/`DELETE /org/goals/{id}` | Change `title`, `description`, `department_id` (`null` clears it), `status` (`active`\|`achieved`\|`dropped`); delete. |
 | `POST /org/goals/{id}/progress` | A person records progress: `{"text"}`. |
 | `GET`/`POST /org/departments/{id}/checkins` | Check-ins of a department; create `{"name", "message", "every_minutes", "agent_id"?, "first_run_at"?}` (operators; default first run: one interval from now). |
 | `PUT`/`DELETE /org/checkins/{id}` | Change `name`, `message`, `every_minutes`, `enabled`; delete. |
+| `GET /org/metrics?days=` | Metrics of the last `days` (1–365, default 14) and signals. |
+| `GET`/`POST /org/proposals?status=` | Proposals; a person writes one: `{"title", "problem", "evidence", "solution", "actions"}` (operators). |
+| `GET`/`PUT /org/proposals/{id}` | One proposal; a person changes it (`title`, `problem`, `evidence`, `solution`, `actions`, `note`) as a new revision. |
+| `POST /org/proposals/{id}/apply` | Apply `{"revision"}` (operators; admin-only changes need an admin; `409` if it was revised or decided). |
+| `POST /org/proposals/{id}/changes` · `reject` | Send back `{"text"}` (the proposer revises) or reject with a reason. |
+| `GET`/`PUT /org/auto-apply` | Kinds of change applied without asking: `{"kinds": [...]}` (admin to change). |
+| `GET`/`POST /org/data-sources` | Business data sources (no secrets); create `{"name", "kind", "description", "config", "secret"?, "content"?, "departments"}` (admin). |
+| `PUT`/`DELETE /org/data-sources/{id}` | Change `description`, `config`, `secret` (`""` removes it), `content`, `departments`, `enabled`; delete (admin). |
+| `POST /org/data-sources/{id}/test` | Try a read (admin); optional body with `sql`, `path` or `filter`. |
 | `POST /org/checkins/{id}/run` | Send it now (`409` when turned off); the schedule continues from now. |
 | `GET`/`PUT /org/settings` | Limits (admin). |
 | `POST /org/departments` | Create a department (and its communicator): `{"name", "description", "mission", "policy", "tools", "communicator_agent", "project_id"?, "role"?}`. |
@@ -694,8 +868,10 @@ several VMs: [Deployment](DEPLOYMENT.md#several-vms).
 
 * Check-ins at a time of day (cron-like); today they run every N minutes
   from when they were created or last run.
-* Read-only business data (analytics, revenue, support tickets) for the
-  departments that steer the company.
+* Money: tokens are counted, but not priced; budgets and spend limits per
+  department are the next step.
+* Ready-made connectors for popular services (Stripe, Plausible, ...): today
+  they are added as HTTP sources.
 * Moving a running agent between nodes (live migration of a sandbox).
 * Per-department model provider and spend limits.
 * A dedicated message broker for very large organisations.

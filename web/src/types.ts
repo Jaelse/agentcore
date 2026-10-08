@@ -152,6 +152,8 @@ export interface OrgOverview {
   departments: Department[];
   goals: OrgGoal[];
   check_ins: CheckIn[];
+  data_sources: DataSource[];
+  proposals_pending: number;
   nodes: NodeInfo[];
   communicator_policy: string;
 }
@@ -586,3 +588,127 @@ export type LiveFrame =
   | { frame: "model_end"; call_id: string }
   | { frame: "files"; changes: FileChange[] }
   | { frame: "processes"; processes: ProcessInfo[] };
+
+export type DataSourceKind = "postgres" | "http" | "table";
+
+export interface DataSource {
+  id: string;
+  name: string;
+  kind: DataSourceKind;
+  description: string;
+  config: Record<string, unknown>;
+  secret_hint: string | null;
+  rows: number | null;
+  departments: string[];
+  enabled: boolean;
+  updated_at: string;
+  updated_by: string;
+}
+
+export type ProposalStatus = "open" | "changes_requested" | "applied" | "rejected" | "failed";
+
+/** One concrete change of a proposal; `kind` says which fields it has. */
+export type ProposalAction = { kind: string } & Record<string, unknown>;
+
+export interface ActionResult {
+  kind: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface Proposal {
+  id: string;
+  title: string;
+  problem: string;
+  evidence: string;
+  solution: string;
+  actions: ProposalAction[];
+  status: ProposalStatus;
+  revision: number;
+  history: Record<string, unknown>[];
+  feedback: string | null;
+  proposed_by: string;
+  proposer_agent: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  result: ActionResult[] | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DayMetrics {
+  day: string;
+  messages: number;
+  inter_department: number;
+  sessions: number;
+  failed_sessions: number;
+  model_calls: number;
+  tokens: number;
+  denied: number;
+  approvals: number;
+  progress_reports: number;
+}
+
+export interface DepartmentMetrics {
+  id: string;
+  name: string;
+  state: string;
+  workers: number;
+  active_agents: number;
+  asleep_agents: number;
+  sessions: number;
+  failed_sessions: number;
+  agent_hours: number;
+  model_calls: number;
+  tokens: number;
+  messages_sent: number;
+  messages_received: number;
+  avg_wait_secs: number | null;
+  waiting_now: number;
+  denied: number;
+  approvals: number;
+  avg_approval_wait_secs: number | null;
+  progress_reports: number;
+  data_queries: number;
+  last_activity: string | null;
+}
+
+export interface AgentMetrics {
+  id: string;
+  department_id: string;
+  name: string;
+  kind: string;
+  desired: string;
+  status: string | null;
+  sessions: number;
+  failed_sessions: number;
+  agent_hours: number;
+  model_calls: number;
+  tokens: number;
+  messages_sent: number;
+  last_active: string | null;
+}
+
+export interface Signal {
+  severity: "high" | "medium" | "low";
+  kind: string;
+  title: string;
+  detail: string;
+  suggestion: string;
+  department_id: string | null;
+  agent_id: string | null;
+  goal_id: string | null;
+}
+
+export interface OrgMetrics {
+  metrics: {
+    days: number;
+    since: string;
+    daily: DayMetrics[];
+    departments: DepartmentMetrics[];
+    agents: AgentMetrics[];
+    goals: { id: string; title: string; status: string; department_id: string | null; created_at: string; progress_at: string | null; progress_reports: number }[];
+    proposals: { open: number; changes_requested: number; applied: number; rejected: number; failed: number };
+  };
+  signals: Signal[];
+}

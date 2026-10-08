@@ -102,6 +102,14 @@ do, and every attempt is recorded.
       agents), and give every node the same master key and operator list.
 - [ ] Set organisation limits (departments, agents per department) and each
       node's `max_agents` to what you can supervise and pay for.
+- [ ] Business data: give PostgreSQL sources a database user that can only
+      `SELECT` the tables departments need (queries also run in a read-only
+      transaction with a time limit, but a read-only role is the real
+      guarantee); give HTTP sources a read-only API key and allowed path
+      prefixes; grant each source only to the departments that need it.
+- [ ] Keep "apply without asking" empty unless you trust the retrospective's
+      judgement for that kind of change; structural changes (agents,
+      departments, limits) always need an admin to apply them.
 
 ## Known limitations
 

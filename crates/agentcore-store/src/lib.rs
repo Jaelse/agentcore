@@ -8,6 +8,7 @@
 
 mod agents;
 mod crypto;
+mod insights;
 mod org;
 mod rhythm;
 mod teamwork;
@@ -27,6 +28,10 @@ use uuid::Uuid;
 
 pub use agents::InstalledAgent;
 pub use crypto::{Cipher, MASTER_KEY_ENV};
+pub use insights::{
+    Activity, AgentMetrics, DataSourceInput, DataSourceUpdate, DayMetrics, DepartmentMetrics,
+    GoalMetrics, MAX_TABLE_BYTES, Metrics, NewProposal, ProposalCounts, ProposalRevision,
+};
 pub use org::{
     AgentInput, AgentScope, COMMUNICATOR_NAME, DepartmentInput, FileInfo, MAX_FILE_BYTES,
     MessageFilter, NewMessage, ORG_CHANNEL, RESERVED_NAMES, valid_agent_name,

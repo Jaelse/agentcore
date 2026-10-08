@@ -34,6 +34,12 @@ import type {
   SystemCard,
   OrgGoal,
   CheckIn,
+  DataSource,
+  DataSourceKind,
+  OrgMetrics,
+  Proposal,
+  ProposalAction,
+  ProposalStatus,
 } from "./types";
 
 const TOKEN_KEY = "agentcore.token";
@@ -270,6 +276,35 @@ export const api = {
     request<CheckIn>("PUT", `/org/checkins/${id}`, body),
   deleteCheckIn: (id: string) => request<void>("DELETE", `/org/checkins/${id}`),
   runCheckIn: (id: string) => request<CheckIn>("POST", `/org/checkins/${id}/run`),
+  metrics: (days: number) => request<OrgMetrics>("GET", `/org/metrics?days=${days}`),
+  proposals: (status?: ProposalStatus) =>
+    request<Proposal[]>("GET", `/org/proposals${status ? `?status=${status}` : ""}`),
+  updateProposal: (
+    id: string,
+    body: Partial<{ title: string; problem: string; evidence: string; solution: string; actions: ProposalAction[]; note: string }>,
+  ) => request<Proposal>("PUT", `/org/proposals/${id}`, body),
+  applyProposal: (id: string, revision: number) => request<Proposal>("POST", `/org/proposals/${id}/apply`, { revision }),
+  requestChanges: (id: string, text: string) => request<Proposal>("POST", `/org/proposals/${id}/changes`, { text }),
+  rejectProposal: (id: string, text: string) => request<Proposal>("POST", `/org/proposals/${id}/reject`, { text }),
+  autoApply: () => request<{ kinds: string[]; by: string | null; available: string[] }>("GET", "/org/auto-apply"),
+  setAutoApply: (kinds: string[]) => request<{ kinds: string[] }>("PUT", "/org/auto-apply", { kinds }),
+  dataSources: () => request<DataSource[]>("GET", "/org/data-sources"),
+  createDataSource: (body: {
+    name: string;
+    kind: DataSourceKind;
+    description: string;
+    config: Record<string, unknown>;
+    secret?: string;
+    content?: string;
+    departments: string[];
+  }) => request<DataSource>("POST", "/org/data-sources", body),
+  updateDataSource: (
+    id: string,
+    body: Partial<{ description: string; config: Record<string, unknown>; secret: string; content: string; departments: string[]; enabled: boolean }>,
+  ) => request<DataSource>("PUT", `/org/data-sources/${id}`, body),
+  deleteDataSource: (id: string) => request<void>("DELETE", `/org/data-sources/${id}`),
+  testDataSource: (id: string, args?: Record<string, unknown>) =>
+    request<{ ok: boolean; result?: unknown; error?: string }>("POST", `/org/data-sources/${id}/test`, args ?? {}),
   pauseAll: () => request<void>("POST", "/org/pause-all"),
   resumeAll: () => request<void>("POST", "/org/resume-all"),
   messages: (q: { department?: string; agent?: string; limit?: number } = {}) => {

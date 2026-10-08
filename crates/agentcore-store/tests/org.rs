@@ -532,3 +532,174 @@ async fn goals_and_check_ins() {
     assert!(store.list_schedules(None).await.unwrap().is_empty());
     assert_eq!(store.list_goals().await.unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn proposals_data_sources_and_metrics() {
+    use agentcore_core::{ActionResult, DataSourceKind, ProposalAction, ProposalStatus};
+    use agentcore_store::{DataSourceInput, DataSourceUpdate, NewProposal, ProposalRevision};
+
+    let Some((store, url)) = fresh_store().await else {
+        return;
+    };
+    let d = store.create_department(dept("Eng"), "alice").await.unwrap();
+    let dev = store.add_agent(d.id, worker("dev"), "alice").await.unwrap();
+
+    // Proposals: revise, ask for changes, apply exactly once.
+    let new = |title: &str| NewProposal {
+        title: title.into(),
+        problem: "The tech lead sleeps all day while work waits.".into(),
+        evidence: "0 sessions in 7 days, 4 messages waiting.".into(),
+        solution: "Check in twice a day.".into(),
+        actions: vec![ProposalAction::UpdateInstructions {
+            agent: dev.id,
+            instructions: "Check the inbox first.".into(),
+        }],
+        proposed_by: "retro (Retrospective)".into(),
+        proposer_agent: None,
+    };
+    let p = store.create_proposal(new("Wake the lead")).await.unwrap();
+    assert_eq!(p.status, ProposalStatus::Open);
+    let p = store
+        .request_proposal_changes(p.id, "Once a day is enough", "alice")
+        .await
+        .unwrap();
+    assert_eq!(p.status, ProposalStatus::ChangesRequested);
+    let p = store
+        .revise_proposal(
+            p.id,
+            ProposalRevision {
+                solution: Some("Check in once a day.".into()),
+                note: "as asked".into(),
+                ..Default::default()
+            },
+            "retro (Retrospective)",
+        )
+        .await
+        .unwrap();
+    assert_eq!((p.revision, p.status), (2, ProposalStatus::Open));
+    assert_eq!(p.history.len(), 2, "feedback and the replaced revision");
+    assert!(matches!(
+        store.claim_proposal(p.id, 1, "alice").await,
+        Err(StoreError::Conflict(_))
+    ));
+    let other = Store::connect(&url, agentcore_store::Cipher::from_key(&[42; 32]))
+        .await
+        .unwrap();
+    let (a, b) = tokio::join!(
+        store.claim_proposal(p.id, 2, "alice"),
+        other.claim_proposal(p.id, 2, "bob")
+    );
+    assert!(a.is_ok() != b.is_ok(), "applied once");
+    let results = vec![ActionResult {
+        kind: "update_instructions".into(),
+        ok: true,
+        detail: "done".into(),
+    }];
+    let p = store
+        .finish_proposal(p.id, &results, "alice")
+        .await
+        .unwrap();
+    assert_eq!(p.status, ProposalStatus::Applied);
+    assert!(store.reject_proposal(p.id, "late", "bob").await.is_err());
+    let r = store.create_proposal(new("Other")).await.unwrap();
+    let r = store
+        .reject_proposal(r.id, "not now", "alice")
+        .await
+        .unwrap();
+    assert_eq!(r.status, ProposalStatus::Rejected);
+    assert_eq!(
+        store
+            .list_proposals(Some(ProposalStatus::Applied))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        store
+            .set_auto_apply(&["drop".into()], "root")
+            .await
+            .is_err()
+    );
+    store
+        .set_auto_apply(&["create_goal".into()], "root")
+        .await
+        .unwrap();
+    assert_eq!(
+        store.auto_apply().await.unwrap(),
+        (vec!["create_goal".to_string()], Some("root".to_string()))
+    );
+
+    // Data sources: secrets are sealed; departments are granted.
+    let input = |name: &str, kind, secret: Option<&str>| DataSourceInput {
+        name: name.into(),
+        kind,
+        description: "sales".into(),
+        config: serde_json::json!({ "base_url": "https://api.example.com" }),
+        secret: secret.map(String::from),
+        content: None,
+        departments: vec![d.id],
+    };
+    assert!(
+        store
+            .create_data_source(input("db", DataSourceKind::Postgres, None), "root")
+            .await
+            .is_err(),
+        "postgres needs a connection string"
+    );
+    let db = store
+        .create_data_source(
+            input(
+                "db",
+                DataSourceKind::Postgres,
+                Some("postgres://ro:secret@db/sales"),
+            ),
+            "root",
+        )
+        .await
+        .unwrap();
+    assert_eq!(db.secret_hint.as_deref(), Some("…ales"));
+    assert_eq!(
+        store.data_source_secret(db.id).await.unwrap().as_deref(),
+        Some("postgres://ro:secret@db/sales")
+    );
+    assert_eq!(store.data_sources_for(d.id).await.unwrap().len(), 1);
+    store
+        .update_data_source(
+            db.id,
+            DataSourceUpdate {
+                enabled: Some(false),
+                ..Default::default()
+            },
+            "root",
+        )
+        .await
+        .unwrap();
+    assert!(store.data_sources_for(d.id).await.unwrap().is_empty());
+    assert!(matches!(
+        store
+            .create_data_source(input("Bad Name", DataSourceKind::Http, None), "root")
+            .await,
+        Err(StoreError::Invalid(_))
+    ));
+
+    // Metrics run over everything recorded.
+    store
+        .record_activity(agentcore_store::Activity {
+            department: Some(d.id),
+            agent: Some(dev.id),
+            session: None,
+            kind: "denied",
+            value: None,
+            detail: Some("run_command"),
+        })
+        .await
+        .unwrap();
+    let m = store.org_metrics(7).await.unwrap();
+    assert_eq!(m.daily.len(), 7);
+    assert_eq!(m.daily.iter().map(|d| d.denied).sum::<i64>(), 1);
+    let eng = m.departments.iter().find(|x| x.id == d.id).unwrap();
+    assert_eq!((eng.workers, eng.denied), (1, 1));
+    assert_eq!(m.agents.len(), 2, "worker and communicator");
+    assert_eq!(m.proposals.applied, 1);
+}

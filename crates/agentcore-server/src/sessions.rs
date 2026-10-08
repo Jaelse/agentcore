@@ -110,10 +110,54 @@ impl AppState {
         tokio::spawn(async move {
             let (_, mut rx) = session.subscribe();
             state.persist(&session).await;
+            // Department agents: what the metrics need beyond the index.
+            let context = session.context();
+            let org_member = context.department_id.map(|d| (d, context.org_agent_id));
+            let mut approvals = crate::insights::ApprovalClock::default();
             loop {
                 match rx.recv().await {
                     Ok(event) => match event.kind {
                         EventKind::SessionEnded { .. } => break,
+                        EventKind::PolicyEvaluated {
+                            verdict: agentcore_core::Verdict::Deny { rule, .. },
+                            ..
+                        } => {
+                            if let Some((department, agent)) = org_member {
+                                state
+                                    .activity(
+                                        department,
+                                        agent,
+                                        session.id(),
+                                        "denied",
+                                        None,
+                                        rule.as_deref(),
+                                    )
+                                    .await;
+                            }
+                        }
+                        EventKind::ApprovalRequested { approval_id, .. } => {
+                            approvals.requested(approval_id);
+                        }
+                        EventKind::ApprovalResolved {
+                            approval_id,
+                            approved,
+                            ..
+                        } => {
+                            if let Some((department, agent)) = org_member {
+                                let waited = approvals.resolved(approval_id);
+                                let outcome = if approved { "approved" } else { "rejected" };
+                                state
+                                    .activity(
+                                        department,
+                                        agent,
+                                        session.id(),
+                                        "approval",
+                                        waited,
+                                        Some(outcome),
+                                    )
+                                    .await;
+                            }
+                        }
                         EventKind::StatusChanged { status } => {
                             state.persist(&session).await;
                             // Department agents: status shown in the
@@ -137,6 +181,28 @@ impl AppState {
             state.persist_changes(&session).await;
             state.reconcile.notify_one();
         });
+    }
+
+    async fn activity(
+        &self,
+        department: uuid::Uuid,
+        agent: Option<uuid::Uuid>,
+        session: uuid::Uuid,
+        kind: &str,
+        value: Option<i64>,
+        detail: Option<&str>,
+    ) {
+        let activity = agentcore_store::Activity {
+            department: Some(department),
+            agent,
+            session: Some(session),
+            kind,
+            value,
+            detail,
+        };
+        if let Err(err) = self.store.record_activity(activity).await {
+            tracing::warn!(error = %err, "failed to record activity");
+        }
     }
 
     pub async fn persist_changes(&self, session: &Session) {

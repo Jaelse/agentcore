@@ -16,6 +16,9 @@ import type {
 } from "../types";
 import { type BuildMode, OrgBuilder } from "./OrgBuilder";
 import { CheckIns, Goals } from "./Rhythm";
+import { Dashboard } from "./Dashboard";
+import { DataSources } from "./DataSources";
+import { Improvements } from "./Improvements";
 
 interface Props {
   me: Me;
@@ -27,12 +30,16 @@ interface Props {
 const TOOL_GROUPS: { id: string; label: string; help: string }[] = [
   { id: "sandbox", label: "Sandbox", help: "commands and files in each agent's own sandbox" },
   { id: "files", label: "Department files", help: "a shared file store only this department can use" },
+  { id: "insights", label: "Insights", help: "the organisation's metrics and structure, and proposing improvements (the retrospective)" },
 ];
 
 type Selection =
   | { kind: "org" }
   | { kind: "department"; id: string }
   | { kind: "new" }
+  | { kind: "dashboard" }
+  | { kind: "improvements" }
+  | { kind: "data" }
   | { kind: "build"; mode?: BuildMode; pick?: string[] };
 
 /** Departments (rooms) of agents, how they talk, and control at every level. */
@@ -93,6 +100,26 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
           <div className="muted small">
             {org.departments.length}/{org.settings.max_departments} departments · every message
           </div>
+        </button>
+        <button className={`session-item ${selection.kind === "dashboard" ? "active" : ""}`} onClick={() => setSelection({ kind: "dashboard" })}>
+          <div className="session-item-top">
+            <strong>📊 Dashboard</strong>
+          </div>
+          <div className="muted small">how the organisation is doing</div>
+        </button>
+        <button className={`session-item ${selection.kind === "improvements" ? "active" : ""}`} onClick={() => setSelection({ kind: "improvements" })}>
+          <div className="session-item-top">
+            <strong>💡 Improvements</strong>
+            {org.proposals_pending > 0 && <span className="pill status-awaiting_input">{org.proposals_pending} to decide</span>}
+          </div>
+          <div className="muted small">proposed by the retrospective</div>
+        </button>
+        <button className={`session-item ${selection.kind === "data" ? "active" : ""}`} onClick={() => setSelection({ kind: "data" })}>
+          <div className="session-item-top">
+            <strong>🗄 Business data</strong>
+            <span className="muted small">{org.data_sources.length}</span>
+          </div>
+          <div className="muted small">what departments may read</div>
         </button>
         {canOperate && org.departments.length > 0 && (
           <div className="row">
@@ -185,6 +212,20 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
             onCancel={org.departments.length > 0 ? () => setSelection({ kind: "org" }) : undefined}
             onError={onError}
           />
+        ) : selection.kind === "dashboard" ? (
+          <Dashboard
+            org={org}
+            me={me}
+            tick={tick}
+            act={act}
+            onOpenDepartment={(id) => setSelection({ kind: "department", id })}
+            onOpenImprovements={() => setSelection({ kind: "improvements" })}
+            onError={onError}
+          />
+        ) : selection.kind === "improvements" ? (
+          <Improvements org={org} me={me} tick={tick} onError={onError} />
+        ) : selection.kind === "data" ? (
+          <DataSources org={org} me={me} act={act} onError={onError} />
         ) : selection.kind === "new" ? (
           <DepartmentForm
             department={null}
@@ -425,6 +466,13 @@ function DepartmentRoom({
                 {TOOL_GROUPS.find((g) => g.id === t)?.label ?? t}
               </span>
             ))}
+            {org.data_sources
+              .filter((s) => s.enabled && s.departments.includes(dept.id))
+              .map((s) => (
+                <span key={s.id} className="chip" title={`Business data: ${s.description}`}>
+                  🗄 {s.name}
+                </span>
+              ))}
             <span className="chip" title="Agent the communicator runs">
               📡 communicator: {dept.communicator_agent}
             </span>

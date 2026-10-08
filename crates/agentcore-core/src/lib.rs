@@ -8,6 +8,7 @@
 pub mod action;
 pub mod agent;
 pub mod event;
+pub mod insights;
 pub mod live;
 pub mod model;
 pub mod org;
@@ -18,6 +19,9 @@ pub mod work;
 pub use action::{Action, ActionKind, ActionOutcome, Verdict};
 pub use agent::{AgentAdapter, AgentSpec, LaunchContext, LaunchPlan};
 pub use event::{Event, EventKind, OutputStream};
+pub use insights::{
+    ActionResult, DataSource, DataSourceKind, Proposal, ProposalAction, ProposalStatus,
+};
 pub use live::{FileChange, FileChangeKind, LiveFrame, ModelDeltaKind, ProcessInfo};
 pub use model::{ModelCallOutcome, ModelEndpoint, ProviderKind};
 pub use org::{

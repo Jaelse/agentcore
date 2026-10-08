@@ -67,6 +67,26 @@ case "$0" in
 esac
 "###;
 
+/// Retrospective: reads metrics and business data, proposes, revises when
+/// asked, proposes again on request.
+const RETRO: &str = r###"
+case "$0" in
+  *"asked for changes"*)
+    id=$(printf %s "$0" | sed -n 's/.*(id \([0-9a-f-]*\)).*/\1/p' | head -n 1)
+    call insights_revise "{\"proposal\":\"$id\",\"note\":\"as asked\",\"actions\":[{\"kind\":\"create_goal\",\"title\":\"Ship v2\"}]}" ;;
+  *PROPOSE-AGAIN*)
+    call insights_propose '{"title":"Auto","problem":"p","solution":"s","actions":[{"kind":"create_goal","title":"Auto goal"}]}' ;;
+  "You have "*) ;;
+  *)
+    call insights_metrics '{"days":7}' | head -c 100; echo
+    call data_query '{"source":"customers","filter":{"plan":"pro"}}'
+    call data_query '{"source":"warehouse","sql":"SELECT 41 + 1 AS answer"}'
+    call data_query '{"source":"warehouse","sql":"SELECT 1; DROP TABLE sessions"}'
+    call insights_propose '{"title":"More focus","problem":"No goals","evidence":"0 goals","solution":"Add a goal","actions":[{"kind":"create_goal","title":"Ship v1"}]}'
+    call insights_propose '{"title":"Room to grow","problem":"Limits too low","solution":"Raise them","actions":[{"kind":"set_limits","max_departments":7}]}' ;;
+esac
+"###;
+
 /// Runs a script on the first turn and on every message (`$0` = text).
 fn agent(name: &str, script: &str) -> AgentSpec {
     let first = format!("{CALL}\nset -- \"$0\"\n{script}\necho \"{name} turn: $0\" | head -c 300");
@@ -128,6 +148,7 @@ fn config(dir: &std::path::Path, db_url: &str, bind: std::net::SocketAddr, node:
         agent("dev-bot", DEV),
         agent("idle-bot", ""),
         agent("goal-bot", GOAL_WORKER),
+        agent("retro-bot", RETRO),
     ];
     config
 }
@@ -865,7 +886,18 @@ async fn build_an_organisation_from_templates_and_grow_it() {
     assert_eq!(big["goal"]["title"], "Ship version 1");
     let check_ins = org["check_ins"].as_array().unwrap();
     let daily = check_ins.iter().filter(|c| c["name"] == "daily").count();
-    assert_eq!(daily, all.len() - 1);
+    assert_eq!(
+        daily,
+        all.len() - 2,
+        "engineering exists; the retrospective has its own"
+    );
+    assert_eq!(
+        check_ins
+            .iter()
+            .filter(|c| c["name"] == "daily retrospective")
+            .count(),
+        1
+    );
     assert_eq!(
         check_ins
             .iter()
@@ -1069,6 +1101,284 @@ async fn goals_check_ins_and_agents_that_keep_going() {
     let out = output(&node.events(&next_session).await);
     assert!(out.contains("CONTINUING"), "{out}");
     node.ok("POST", &format!("/org/agents/{owl_id}/stop"), None)
+        .await;
+    node.cluster.cancel();
+}
+
+#[tokio::test]
+async fn retrospective_proposes_people_decide() {
+    let Some((_, db_url)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let node = start(dir.path(), &db_url, "n1", 10).await;
+
+    let mut retro = department("Retro", &["files", "insights"]);
+    retro["mission"] = json!("Improve how we work");
+    let retro = node.ok("POST", "/org/departments", Some(retro)).await;
+    let rid = retro["id"].as_str().unwrap().to_string();
+
+    // Business data: a table and a database, granted to Retro.
+    let (code, _) = node
+        .call(
+            "POST",
+            "/org/data-sources",
+            "alice-token",
+            Some(json!({ "name": "x", "kind": "table", "content": "a\n1\n" })),
+        )
+        .await;
+    assert_eq!(code, 403, "admins add data sources");
+    let table = node
+        .ok(
+            "POST",
+            "/org/data-sources",
+            Some(json!({
+                "name": "customers", "kind": "table", "description": "Our customers",
+                "content": "customer,plan,mrr\nAcme,pro,1200\nBeta,free,0\nCorp,pro,900\n",
+                "departments": [rid],
+            })),
+        )
+        .await;
+    assert_eq!(table["rows"], 3);
+    let warehouse = node
+        .ok(
+            "POST",
+            "/org/data-sources",
+            Some(json!({
+                "name": "warehouse", "kind": "postgres", "description": "Sales database",
+                "secret": db_url, "departments": [rid],
+            })),
+        )
+        .await;
+    assert!(warehouse.get("secret").is_none() && warehouse["secret_hint"].is_string());
+    let tested = node
+        .ok(
+            "POST",
+            &format!(
+                "/org/data-sources/{}/test",
+                warehouse["id"].as_str().unwrap()
+            ),
+            None,
+        )
+        .await;
+    assert_eq!(tested["ok"], true, "{tested}");
+    let tested = node
+        .ok(
+            "POST",
+            &format!(
+                "/org/data-sources/{}/test",
+                warehouse["id"].as_str().unwrap()
+            ),
+            Some(json!({ "sql": "CREATE TABLE nope (x int)" })),
+        )
+        .await;
+    assert_eq!(tested["ok"], false, "{tested}");
+
+    let bot = node
+        .ok(
+            "POST",
+            &format!("/org/departments/{rid}/agents"),
+            Some(json!({ "name": "retro", "agent": "retro-bot" })),
+        )
+        .await;
+    let bot_id = bot["id"].as_str().unwrap();
+    node.ok("POST", &format!("/org/agents/{bot_id}/start"), None)
+        .await;
+    let session = node
+        .wait_agent(bot_id, "retro started", |a| a["session_id"].is_string())
+        .await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Two proposals arrive.
+    let mut proposals = Value::Null;
+    for _ in 0..200 {
+        proposals = node.ok("GET", "/org/proposals", None).await;
+        if proposals.as_array().unwrap().len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(proposals.as_array().unwrap().len(), 2, "{proposals}");
+    let out = output(&node.events(&session).await);
+    assert!(
+        out.contains("Acme") && out.contains("Corp") && !out.contains("Beta"),
+        "{out}"
+    );
+    assert!(out.contains("\\\"answer\\\":42"), "{out}");
+    assert!(out.contains("one statement at a time"), "{out}");
+    let find = |list: &Value, title: &str| {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["title"] == title)
+            .cloned()
+            .unwrap()
+    };
+    let focus = find(&proposals, "More focus");
+    let limits = find(&proposals, "Room to grow");
+    assert_eq!(focus["status"], "open");
+    assert_eq!(focus["proposed_by"], "retro (Retro)");
+    let fid = focus["id"].as_str().unwrap().to_string();
+
+    // A viewer cannot apply; an operator sends it back with changes.
+    let (code, _) = node
+        .call(
+            "POST",
+            &format!("/org/proposals/{fid}/apply"),
+            "viewer-token",
+            Some(json!({ "revision": 1 })),
+        )
+        .await;
+    assert_eq!(code, 403);
+    let (code, _) = node
+        .call(
+            "POST",
+            &format!("/org/proposals/{fid}/changes"),
+            "alice-token",
+            Some(json!({ "text": "Call it v2" })),
+        )
+        .await;
+    assert_eq!(code, 200);
+    let mut revised = Value::Null;
+    for _ in 0..200 {
+        revised = node.ok("GET", &format!("/org/proposals/{fid}"), None).await;
+        if revised["revision"] == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(revised["revision"], 2, "{revised}");
+    assert_eq!(revised["status"], "open");
+    assert_eq!(revised["actions"][0]["title"], "Ship v2");
+
+    // Applying what one did not see is refused; the reviewed revision applies.
+    let (code, _) = node
+        .call(
+            "POST",
+            &format!("/org/proposals/{fid}/apply"),
+            "alice-token",
+            Some(json!({ "revision": 1 })),
+        )
+        .await;
+    assert_eq!(code, 409);
+    let (code, applied) = node
+        .call(
+            "POST",
+            &format!("/org/proposals/{fid}/apply"),
+            "alice-token",
+            Some(json!({ "revision": 2 })),
+        )
+        .await;
+    assert_eq!(code, 200, "{applied}");
+    assert_eq!(applied["status"], "applied");
+    assert_eq!(applied["result"][0]["ok"], true);
+    let goals = node.ok("GET", "/org/goals", None).await;
+    assert_eq!(goals[0]["title"], "Ship v2");
+    assert_eq!(goals[0]["created_by"], "alice");
+
+    // Limits need an admin; a person may change the proposal first.
+    let lid = limits["id"].as_str().unwrap();
+    let (code, _) = node
+        .call(
+            "POST",
+            &format!("/org/proposals/{lid}/apply"),
+            "alice-token",
+            Some(json!({ "revision": 1 })),
+        )
+        .await;
+    assert_eq!(code, 403);
+    let edited = node
+        .ok(
+            "PUT",
+            &format!("/org/proposals/{lid}"),
+            Some(json!({
+                "actions": [{ "kind": "set_limits", "max_departments": 9 }],
+                "note": "a bit more room",
+            })),
+        )
+        .await;
+    assert_eq!(edited["revision"], 2);
+    let applied = node
+        .ok(
+            "POST",
+            &format!("/org/proposals/{lid}/apply"),
+            Some(json!({ "revision": 2 })),
+        )
+        .await;
+    assert_eq!(applied["status"], "applied", "{applied}");
+    assert_eq!(
+        node.ok("GET", "/org/settings", None).await["max_departments"],
+        9
+    );
+    let (code, _) = node
+        .call(
+            "POST",
+            &format!("/org/proposals/{lid}/reject"),
+            "alice-token",
+            Some(json!({ "text": "too late" })),
+        )
+        .await;
+    assert_eq!(code, 409, "already decided");
+
+    // Allowed kinds of change are applied without asking.
+    let (code, _) = node
+        .call(
+            "PUT",
+            "/org/auto-apply",
+            "alice-token",
+            Some(json!({ "kinds": ["create_goal"] })),
+        )
+        .await;
+    assert_eq!(code, 403);
+    node.ok(
+        "PUT",
+        "/org/auto-apply",
+        Some(json!({ "kinds": ["create_goal"] })),
+    )
+    .await;
+    node.ok(
+        "POST",
+        "/org/messages",
+        Some(json!({ "to": { "agent": bot_id }, "text": "PROPOSE-AGAIN" })),
+    )
+    .await;
+    let mut auto = Value::Null;
+    for _ in 0..200 {
+        let all = node.ok("GET", "/org/proposals", None).await;
+        if let Some(p) = all
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["title"] == "Auto")
+        {
+            auto = p.clone();
+            if auto["status"] == "applied" {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(auto["status"], "applied", "{auto}");
+    assert_eq!(auto["decided_by"], "auto-apply (allowed by root)");
+
+    // The metrics show it all.
+    let m = node.ok("GET", "/org/metrics?days=7", None).await;
+    assert_eq!(m["metrics"]["daily"].as_array().unwrap().len(), 7);
+    let dept = m["metrics"]["departments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == rid.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(dept["data_queries"], 3, "{dept}");
+    assert!(dept["sessions"].as_i64().unwrap() >= 1);
+    assert_eq!(m["metrics"]["proposals"]["applied"], 3);
+    assert!(m["signals"].is_array());
+
+    node.ok("POST", &format!("/org/agents/{bot_id}/stop"), None)
         .await;
     node.cluster.cancel();
 }

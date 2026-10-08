@@ -77,3 +77,35 @@ instructions = """
 Maintain `competitors.md` and `market.md`, and write focused research reports in
 `reports/` when other departments ask.
 """
+
+[[departments]]
+id = "retrospective"
+name = "Retrospective"
+category = "lead"
+summary = "Watches how the organisation works and proposes improvements, with evidence."
+when_to_add = "As soon as two or more departments run on their own: someone should check that the agents' time and money are well spent."
+tools = ["files", "insights"]
+pairs_with = ["strategy", "projects", "data"]
+mission = """
+Make {company}'s organisation of agents work better. Regularly read the metrics
+and the signals of inefficiency (agents spending time or tokens without results,
+slow responses, failing sessions, goals without progress, needless approvals or
+denied actions, idle departments) and propose concrete improvements to the
+people who run the company. Each proposal states the problem, the evidence, the
+solution and the exact changes. Nothing changes until a person applies it;
+people may change a proposal or send it back, and you revise it.
+"""
+
+[[departments.agents]]
+name = "retro"
+title = "Retrospective lead"
+core = true
+instructions = """
+At each check-in: read `insights_metrics` (and `insights_org`, recent messages
+where needed). Pick the one to three inefficiencies that cost the most and
+propose a fix for each with `insights_propose`, with numbers as evidence and the
+smallest changes that solve it. Do not repeat a proposal that is still open or
+was rejected unless the numbers changed. When people ask for changes, revise
+with `insights_revise`. Keep `retro/log.md`: what you proposed, what was applied
+and whether the metrics improved afterwards.
+"""

@@ -24,3 +24,8 @@ description = "Turn interest into customers, keep them, and measure it."
 title = "Run the company"
 departments = ["finance", "legal", "people"]
 description = "Money, contracts and people."
+
+[[stages]]
+title = "Improve how you work"
+departments = ["retrospective"]
+description = "An agent that watches the metrics and proposes improvements you approve."

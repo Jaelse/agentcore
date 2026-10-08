@@ -27,5 +27,5 @@ description = "Processes, money, contracts and people."
 
 [[stages]]
 title = "Everything else"
-departments = ["ml", "docs", "partnerships", "communications", "community", "research", "it", "procurement"]
+departments = ["ml", "docs", "partnerships", "communications", "community", "research", "it", "procurement", "retrospective"]
 description = "Specialised functions for a mature company."

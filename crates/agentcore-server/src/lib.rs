@@ -12,6 +12,7 @@ pub mod cluster;
 pub mod config;
 mod error;
 pub mod github;
+pub mod insights;
 pub mod live;
 pub mod llm;
 pub mod mcp;
@@ -258,6 +259,40 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/org/checkins/{id}/run", post(org::run_check_in))
         .route("/org/goals", get(org::list_goals).post(org::create_goal))
+        .route("/org/metrics", get(insights::metrics))
+        .route(
+            "/org/proposals",
+            get(insights::list_proposals).post(insights::create_proposal),
+        )
+        .route(
+            "/org/proposals/{id}",
+            get(insights::get_proposal).put(insights::update_proposal),
+        )
+        .route("/org/proposals/{id}/apply", post(insights::apply_proposal))
+        .route(
+            "/org/proposals/{id}/changes",
+            post(insights::request_changes),
+        )
+        .route(
+            "/org/proposals/{id}/reject",
+            post(insights::reject_proposal),
+        )
+        .route(
+            "/org/auto-apply",
+            get(insights::get_auto_apply).put(insights::put_auto_apply),
+        )
+        .route(
+            "/org/data-sources",
+            get(insights::list_data_sources).post(insights::create_data_source),
+        )
+        .route(
+            "/org/data-sources/{id}",
+            put(insights::update_data_source).delete(insights::delete_data_source),
+        )
+        .route(
+            "/org/data-sources/{id}/test",
+            post(insights::test_data_source),
+        )
         .route(
             "/org/goals/{id}",
             put(org::update_goal).delete(org::delete_goal),

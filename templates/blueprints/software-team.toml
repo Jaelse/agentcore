@@ -24,3 +24,8 @@ departments = ["devops", "security"]
 title = "Learn and explain"
 description = "Metrics to steer by, and documentation for users."
 departments = ["data", "docs"]
+
+[[stages]]
+title = "Improve how you work"
+departments = ["retrospective"]
+description = "An agent that watches the metrics and proposes improvements you approve."
