@@ -96,6 +96,7 @@ fn config(dir: &std::path::Path, db_url: &str, bind: std::net::SocketAddr, node:
     config.storage.data_dir = dir.join(node);
     config.storage.audit_fsync = false;
     config.policies.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../policies").into();
+    config.templates.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../templates").into();
     config.sandbox = SandboxConfig {
         backend: BackendKind::Process,
         ..Default::default()
@@ -682,4 +683,153 @@ async fn agents_spread_over_nodes_and_nodes_can_be_lost() {
         .stop_all(agentcore_core::Principal::System, "test over")
         .await;
     n1.cluster.cancel();
+}
+
+#[tokio::test]
+async fn build_an_organisation_from_templates_and_grow_it() {
+    let Some((_, db_url)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let node = start(dir.path(), &db_url, "n1", 50).await;
+
+    let catalog = node.ok("GET", "/org/templates", None).await;
+    assert!(catalog["departments"].as_array().unwrap().len() >= 25);
+    assert_eq!(catalog["categories"].as_array().unwrap().len(), 5);
+    // Nothing yet: no suggestions to grow from.
+    assert!(
+        node.ok("GET", "/org/suggestions", None)
+            .await
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // Start small: the first stage of the solo developer path, lean.
+    let profile = json!({
+        "company_name": "Acme", "company_about": "We make rockets.",
+        "blueprint": "solo-developer",
+    });
+    let build = |departments: Value, extra: Value| {
+        let mut body = json!({
+            "profile": profile, "departments": departments, "size": "lean",
+            "agent": "idle-bot",
+        });
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        body
+    };
+    let (code, _) = node
+        .call(
+            "POST",
+            "/org/build",
+            "alice-token",
+            Some(build(json!(["engineering"]), json!({}))),
+        )
+        .await;
+    assert_eq!(code, 403, "only admins build the organisation");
+    let dry = node
+        .ok(
+            "POST",
+            "/org/build",
+            Some(build(json!(["engineering"]), json!({ "dry_run": true }))),
+        )
+        .await;
+    assert_eq!(dry["plan"]["new_departments"], 1);
+    assert!(
+        node.ok("GET", "/org", None).await["departments"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let built = node
+        .ok(
+            "POST",
+            "/org/build",
+            Some(build(json!(["engineering"]), json!({ "start": true }))),
+        )
+        .await;
+    assert_eq!(built["created"].as_array().unwrap().len(), 1, "{built}");
+    assert!(built["errors"].as_array().unwrap().is_empty(), "{built}");
+    let eng = &built["created"][0];
+    assert_eq!(eng["template"], "engineering");
+    assert!(eng["mission"].as_str().unwrap().contains("Acme"));
+
+    // The agents know their company.
+    let org = node.ok("GET", "/org", None).await;
+    let members = org["departments"][0]["agents"].as_array().unwrap().clone();
+    let names: Vec<&str> = members
+        .iter()
+        .map(|a| a["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["lead", "developer", "communicator"]);
+    let lead = node
+        .wait_agent(members[0]["id"].as_str().unwrap(), "lead running", |a| {
+            a["status"] == "awaiting_input"
+        })
+        .await;
+    let events = node.events(lead["session_id"].as_str().unwrap()).await;
+    let out = output(&events);
+    assert!(out.contains("Acme: We make rockets."), "{out}");
+
+    // Suggestions: the next stage first, then neighbours and more agents.
+    let suggestions = node.ok("GET", "/org/suggestions", None).await;
+    let first = &suggestions[0];
+    assert_eq!(first["kind"], "stage");
+    assert_eq!(first["templates"], json!(["qa"]));
+    assert!(
+        suggestions
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["kind"] == "agent" && s["agent"]["name"] == "reviewer")
+    );
+
+    // Going big: the complete company does not fit the limits...
+    let all: Vec<Value> = catalog["blueprints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["id"] == "complete-company")
+        .unwrap()["stages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|s| s["departments"].as_array().unwrap().clone())
+        .collect();
+    let (code, err) = node
+        .call(
+            "POST",
+            "/org/build",
+            "admin-token",
+            Some(build(json!(all), json!({}))),
+        )
+        .await;
+    assert_eq!(code, 409, "{err}");
+    assert!(err["plan"]["needs"]["max_departments"].as_u64().unwrap() > 10);
+    // ... unless the admin raises them in the same step.
+    let big = node
+        .ok(
+            "POST",
+            "/org/build",
+            Some(build(
+                json!(all),
+                json!({ "raise_limits": true, "size": "full" }),
+            )),
+        )
+        .await;
+    assert_eq!(
+        big["created"].as_array().unwrap().len(),
+        all.len() - 1,
+        "engineering exists"
+    );
+    assert!(big["errors"].as_array().unwrap().is_empty(), "{big}");
+    assert_eq!(big["settings"]["max_departments"], all.len());
+    let org = node.ok("GET", "/org", None).await;
+    assert_eq!(org["departments"].as_array().unwrap().len(), all.len());
+
+    node.ok("POST", "/stop-all", None).await;
+    node.cluster.cancel();
 }

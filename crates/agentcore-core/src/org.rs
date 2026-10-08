@@ -118,6 +118,19 @@ pub struct OrgSettings {
     pub max_agents_per_department: u32,
 }
 
+/// What the organisation is for and how it is meant to grow. Given to every
+/// agent (company) and used for suggestions (blueprint).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrgProfile {
+    #[serde(default)]
+    pub company_name: String,
+    #[serde(default)]
+    pub company_about: String,
+    /// Growth path the organisation follows (a blueprint id).
+    #[serde(default)]
+    pub blueprint: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Department {
     pub id: DepartmentId,
@@ -134,6 +147,9 @@ pub struct Department {
     /// Configured agent (`[[agents]]`) the communicator runs.
     pub communicator_agent: String,
     pub state: DepartmentState,
+    /// Template the department was created from, if any.
+    #[serde(default)]
+    pub template: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_by: String,
 }

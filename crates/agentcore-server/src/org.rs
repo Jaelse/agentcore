@@ -17,7 +17,7 @@ use std::time::Duration;
 use agentcore_core::org::{Party, RouteError, TOOL_FILES, TOOL_SANDBOX, Target, route};
 use agentcore_core::{
     AgentKind, DeliveredMessage, Department, DepartmentId, DepartmentState, Desired, OrgAgent,
-    OrgAgentId, OrgMessage, OrgSettings, Principal, SessionContext,
+    OrgAgentId, OrgMessage, OrgProfile, OrgSettings, Principal, SessionContext,
 };
 use agentcore_runtime::{CreateSession, Session, SessionOptions, ToolHandler};
 use agentcore_store::{
@@ -51,6 +51,7 @@ const MAX_PATH: usize = 256;
 pub struct Org {
     pub departments: Vec<Department>,
     pub agents: Vec<OrgAgent>,
+    pub profile: OrgProfile,
 }
 
 impl Org {
@@ -58,6 +59,7 @@ impl Org {
         Ok(Self {
             departments: store.list_departments().await?,
             agents: store.list_agents(None).await?,
+            profile: store.org_profile().await?,
         })
     }
 
@@ -597,6 +599,14 @@ pub fn compose_prompt(org: &Org, agent: &OrgAgent, dept: &Department) -> String 
         dept.mission.trim()
     };
     let mut p = String::new();
+    let company = org.profile.company_name.trim();
+    let about = org.profile.company_about.trim();
+    let company_section = match (company.is_empty(), about.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => format!("## Your company\n\n{company}\n\n"),
+        (true, false) => format!("## Your company\n\n{about}\n\n"),
+        (false, false) => format!("## Your company\n\n{company}: {about}\n\n"),
+    };
     match agent.kind {
         AgentKind::Worker => {
             let colleagues: Vec<String> = org
@@ -614,7 +624,7 @@ pub fn compose_prompt(org: &Org, agent: &OrgAgent, dept: &Department) -> String 
             p.push_str(&format!(
                 "You are `{}`, an AI agent in the **{}** department of an organisation of AI \
                  agents. People supervise the organisation: they can read every message and \
-                 everything you do.\n\n## Your department's mission\n\n{mission}\n\n",
+                 everything you do.\n\n{company_section}## Your department's mission\n\n{mission}\n\n",
                 agent.name, dept.name
             ));
             let own = agent.instructions.trim();
@@ -664,7 +674,7 @@ pub fn compose_prompt(org: &Org, agent: &OrgAgent, dept: &Department) -> String 
                  agents. People supervise the organisation and read every message.\n\n\
                  Your only job is to pass messages between your department and other \
                  departments. You do not do the department's work, and you have no tools other \
-                 than messaging.\n\n\
+                 than messaging.\n\n{company_section}\
                  ## Your department\n\nMission: {mission}\n\nMembers: {}\n\n\
                  Other departments: {others}\n\n\
                  ## How you work\n\n\
@@ -755,6 +765,7 @@ pub async fn overview(State(state): State<AppState>, _caller: Caller) -> ApiResu
         .collect();
     Ok(Json(json!({
         "node": &*state.node,
+        "profile": org.profile,
         "settings": state.store.org_settings().await?,
         "departments": departments,
         "nodes": state.store.list_nodes(state.config.cluster.node_timeout_secs).await?,
@@ -1264,4 +1275,215 @@ mod tests {
         assert!(file_path("  ").is_err());
         assert!(file_path(&"x".repeat(300)).is_err());
     }
+}
+
+// ---- building the organisation from templates ------------------------------------
+
+pub async fn templates(State(state): State<AppState>, _caller: Caller) -> Json<Value> {
+    let categories: Vec<Value> = crate::templates::CATEGORIES
+        .iter()
+        .map(|(id, title, description)| json!({ "id": id, "title": title, "description": description }))
+        .collect();
+    Json(json!({
+        "categories": categories,
+        "departments": state.templates.departments,
+        "blueprints": state.templates.blueprints,
+    }))
+}
+
+pub async fn suggestions(State(state): State<AppState>, _caller: Caller) -> ApiResult<Json<Value>> {
+    let org = Org::load(&state.store).await?;
+    let limits = state.store.org_settings().await?;
+    Ok(Json(json!(crate::templates::suggest(
+        &state.templates,
+        &org.profile,
+        &org.departments,
+        &org.agents,
+        limits,
+    ))))
+}
+
+pub async fn get_profile(State(state): State<AppState>, _caller: Caller) -> ApiResult<Json<Value>> {
+    Ok(Json(json!(state.store.org_profile().await?)))
+}
+
+fn check_blueprint(state: &AppState, profile: &OrgProfile) -> ApiResult<()> {
+    match profile.blueprint.as_deref() {
+        Some(id) if state.templates.blueprint(id).is_none() => Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("unknown blueprint `{id}`"),
+        )),
+        _ => Ok(()),
+    }
+}
+
+pub async fn put_profile(
+    State(state): State<AppState>,
+    caller: Caller,
+    Json(profile): Json<OrgProfile>,
+) -> ApiResult<Json<Value>> {
+    caller.require_admin()?;
+    check_blueprint(&state, &profile)?;
+    let saved = state.store.set_org_profile(&profile, &caller.name).await?;
+    notify(&state.store, json!({ "kind": "settings" })).await;
+    Ok(Json(json!(saved)))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BuildRequest {
+    /// Company and growth path; saved before anything is created.
+    #[serde(default)]
+    pub profile: Option<OrgProfile>,
+    /// Department templates to create (existing departments are skipped).
+    #[serde(default)]
+    pub departments: Vec<String>,
+    #[serde(default)]
+    pub size: crate::templates::Size,
+    /// Configured agent every new member runs (default: the first one).
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// Agent the communicators run (default: `agent`).
+    #[serde(default)]
+    pub communicator_agent: Option<String>,
+    /// Start the new departments right away.
+    #[serde(default)]
+    pub start: bool,
+    /// Raise the limits if the plan needs it (admins only).
+    #[serde(default)]
+    pub raise_limits: bool,
+    /// Only return the plan.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// Create departments (with their agents) from templates, in one step.
+pub async fn build(
+    State(state): State<AppState>,
+    caller: Caller,
+    Json(req): Json<BuildRequest>,
+) -> ApiResult<Json<Value>> {
+    caller.require_admin()?;
+    let agent = match req.agent.clone() {
+        Some(a) => a,
+        None => state
+            .manager
+            .agents()
+            .map(|a| a.name.clone())
+            .min()
+            .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "no agents are configured"))?,
+    };
+    check_agent_spec(&state, &agent)?;
+    let communicator = req
+        .communicator_agent
+        .clone()
+        .unwrap_or_else(|| agent.clone());
+    check_agent_spec(&state, &communicator)?;
+    let mut profile = state.store.org_profile().await?;
+    if let Some(p) = &req.profile {
+        check_blueprint(&state, p)?;
+        profile = p.clone();
+    }
+    let existing = state.store.list_departments().await?;
+    let limits = state.store.org_settings().await?;
+    let plan = crate::templates::plan(
+        &state.templates,
+        &req.departments,
+        req.size,
+        &profile,
+        &existing,
+        limits,
+    )
+    .map_err(|e| ApiError::new(StatusCode::BAD_REQUEST, e))?;
+    if req.dry_run {
+        return Ok(Json(json!({ "plan": plan })));
+    }
+    if !plan.fits && !req.raise_limits {
+        return Err(ApiError::with_body(
+            StatusCode::CONFLICT,
+            json!({
+                "error": format!(
+                    "this needs room for {} departments and {} agents per department; the \
+                     limits are {} and {}",
+                    plan.needs.max_departments,
+                    plan.needs.max_agents_per_department,
+                    limits.max_departments,
+                    limits.max_agents_per_department,
+                ),
+                "plan": plan,
+            }),
+        ));
+    }
+    if req.profile.is_some() {
+        state.store.set_org_profile(&profile, &caller.name).await?;
+    }
+    if !plan.fits {
+        state
+            .store
+            .set_org_settings(plan.needs, &caller.name)
+            .await?;
+    }
+
+    let mut created = Vec::new();
+    let mut errors = Vec::new();
+    for planned in plan.departments.iter().filter(|d| !d.exists) {
+        let mut input = DepartmentInput {
+            name: planned.name.clone(),
+            description: planned.description.clone(),
+            mission: planned.mission.clone(),
+            policy: planned.policy.clone().unwrap_or_default(),
+            tools: planned.tools.clone(),
+            communicator_agent: communicator.clone(),
+            template: Some(planned.template.clone()),
+        };
+        check_department(&state, &mut input)?;
+        let dept = match state.store.create_department(input, &caller.name).await {
+            Ok(d) => d,
+            Err(err) => {
+                errors.push(json!({ "department": planned.name, "error": err.to_string() }));
+                continue;
+            }
+        };
+        for member in &planned.agents {
+            if let Err(err) = state
+                .store
+                .add_agent(
+                    dept.id,
+                    AgentInput {
+                        name: member.name.clone(),
+                        agent: agent.clone(),
+                        instructions: member.instructions.clone(),
+                    },
+                    &caller.name,
+                )
+                .await
+            {
+                errors.push(json!({
+                    "department": planned.name, "agent": member.name, "error": err.to_string(),
+                }));
+            }
+        }
+        created.push(dept);
+    }
+    let mut start_failed = Vec::new();
+    if req.start {
+        for dept in &created {
+            let (_, failed) = control_agents(
+                &state,
+                AgentScope::Department(dept.id),
+                Control::Start,
+                &caller.name,
+            )
+            .await?;
+            start_failed.extend(failed);
+        }
+    }
+    notify(&state.store, json!({ "kind": "department" })).await;
+    Ok(Json(json!({
+        "plan": plan,
+        "created": created,
+        "errors": errors,
+        "start_failed": start_failed,
+        "profile": profile,
+        "settings": state.store.org_settings().await?,
+    })))
 }

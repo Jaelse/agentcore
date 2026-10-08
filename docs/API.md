@@ -171,6 +171,20 @@ every level. The full list is in
 stream of change notifications (`event: org`, data `{"kind": ...}`); clients
 refetch what changed.
 
+Building from templates: `GET /org/templates` (categories, department
+templates, blueprints), `GET`/`PUT /org/profile` (company name, description,
+growth path), `GET /org/suggestions` (what to add next) and
+`POST /org/build` (admin):
+
+```json
+{ "profile": {"company_name": "Acme", "company_about": "...", "blueprint": "solo-developer"},
+  "departments": ["engineering"], "size": "lean", "agent": "opencode",
+  "start": true, "raise_limits": false, "dry_run": false }
+```
+
+`dry_run` returns the plan only. A plan that does not fit the limits is
+refused with `409` (the body holds the plan) unless `raise_limits` is set.
+
 Session endpoints (`/sessions/{id}/...`) work on any node: a node that does
 not run the session forwards the request (streams included) to the node
 that does, or answers `503` if that node is unreachable.

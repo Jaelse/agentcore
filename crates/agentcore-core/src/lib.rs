@@ -22,7 +22,7 @@ pub use live::{FileChange, FileChangeKind, LiveFrame, ModelDeltaKind, ProcessInf
 pub use model::{ModelCallOutcome, ModelEndpoint, ProviderKind};
 pub use org::{
     AgentKind, DeliveredMessage, Department, DepartmentId, DepartmentState, Desired, MessageScope,
-    NodeInfo, OrgAgent, OrgAgentId, OrgMessage, OrgSettings,
+    NodeInfo, OrgAgent, OrgAgentId, OrgMessage, OrgProfile, OrgSettings,
 };
 pub use principal::Principal;
 pub use session::{SessionId, SessionInfo, SessionStatus};

@@ -26,6 +26,8 @@ pub struct Config {
     #[serde(default)]
     pub roles: RolesConfig,
     #[serde(default)]
+    pub templates: TemplatesConfig,
+    #[serde(default)]
     pub sandbox: SandboxConfig,
     #[serde(default)]
     pub transparency: Transparency,
@@ -200,6 +202,22 @@ impl Default for StorageConfig {
     }
 }
 
+/// Department templates and blueprints for building an organisation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TemplatesConfig {
+    /// Directory with `departments/*.toml` and `blueprints/*.toml`.
+    pub dir: PathBuf,
+}
+
+impl Default for TemplatesConfig {
+    fn default() -> Self {
+        Self {
+            dir: "templates".into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RolesConfig {
@@ -288,6 +306,7 @@ impl Config {
             &mut config.storage.data_dir,
             &mut config.policies.dir,
             &mut config.roles.dir,
+            &mut config.templates.dir,
             &mut config.server.ui_dir,
         ] {
             if p.is_relative() {

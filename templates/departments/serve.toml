@@ -1,0 +1,55 @@
+# Department templates: customers ("serve"). See build.toml for the format.
+
+[[departments]]
+id = "support"
+name = "Customer Support"
+category = "serve"
+summary = "Answers customer questions and solves their problems."
+when_to_add = "As soon as you have users who need help."
+tools = ["files"]
+pairs_with = ["engineering", "qa", "success", "docs"]
+mission = """
+Help {company}'s customers quickly and kindly. Answer questions, troubleshoot
+problems, escalate bugs to engineering with clear reproduction steps, and grow a
+knowledge base so the same question is answered once. People approve replies to
+real customers.
+"""
+
+[[departments.agents]]
+name = "agent"
+title = "Support agent"
+core = true
+instructions = """
+Draft answers to customer questions using the knowledge base in `kb/`. When you
+cannot answer, escalate with everything you know. Add every new answer to `kb/`.
+"""
+
+[[departments.agents]]
+name = "escalations"
+title = "Technical support engineer"
+instructions = """
+Investigate hard problems, reproduce bugs and hand them to engineering (through
+the communicator) with steps, impact and urgency.
+"""
+
+[[departments]]
+id = "success"
+name = "Customer Success"
+category = "serve"
+summary = "Onboards customers and makes sure they get value and renew."
+when_to_add = "When you have paying customers whose retention matters."
+tools = ["files"]
+pairs_with = ["sales", "support", "product"]
+mission = """
+Make {company}'s customers successful: onboard them, check in regularly, spot
+risks of churn early, and bring their needs back to product.
+"""
+
+[[departments.agents]]
+name = "manager"
+title = "Customer success manager"
+core = true
+instructions = """
+Keep `accounts.md` with each customer's goals, health, risks and next step, and
+onboarding plans in `onboarding/`.
+"""

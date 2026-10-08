@@ -18,6 +18,10 @@ import type {
   OrgMessage,
   OrgOverview,
   OrgSettings,
+  BuildPlan,
+  OrgProfile,
+  Suggestion,
+  TemplateCatalog,
   Me,
   ModelCallRecord,
   PendingApproval,
@@ -198,6 +202,24 @@ export const api = {
   deleteAgent: (id: string) => request<void>("DELETE", `/org/agents/${id}`),
   controlAgent: (id: string, control: "start" | "pause" | "resume" | "stop") =>
     request<OrgAgent>("POST", `/org/agents/${id}/${control}`),
+  templates: () => request<TemplateCatalog>("GET", "/org/templates"),
+  suggestions: () => request<Suggestion[]>("GET", "/org/suggestions"),
+  saveProfile: (p: OrgProfile) => request<OrgProfile>("PUT", "/org/profile", p),
+  build: (body: {
+    profile?: OrgProfile;
+    departments: string[];
+    size: "lean" | "full";
+    agent?: string;
+    communicator_agent?: string;
+    start?: boolean;
+    raise_limits?: boolean;
+    dry_run?: boolean;
+  }) =>
+    request<{ plan: BuildPlan; created?: Department[]; errors?: { department: string; agent?: string; error: string }[] }>(
+      "POST",
+      "/org/build",
+      body,
+    ),
   pauseAll: () => request<void>("POST", "/org/pause-all"),
   resumeAll: () => request<void>("POST", "/org/resume-all"),
   messages: (q: { department?: string; agent?: string; limit?: number } = {}) => {

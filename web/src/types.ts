@@ -100,6 +100,7 @@ export interface Department {
   tools: string[];
   communicator_agent: string;
   state: "active" | "paused";
+  template: string | null;
   created_at: string;
   updated_by: string;
   agents: OrgAgent[];
@@ -118,6 +119,7 @@ export interface NodeInfo {
 
 export interface OrgOverview {
   node: string;
+  profile: OrgProfile;
   settings: OrgSettings;
   departments: Department[];
   nodes: NodeInfo[];
@@ -144,6 +146,78 @@ export interface DepartmentFile {
   size: number;
   updated_at: string;
   updated_by: string;
+}
+
+export interface OrgProfile {
+  company_name: string;
+  company_about: string;
+  blueprint: string | null;
+}
+
+export interface TemplateAgent {
+  name: string;
+  title: string;
+  core: boolean;
+  instructions: string;
+}
+
+export interface DepartmentTemplate {
+  id: string;
+  name: string;
+  category: string;
+  summary: string;
+  when_to_add: string;
+  mission: string;
+  tools: string[];
+  policy: string | null;
+  pairs_with: string[];
+  agents: TemplateAgent[];
+}
+
+export interface Blueprint {
+  id: string;
+  title: string;
+  level: "starter" | "growing" | "complete";
+  focus: string;
+  audience: string;
+  description: string;
+  stages: { title: string; description: string; departments: string[] }[];
+}
+
+export interface TemplateCatalog {
+  categories: { id: string; title: string; description: string }[];
+  departments: DepartmentTemplate[];
+  blueprints: Blueprint[];
+}
+
+export interface PlannedDepartment {
+  template: string;
+  name: string;
+  description: string;
+  mission: string;
+  tools: string[];
+  policy: string | null;
+  agents: { name: string; title: string; instructions: string }[];
+  exists: boolean;
+}
+
+export interface BuildPlan {
+  departments: PlannedDepartment[];
+  new_departments: number;
+  new_agents: number;
+  limits: OrgSettings;
+  needs: OrgSettings;
+  fits: boolean;
+}
+
+export interface Suggestion {
+  kind: "stage" | "department" | "agent";
+  title: string;
+  reason: string;
+  templates: string[];
+  department_id: string | null;
+  agent: { name: string; title: string; instructions: string } | null;
+  blocked: string | null;
 }
 
 export type MessageTo = { agent: string } | { department: string } | "all_departments";

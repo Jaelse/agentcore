@@ -1,0 +1,31 @@
+id = "complete-company"
+title = "Complete company"
+level = "complete"
+focus = "business"
+audience = "You want the whole organisation, every business function, from day one."
+description = "Every department in the catalogue, grouped from leadership and product to growth, customers and operations."
+
+[[stages]]
+title = "Leadership and product"
+departments = ["strategy", "product", "engineering", "projects"]
+description = "Direction, what to build, building it, and coordination."
+
+[[stages]]
+title = "Product excellence"
+departments = ["design", "qa", "devops", "security", "data"]
+description = "Usability, quality, reliability, security and metrics."
+
+[[stages]]
+title = "Go to market"
+departments = ["marketing", "content", "sales", "support", "success"]
+description = "Find, win, help and keep customers."
+
+[[stages]]
+title = "Run the company"
+departments = ["operations", "finance", "legal", "people", "recruiting"]
+description = "Processes, money, contracts and people."
+
+[[stages]]
+title = "Everything else"
+departments = ["ml", "docs", "partnerships", "communications", "community", "research", "it", "procurement"]
+description = "Specialised functions for a mature company."

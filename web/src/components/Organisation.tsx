@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, streamOrg } from "../api";
 import { useInterval } from "../hooks";
-import type { Department, DepartmentFile, Me, MessageTo, OrgAgent, OrgMessage, OrgOverview, SystemCard } from "../types";
+import type {
+  Department,
+  DepartmentFile,
+  Me,
+  MessageTo,
+  OrgAgent,
+  OrgMessage,
+  OrgOverview,
+  Suggestion,
+  SystemCard,
+} from "../types";
+import { type BuildMode, OrgBuilder } from "./OrgBuilder";
 
 interface Props {
   me: Me;
@@ -15,7 +26,11 @@ const TOOL_GROUPS: { id: string; label: string; help: string }[] = [
   { id: "files", label: "Department files", help: "a shared file store only this department can use" },
 ];
 
-type Selection = { kind: "org" } | { kind: "department"; id: string } | { kind: "new" };
+type Selection =
+  | { kind: "org" }
+  | { kind: "department"; id: string }
+  | { kind: "new" }
+  | { kind: "build"; mode?: BuildMode; pick?: string[] };
 
 /** Departments (rooms) of agents, how they talk, and control at every level. */
 export function Organisation({ me, card, onOpenSession, onError }: Props) {
@@ -128,18 +143,23 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
           })}
         </ul>
         {isAdmin && (
-          <button
-            className="btn"
-            disabled={org.departments.length >= org.settings.max_departments}
-            title={
-              org.departments.length >= org.settings.max_departments
-                ? "The organisation has reached its department limit"
-                : undefined
-            }
-            onClick={() => setSelection({ kind: "new" })}
-          >
-            + New department
-          </button>
+          <div className="row">
+            <button className="btn" onClick={() => setSelection({ kind: "build", mode: "pick" })}>
+              + Add departments
+            </button>
+            <button
+              className="link small"
+              disabled={org.departments.length >= org.settings.max_departments}
+              title={
+                org.departments.length >= org.settings.max_departments
+                  ? "The organisation has reached its department limit"
+                  : "A department without a template"
+              }
+              onClick={() => setSelection({ kind: "new" })}
+            >
+              blank department
+            </button>
+          </div>
         )}
 
         <Limits org={org} canEdit={isAdmin} onSaved={load} onError={onError} />
@@ -147,7 +167,22 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
       </aside>
 
       <main className="main">
-        {selection.kind === "new" ? (
+        {selection.kind === "build" || (selection.kind === "org" && org.departments.length === 0 && isAdmin) ? (
+          <OrgBuilder
+            key={selection.kind === "build" ? `${selection.mode}-${selection.pick?.join()}` : "first"}
+            me={me}
+            card={card}
+            org={org}
+            initialMode={selection.kind === "build" ? selection.mode : undefined}
+            initialPick={selection.kind === "build" ? selection.pick : undefined}
+            onDone={(id) => {
+              load();
+              setSelection(id ? { kind: "department", id } : { kind: "org" });
+            }}
+            onCancel={org.departments.length > 0 ? () => setSelection({ kind: "org" }) : undefined}
+            onError={onError}
+          />
+        ) : selection.kind === "new" ? (
           <DepartmentForm
             department={null}
             card={card}
@@ -178,14 +213,38 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
           <div className="session">
             <section className="card session-header">
               <div className="session-header-main">
-                <h2>Organisation</h2>
+                <h2>{org.profile.company_name || "Organisation"}</h2>
+                {org.profile.company_about && <p>{org.profile.company_about}</p>}
                 <p className="muted">
                   Agents work together inside a department. Departments only talk to each other through their
                   communicators. You can see every message, talk to any agent or department, and pause or stop
                   anything.
                 </p>
               </div>
+              {isAdmin && org.departments.length > 0 && (
+                <div className="session-actions">
+                  <button className="btn" onClick={() => setSelection({ kind: "build" })}>
+                    Build & grow…
+                  </button>
+                </div>
+              )}
             </section>
+            {org.departments.length === 0 && !isAdmin && (
+              <div className="empty">
+                <h2>No departments yet</h2>
+                <p>An admin builds the organisation, from one department to a complete company.</p>
+              </div>
+            )}
+            {org.departments.length > 0 && (
+              <Grow
+                me={me}
+                card={card}
+                tick={tick}
+                act={act}
+                onPick={(templates) => setSelection({ kind: "build", mode: "pick", pick: templates })}
+                onError={onError}
+              />
+            )}
             <Feed org={org} tick={tick} canPost={canOperate} onError={onError} />
           </div>
         )}
@@ -434,6 +493,15 @@ function DepartmentRoom({
             onError={onError}
           />
         )}
+        <Grow
+          me={me}
+          card={card}
+          tick={tick}
+          act={act}
+          department={dept.id}
+          onPick={() => {}}
+          onError={onError}
+        />
         <div className="member-grid">
           {dept.agents.map((a) => (
             <AgentCard key={a.id} agent={a} dept={dept} canOperate={canOperate} act={act} onOpenSession={onOpenSession} />
@@ -838,6 +906,77 @@ function Files({ dept, tick, onError }: { dept: Department; tick: number; onErro
         ))}
       </ul>
       {open && <pre className="mono-pre bubble-body">{open.content}</pre>}
+    </section>
+  );
+}
+
+/** What to add next: the growth path's next stage, departments that work
+ * with the existing ones, and agents departments do not have yet. */
+function Grow({
+  me,
+  card,
+  tick,
+  act,
+  department,
+  onPick,
+  onError,
+}: {
+  me: Me;
+  card: SystemCard;
+  tick: number;
+  act: (fn: () => Promise<unknown>) => Promise<void>;
+  /** Only agent suggestions for this department. */
+  department?: string;
+  onPick: (templates: string[]) => void;
+  onError: (e: unknown) => void;
+}) {
+  const [all, setAll] = useState<Suggestion[]>([]);
+  useEffect(() => {
+    api.suggestions().then(setAll).catch(onError);
+  }, [tick, onError]);
+  const list = department ? all.filter((s) => s.department_id === department) : all;
+  if (list.length === 0) return null;
+  const isAdmin = me.role === "admin";
+  const canOperate = me.role !== "viewer";
+  const agent = card.agents[0]?.name ?? "";
+
+  const run = (s: Suggestion) => {
+    if (s.kind === "agent" && s.agent && s.department_id) {
+      const a = s.agent;
+      return act(() => api.addAgent(s.department_id!, { name: a.name, agent, instructions: a.instructions }));
+    }
+    return act(() => api.build({ departments: s.templates, size: "lean", agent }));
+  };
+
+  return (
+    <section className={`card side-panel grow ${department ? "compact" : ""}`}>
+      <h3 className="section-title">{department ? "Grow this department" : "Grow your organisation"}</h3>
+      <ul className="suggestions">
+        {list.slice(0, department ? 3 : 8).map((s) => {
+          const allowed = s.kind === "agent" ? canOperate : isAdmin;
+          return (
+            <li key={`${s.kind}-${s.title}`} className={`suggestion ${s.kind}`}>
+              <div className="suggestion-text">
+                <strong>{s.title}</strong>
+                <span className="muted small">{s.reason}</span>
+                {s.blocked && <span className="small attention-text">{s.blocked}</span>}
+              </div>
+              {allowed && (
+                <div className="row">
+                  <button className="btn small-btn primary" disabled={!!s.blocked} onClick={() => run(s)}>
+                    {s.kind === "stage" ? "Add stage" : "Add"}
+                  </button>
+                  {s.kind !== "agent" && (
+                    <button className="link small" onClick={() => onPick(s.templates)}>
+                      review first
+                    </button>
+                  )}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
     </section>
   );
 }

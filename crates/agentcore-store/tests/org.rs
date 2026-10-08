@@ -17,6 +17,7 @@ fn dept(name: &str) -> DepartmentInput {
         policy: "default".into(),
         tools: vec!["files".into(), "sandbox".into()],
         communicator_agent: "opencode".into(),
+        template: None,
     }
 }
 

@@ -1,0 +1,21 @@
+id = "ecommerce"
+title = "Online shop"
+level = "growing"
+focus = "business"
+audience = "You sell physical products online."
+description = "Operations, marketing and support first; then content, data and logistics; then finance and purchasing."
+
+[[stages]]
+title = "Sell and serve"
+departments = ["operations", "marketing", "support"]
+description = "Run orders, bring visitors, help buyers."
+
+[[stages]]
+title = "Scale up"
+departments = ["content", "data", "supply-chain"]
+description = "Content that sells, numbers to steer by, reliable stock and shipping."
+
+[[stages]]
+title = "Professionalise"
+departments = ["finance", "procurement", "legal"]
+description = "Margins, suppliers and compliance."

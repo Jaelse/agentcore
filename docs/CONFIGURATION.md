@@ -128,6 +128,12 @@ Published in the UI ("About this system") and at `/api/v1/system-card`
 (EU AI Act Art. 13 and 50): `system_name`, `provider`, `contact`,
 `intended_purpose`, `limitations` (list).
 
+## `[templates]`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `dir` | `templates` | Department templates (`departments/*.toml`) and growth paths (`blueprints/*.toml`). Validated at startup; a missing directory just means no templates. See [Building an organisation](MULTI_AGENT.md#building-an-organisation). |
+
 ## `[cluster]`
 
 Only needed when several agentcore nodes (VMs) share one database. See

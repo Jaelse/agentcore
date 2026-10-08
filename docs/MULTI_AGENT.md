@@ -12,6 +12,7 @@ An organisation can run on one VM or be spread over several VMs (**nodes**)
 that share one PostgreSQL database.
 
 - [Concepts](#concepts)
+- [Building an organisation](#building-an-organisation)
 - [Who may talk to whom](#who-may-talk-to-whom)
 - [Messages](#messages)
 - [Data, tools and guardrails per department](#data-tools-and-guardrails-per-department)
@@ -82,6 +83,81 @@ stateDiagram-v2
         waiting --> working: a message arrives (wake-up)
     }
 ```
+
+## Building an organisation
+
+Nobody has to design an organisation from scratch. agentcore ships
+**department templates** for the functions businesses usually need and
+**growth paths** (blueprints) that add them a few at a time. Everything
+created from a template is an ordinary department afterwards: rename it,
+change its mission, add or remove agents.
+
+```mermaid
+flowchart LR
+    A["1 · About your company<br/>name · what it does"] --> B{"2 · How to start"}
+    B -- "Start small" --> S["first stage of a path,<br/>core agents only"]
+    B -- "Grow in stages" --> G["a path, the first<br/>N stages"]
+    B -- "Everything at once" --> F["every stage,<br/>full teams<br/>(limits raised if needed)"]
+    B -- "Pick departments" --> P["any departments<br/>from the catalogue"]
+    S & G & F & P --> R["3 · Review: plan, team size,<br/>which agent runs them, start now?"]
+    R --> O["Organisation"]
+    O --> N["Grow: next stage · related<br/>departments · more agents"]
+    N --> R
+```
+
+### The catalogue
+
+28 department templates in five groups (`templates/departments/*.toml`):
+
+| Group | Departments |
+|---|---|
+| Product & engineering | Engineering, Quality Assurance, Platform & DevOps, Security, Product, Design, Data & Analytics, AI & Machine Learning, Technical Writing, Internal IT |
+| Growth | Marketing, Content, Sales, Partnerships, Communications & PR, Community |
+| Customers | Customer Support, Customer Success |
+| Operations | Operations, Finance, Legal & Compliance, People & HR, Recruiting, Procurement, Supply Chain & Logistics |
+| Leadership | Strategy & Leadership, Project Management, Market Research |
+
+Each template has a mission (`{company}` is replaced with the company
+name), the tools it needs (engineering-type departments get a sandbox;
+business departments get department files), the departments it usually
+works with, a "when to add it" hint, and 1–3 agents with instructions. Agents
+marked `core` form a **lean** team; a **full** team has all of them.
+
+### Growth paths
+
+| Path | For | Stages |
+|---|---|---|
+| Solo software engineer | one person building software | Engineering → QA → DevOps, Docs |
+| Content & marketing studio | creators, small marketing teams | Content, Marketing → Design, PR, Community → Data, Sales |
+| Software product team | a product team | Engineering, Product → Design, QA → DevOps, Security → Data, Docs |
+| SaaS startup | a software business | Engineering, Product → Marketing, Support → Sales, Success, Data → Finance, Legal, People |
+| Online shop | physical products online | Operations, Marketing, Support → Content, Data, Supply chain → Finance, Procurement, Legal |
+| Agency / services company | client projects | Projects, Engineering, Design → Sales, Marketing → Finance, Legal, People |
+| Complete company | everything from day one | 5 stages, 27 departments |
+
+### Starting small, growing big
+
+* **Start small**: the first stage of a path with lean teams, e.g. a single
+  Engineering department with a tech lead and a developer.
+* **Grow in stages**: choose how many stages to create now.
+* **Everything at once**: a whole path with full teams. If it does not fit
+  the limits, the review says by how much and an admin can raise them in the
+  same step.
+* **Pick departments**: tick departments in the catalogue.
+
+Afterwards the organisation page shows **suggestions**, most useful first:
+
+1. the **next stage** of the chosen path;
+2. **departments that work with the ones you have** (Engineering suggests
+   Product, QA, DevOps, Design), with the reason to add them;
+3. **more agents** for existing departments (a reviewer for Engineering).
+
+Each one is a click away, and a suggestion that a limit blocks says so.
+Admins build departments; operators can add the suggested agents; viewers
+see the suggestions.
+
+Teams add their own templates and paths by adding TOML files to
+`templates/` (`[templates].dir`); they are validated at startup.
 
 ## Who may talk to whom
 

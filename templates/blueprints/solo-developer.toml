@@ -1,0 +1,24 @@
+# Blueprints are growth paths: an ordered list of stages, each adding a few
+# departments. Start with stage 1 and add the next stage when you are ready,
+# or create every stage at once.
+id = "solo-developer"
+title = "Solo software engineer"
+level = "starter"
+focus = "software"
+audience = "You build software on your own and want AI colleagues to help."
+description = "Start with one engineering department; add quality, operations and documentation when you need them."
+
+[[stages]]
+title = "Your engineering department"
+description = "A tech lead and a developer working on your code in their sandboxes."
+departments = ["engineering"]
+
+[[stages]]
+title = "Quality"
+description = "Someone who tests what gets built before you ship it."
+departments = ["qa"]
+
+[[stages]]
+title = "Ship and explain"
+description = "Releases, runbooks and documentation."
+departments = ["devops", "docs"]

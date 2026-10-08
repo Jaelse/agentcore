@@ -1,0 +1,21 @@
+id = "content-studio"
+title = "Content & marketing studio"
+level = "starter"
+focus = "marketing"
+audience = "You create content or run marketing, alone or with a small team."
+description = "Content and marketing first, then design, PR and community, then data and sales."
+
+[[stages]]
+title = "Create and publish"
+departments = ["content", "marketing"]
+description = "Plan, write and promote."
+
+[[stages]]
+title = "Look good, be heard"
+departments = ["design", "communications", "community"]
+description = "Visuals, announcements and a community around you."
+
+[[stages]]
+title = "Measure and monetise"
+departments = ["data", "sales"]
+description = "Know what works and turn audience into revenue."

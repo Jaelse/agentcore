@@ -43,6 +43,10 @@ default = "default"
 [roles]
 dir = "/etc/agentcore/roles"
 
+[templates]
+# Department templates and growth paths for building an organisation.
+dir = "/etc/agentcore/templates"
+
 [sandbox]
 backend = "docker"
 

@@ -17,6 +17,7 @@ pub mod mcp;
 pub mod org;
 pub mod sessions;
 pub mod teamwork;
+pub mod templates;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,6 +53,8 @@ pub struct AppState {
     pub reconcile: Arc<tokio::sync::Notify>,
     /// Client for node-to-node requests (never through an HTTP proxy).
     pub cluster_http: reqwest::Client,
+    /// Department templates and blueprints.
+    pub templates: Arc<templates::Catalog>,
 }
 
 impl AppState {
@@ -67,6 +70,17 @@ impl AppState {
                 && policies.get(policy).is_none()
             {
                 anyhow::bail!("role `{}` uses unknown policy `{policy}`", role.name);
+            }
+        }
+        let catalog = templates::Catalog::load_dir(&config.templates.dir).with_context(|| {
+            format!("loading templates from {}", config.templates.dir.display())
+        })?;
+        if catalog.departments.is_empty() {
+            tracing::warn!(dir = %config.templates.dir.display(), "no department templates found");
+        }
+        for policy in catalog.policies() {
+            if policies.get(policy).is_none() {
+                anyhow::bail!("a department template uses unknown policy `{policy}`");
             }
         }
         let provider = config.sandbox.provider()?;
@@ -125,6 +139,7 @@ impl AppState {
             org_events: tokio::sync::broadcast::channel(256).0,
             reconcile: Arc::default(),
             cluster_http,
+            templates: Arc::new(catalog),
         })
     }
 }
@@ -193,6 +208,10 @@ pub fn router(state: AppState) -> Router {
         .route("/sessions/{id}/deliver", post(teamwork::deliver_session))
         .route("/org", get(org::overview))
         .route("/org/stream", get(org::stream))
+        .route("/org/templates", get(org::templates))
+        .route("/org/suggestions", get(org::suggestions))
+        .route("/org/profile", get(org::get_profile).put(org::put_profile))
+        .route("/org/build", post(org::build))
         .route(
             "/org/settings",
             get(org::get_settings).put(org::put_settings),

@@ -4,7 +4,7 @@
 
 use agentcore_core::{
     AgentKind, Department, DepartmentId, DepartmentState, Desired, MessageScope, NodeInfo,
-    OrgAgent, OrgAgentId, OrgMessage, OrgSettings, SessionId,
+    OrgAgent, OrgAgentId, OrgMessage, OrgProfile, OrgSettings, SessionId,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -35,6 +35,9 @@ pub struct DepartmentInput {
     #[serde(default)]
     pub tools: Vec<String>,
     pub communicator_agent: String,
+    /// Template the department is created from (kept for suggestions).
+    #[serde(default)]
+    pub template: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -88,6 +91,7 @@ struct DepartmentRow {
     tools: Vec<String>,
     communicator_agent: String,
     state: String,
+    template: Option<String>,
     created_at: DateTime<Utc>,
     updated_by: String,
 }
@@ -103,6 +107,7 @@ impl From<DepartmentRow> for Department {
             tools: r.tools,
             communicator_agent: r.communicator_agent,
             state: r.state.parse().unwrap_or(DepartmentState::Active),
+            template: r.template,
             created_at: r.created_at,
             updated_by: r.updated_by,
         }
@@ -209,7 +214,7 @@ impl From<NodeRow> for NodeInfo {
 }
 
 const DEPARTMENT_COLUMNS: &str = "id, name, description, mission, policy, tools, \
-    communicator_agent, state, created_at, updated_by";
+    communicator_agent, state, template, created_at, updated_by";
 const AGENT_COLUMNS: &str = "id, department_id, name, kind, agent, instructions, desired, \
     node, session_id, status, note, changed_by, created_at";
 const MESSAGE_SELECT: &str = "SELECT m.id, m.created_at, m.scope, m.from_agent, \
@@ -313,6 +318,47 @@ impl Store {
         Ok(settings)
     }
 
+    pub async fn org_profile(&self) -> Result<OrgProfile> {
+        let (company_name, company_about, blueprint): (String, String, Option<String>) =
+            sqlx::query_as("SELECT company_name, company_about, blueprint FROM org_settings")
+                .fetch_one(&self.pool)
+                .await?;
+        Ok(OrgProfile {
+            company_name,
+            company_about,
+            blueprint,
+        })
+    }
+
+    pub async fn set_org_profile(&self, profile: &OrgProfile, actor: &str) -> Result<OrgProfile> {
+        let name = profile.company_name.trim();
+        if name.chars().count() > 120 || profile.company_about.chars().count() > 4000 {
+            return Err(invalid(
+                "company name (120) or description (4000 characters) is too long",
+            ));
+        }
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "UPDATE org_settings SET company_name = $1, company_about = $2, blueprint = $3,
+                 updated_at = now()",
+        )
+        .bind(name)
+        .bind(profile.company_about.trim())
+        .bind(&profile.blueprint)
+        .execute(&mut *tx)
+        .await?;
+        admin_event(
+            &mut tx,
+            actor,
+            "org.profile",
+            "organisation",
+            serde_json::json!(profile),
+        )
+        .await?;
+        tx.commit().await?;
+        self.org_profile().await
+    }
+
     /// Initial limits from the configuration, applied only while nobody has
     /// changed them yet.
     pub async fn seed_org_settings(&self, settings: OrgSettings) -> Result<()> {
@@ -383,8 +429,8 @@ impl Store {
         let id = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO departments (id, name, description, mission, policy, tools,
-                                      communicator_agent, updated_by)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                                      communicator_agent, updated_by, template)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(id)
         .bind(&input.name)
@@ -394,6 +440,7 @@ impl Store {
         .bind(&input.tools)
         .bind(input.communicator_agent.trim())
         .bind(actor)
+        .bind(&input.template)
         .execute(&mut *tx)
         .await
         .map_err(|e| map_unique(e, format!("department `{}`", input.name)))?;

@@ -1,0 +1,174 @@
+# Department templates: running the company ("run"). See build.toml for the format.
+
+[[departments]]
+id = "operations"
+name = "Operations"
+category = "run"
+summary = "Day-to-day processes that keep the business running."
+when_to_add = "When recurring work (orders, schedules, vendors, processes) needs an owner."
+tools = ["files"]
+pairs_with = ["finance", "supply-chain", "support", "people"]
+mission = """
+Keep {company} running smoothly: document processes, coordinate recurring work,
+find bottlenecks and improve how things are done.
+"""
+
+[[departments.agents]]
+name = "manager"
+title = "Operations manager"
+core = true
+instructions = """
+Document each recurring process in `processes/` (trigger, steps, owner, checks)
+and keep `improvements.md` with problems found and proposed fixes.
+"""
+
+[[departments]]
+id = "finance"
+name = "Finance"
+category = "run"
+summary = "Budgets, forecasts, invoicing and financial reporting."
+when_to_add = "When money in and out needs planning and tracking."
+tools = ["files"]
+pairs_with = ["operations", "sales", "people", "legal"]
+mission = """
+Keep {company} financially healthy: budgets, forecasts, cash planning, invoicing
+and reporting. Show your calculations and assumptions. People approve every
+payment and every number shared outside the company.
+"""
+
+[[departments.agents]]
+name = "analyst"
+title = "Financial analyst"
+core = true
+instructions = """
+Maintain the budget and forecast in `forecast.md` with explicit assumptions.
+Answer cost and pricing questions from other departments.
+"""
+
+[[departments.agents]]
+name = "accountant"
+title = "Accountant"
+instructions = """
+Prepare invoices, track receivables and payables, and draft monthly financial
+summaries.
+"""
+
+[[departments]]
+id = "legal"
+name = "Legal & Compliance"
+category = "run"
+summary = "Contracts, policies, privacy and regulatory compliance."
+when_to_add = "When you sign contracts, handle personal data or operate in regulated areas."
+tools = ["files"]
+pairs_with = ["sales", "security", "people", "finance"]
+mission = """
+Protect {company} legally: review contracts, draft policies, track privacy and
+regulatory obligations, and flag risks in plain language. You do not give final
+legal advice; a qualified person decides.
+"""
+
+[[departments.agents]]
+name = "counsel"
+title = "Legal analyst"
+core = true
+instructions = """
+Review contracts and documents other departments send, list risks and suggested
+changes, and keep `obligations.md` (laws, contracts, deadlines).
+"""
+
+[[departments.agents]]
+name = "privacy"
+title = "Privacy officer"
+instructions = """
+Keep the record of processing (`privacy.md`): what personal data is used, why,
+where it is stored and for how long.
+"""
+
+[[departments]]
+id = "people"
+name = "People & HR"
+category = "run"
+summary = "Hiring support, onboarding, policies and team wellbeing."
+when_to_add = "When you employ people and need consistent policies and onboarding."
+tools = ["files"]
+pairs_with = ["recruiting", "finance", "legal", "it"]
+mission = """
+Help {company}'s people do their best work: onboarding, handbooks and policies,
+performance and development processes. Treat personal information confidentially.
+"""
+
+[[departments.agents]]
+name = "partner"
+title = "People partner"
+core = true
+instructions = """
+Maintain the handbook in `handbook/` and onboarding plans. Draft policies for a
+person to approve.
+"""
+
+[[departments]]
+id = "recruiting"
+name = "Recruiting"
+category = "run"
+summary = "Job descriptions, sourcing and hiring process."
+when_to_add = "When you are hiring regularly."
+tools = ["files"]
+pairs_with = ["people", "engineering", "sales"]
+mission = """
+Help {company} hire well: write job descriptions with the hiring team, design
+fair interview processes, and keep candidates informed. People make every hiring
+decision.
+"""
+
+[[departments.agents]]
+name = "recruiter"
+title = "Recruiter"
+core = true
+instructions = """
+Draft job descriptions in `roles/` and interview plans with structured
+questions and scoring guides.
+"""
+
+[[departments]]
+id = "procurement"
+name = "Procurement"
+category = "run"
+summary = "Vendors, purchasing and contracts with suppliers."
+when_to_add = "When you buy from many vendors and need to compare and control spend."
+tools = ["files"]
+pairs_with = ["finance", "legal", "operations"]
+mission = """
+Help {company} buy well: compare vendors, prepare purchase requests and keep a
+vendor list with contracts, costs and renewal dates.
+"""
+
+[[departments.agents]]
+name = "buyer"
+title = "Procurement specialist"
+core = true
+instructions = """
+Keep `vendors.md` (vendor, purpose, cost, contract end, owner) and write vendor
+comparisons in `comparisons/`.
+"""
+
+[[departments]]
+id = "supply-chain"
+name = "Supply Chain & Logistics"
+category = "run"
+summary = "Inventory, suppliers, shipping and fulfilment."
+when_to_add = "When you sell physical products."
+tools = ["files"]
+pairs_with = ["operations", "procurement", "support", "finance"]
+mission = """
+Get {company}'s products to customers reliably: plan inventory, coordinate
+suppliers and shipping, and handle delivery problems.
+"""
+
+[[departments.agents]]
+name = "planner"
+title = "Supply chain planner"
+core = true
+instructions = """
+Keep `inventory.md` and `suppliers.md`, forecast stock needs and flag shortages
+early.
+"""
