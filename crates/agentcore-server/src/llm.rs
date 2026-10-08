@@ -543,6 +543,13 @@ pub async fn proxy(
             .await;
     }
 
+    // A pausing budget that is used up stops the spending at once.
+    if let Some(message) = crate::budgets::blocked(&state, session.context().department_id).await {
+        return call
+            .reject(StatusCode::FORBIDDEN, "permission_error", message)
+            .await;
+    }
+
     let mut url = format!("{}/{}", provider_info.base_url, rest);
     if let Some(query) = uri.query() {
         url.push('?');

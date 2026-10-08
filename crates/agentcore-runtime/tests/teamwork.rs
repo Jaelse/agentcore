@@ -112,6 +112,7 @@ fn agent() -> AgentSpec {
             format!("{GIT_ID} commit -q --amend -m 'feat: add hello'; echo \"got: $0\""),
             "{task}".into(),
         ],
+        ..Default::default()
     }
 }
 

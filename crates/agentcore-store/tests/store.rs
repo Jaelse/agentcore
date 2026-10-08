@@ -25,6 +25,7 @@ fn session(status: SessionStatus) -> SessionRecord {
         },
         policy_digest: "abc".into(),
         audit_path: "/data/audit/x.jsonl".into(),
+        node: Some("n1".into()),
     }
 }
 
@@ -48,12 +49,23 @@ async fn sessions_persist_and_interrupted_ones_fail() {
     assert_eq!(got.policy_digest, "abc");
     assert_eq!(got.info.created_by, Principal::human("alice"));
 
-    let interrupted = store.fail_interrupted_sessions().await.unwrap();
+    // A session running on another node is not this node's to recover.
+    let mut elsewhere = session(SessionStatus::Running);
+    elsewhere.node = Some("n2".into());
+    store.upsert_session(&elsewhere).await.unwrap();
+
+    let interrupted = store.fail_interrupted_sessions("n1").await.unwrap();
     assert_eq!(interrupted.len(), 1);
     assert_eq!(interrupted[0].info.id, live.info.id);
     let list = store.list_sessions(10).await.unwrap();
-    assert_eq!(list.len(), 2);
-    assert!(list.iter().all(|s| s.info.status.is_terminal()));
+    assert_eq!(list.len(), 3);
+    assert_eq!(
+        list.iter().filter(|s| !s.info.status.is_terminal()).count(),
+        1
+    );
+    let other = store.get_session(elsewhere.info.id).await.unwrap().unwrap();
+    assert_eq!(other.node.as_deref(), Some("n2"));
+    assert_eq!(other.info.status, SessionStatus::Running);
 }
 
 #[tokio::test]

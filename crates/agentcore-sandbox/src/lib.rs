@@ -151,6 +151,11 @@ pub trait Sandbox: Send + Sync {
     /// Backend-specific details for the audit log (image, limits, ...).
     fn describe(&self) -> serde_json::Value;
 
+    /// The agent's `HOME` as seen from inside the sandbox.
+    fn home(&self) -> String {
+        "/home/agent".into()
+    }
+
     /// Start the long-running agent process, in a pseudo-terminal if
     /// `plan.tty` is set.
     async fn spawn(&self, plan: &LaunchPlan) -> Result<AgentProcess>;

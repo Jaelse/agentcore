@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 use agentcore_audit::AuditLog;
 use agentcore_core::{
     AI_GENERATED_MARKER, Action, ActionOutcome, AgentAdapter, AgentSpec, Changes, CheckResult,
-    Event, EventKind, LaunchContext, LaunchPlan, LiveFrame, ModelEndpoint, OutputStream, Principal,
-    PullRequestProposal, SessionContext, SessionId, SessionInfo, SessionStatus, Verdict,
+    DeliveredMessage, Event, EventKind, LaunchContext, LaunchPlan, LiveFrame, ModelEndpoint,
+    OutputStream, Principal, PullRequestProposal, SessionContext, SessionId, SessionInfo,
+    SessionStatus, Verdict,
 };
 use agentcore_policy::{CompiledPolicy, normalize_action};
 use agentcore_roles::{CheckKind, RepoDoc, Role, compose_prompt};
@@ -28,6 +29,24 @@ use crate::work::{
     GIT, SessionOptions, ToolHandler, WorkspaceSetup, changes_script, parse_changes, patch_script,
 };
 use crate::{RuntimeError, manager::RuntimeConfig};
+
+/// Why the system stops a session that ran out of time.
+pub const TIME_BUDGET_REASON: &str = "maximum session duration exceeded";
+/// Why the system stops a session nobody talked to for too long.
+pub const IDLE_REASON: &str = "no input from a human within the idle timeout";
+
+/// Why a session ended, as far as continuing the agent is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndCause {
+    /// The session reached `max_session_secs`.
+    TimeBudget,
+    /// Nobody sent a message within `idle_timeout_secs`.
+    Idle,
+    /// A single-run agent finished its task successfully.
+    Finished,
+    /// Stopped by a person, failed, finished by a person, ...
+    Other,
+}
 
 /// Events kept in memory for late subscribers. The audit log has all of them.
 const HISTORY_LIMIT: usize = 10_000;
@@ -79,6 +98,8 @@ pub struct Session {
     workspace: Option<Arc<dyn WorkspaceSetup>>,
     tools: Option<Arc<dyn ToolHandler>>,
     work_item: Option<agentcore_roles::WorkItem>,
+    hide_sandbox_tools: bool,
+    agent_label: String,
     context: Mutex<SessionContext>,
     base_commit: Mutex<Option<String>>,
     last_changes: Mutex<Option<Changes>>,
@@ -114,6 +135,10 @@ impl Session {
         let (events, _) = broadcast::channel(1024);
         let (inbox, inbox_rx) = mpsc::unbounded_channel();
         let options = params.options;
+        let agent_label = options
+            .agent_label
+            .clone()
+            .unwrap_or_else(|| params.spec.name.clone());
         let mut context = options.context;
         if let Some(role) = &options.role {
             context.role.get_or_insert_with(|| role.name.clone());
@@ -144,6 +169,8 @@ impl Session {
             workspace: options.workspace,
             tools: options.tools,
             work_item: options.work_item,
+            hide_sandbox_tools: options.hide_sandbox_tools,
+            agent_label,
             context: Mutex::new(context),
             base_commit: Mutex::new(None),
             last_changes: Mutex::new(None),
@@ -180,6 +207,25 @@ impl Session {
 
     pub fn audit_path(&self) -> &std::path::Path {
         self.audit.path()
+    }
+
+    /// Why the session ended (`None` while it runs).
+    pub fn end_cause(&self) -> Option<EndCause> {
+        let state = self.lock();
+        let ended = state.history.iter().rev().find_map(|e| match &e.kind {
+            EventKind::SessionEnded { status, reason, .. } => Some((*status, reason.clone())),
+            _ => None,
+        })?;
+        let stop = state.history.iter().rev().find_map(|e| match &e.kind {
+            EventKind::StopRequested { by, reason } => Some((by.clone(), reason.clone())),
+            _ => None,
+        });
+        Some(match (stop, ended) {
+            (Some((Principal::System, r)), _) if r == TIME_BUDGET_REASON => EndCause::TimeBudget,
+            (Some((Principal::System, r)), _) if r == IDLE_REASON => EndCause::Idle,
+            (None, (SessionStatus::Completed, None)) => EndCause::Finished,
+            _ => EndCause::Other,
+        })
     }
 
     /// Constant-time comparison of a presented gateway token.
@@ -229,6 +275,11 @@ impl Session {
 
     pub fn base_commit(&self) -> Option<String> {
         lock(&self.base_commit).clone()
+    }
+
+    /// Whether the built-in sandbox tools are offered to the agent.
+    pub fn sandbox_tools_enabled(&self) -> bool {
+        !self.hide_sandbox_tools
     }
 
     /// Tool definitions from the external tool handler (e.g. GitHub).
@@ -508,6 +559,38 @@ impl Session {
             .map_err(|_| RuntimeError::NotRunning)
     }
 
+    /// Hand messages from the agent's organisation (colleagues, its
+    /// communicator, people) to an agent that is waiting for input; they
+    /// start its next turn. Fails with [`RuntimeError::NotAwaitingInput`]
+    /// while the agent is busy or paused, so the caller keeps them queued.
+    pub fn deliver_messages(&self, messages: Vec<DeliveredMessage>) -> Result<(), RuntimeError> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+        if self.status() != SessionStatus::AwaitingInput
+            || self.is_paused()
+            || self.turn_active.swap(true, Ordering::SeqCst)
+        {
+            return Err(RuntimeError::NotAwaitingInput);
+        }
+        let text = format!(
+            "You have {} new message(s):\n\n{}",
+            messages.len(),
+            messages
+                .iter()
+                .map(DeliveredMessage::render)
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        );
+        if let Err(err) = self.emit(EventKind::MessagesDelivered { messages }) {
+            self.turn_active.store(false, Ordering::SeqCst);
+            return Err(err);
+        }
+        self.inbox
+            .send(Inbox::Message(text))
+            .map_err(|_| RuntimeError::NotRunning)
+    }
+
     /// End a session that is waiting for input, as completed.
     pub fn finish(&self, by: Principal) -> Result<(), RuntimeError> {
         if self.status() != SessionStatus::AwaitingInput || self.turn_active.load(Ordering::SeqCst)
@@ -692,6 +775,7 @@ impl Session {
             session_id: self.id,
             task,
             workspace: WORKSPACE.into(),
+            home: sandbox.home(),
             gateway_url: format!(
                 "{}/mcp/{}",
                 config.gateway_url.trim_end_matches('/'),
@@ -767,12 +851,12 @@ impl Session {
                 msg = inbox.recv() => msg,
                 () = self.cancel.cancelled() => return Ok((SessionStatus::Stopped, None, None)),
                 () = idle => {
-                    let reason = "no input from a human within the idle timeout";
+                    let reason = IDLE_REASON;
                     self.stop(Principal::System, reason).await;
                     return Ok((SessionStatus::Stopped, None, Some(reason.into())));
                 }
                 () = overall => {
-                    let reason = "maximum session duration exceeded";
+                    let reason = TIME_BUDGET_REASON;
                     self.stop(Principal::System, reason).await;
                     return Ok((SessionStatus::Stopped, None, Some(reason.into())));
                 }
@@ -898,7 +982,7 @@ impl Session {
                 }
                 () = self.cancel.cancelled() => break TurnOutcome::Stopped(None),
                 () = &mut deadline => {
-                    let reason = "maximum session duration exceeded";
+                    let reason = TIME_BUDGET_REASON;
                     self.stop(Principal::System, reason).await;
                     break TurnOutcome::Stopped(Some(reason.into()));
                 }
@@ -1236,7 +1320,7 @@ impl Session {
         self.emit(EventKind::ActionRequested {
             action_id,
             action: action.clone(),
-            requested_by: Principal::Agent(self.spec.name.clone()),
+            requested_by: Principal::Agent(self.agent_label.clone()),
         })?;
 
         let limits = self.policy.limits().clone();

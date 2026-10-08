@@ -1,0 +1,79 @@
+# Workers in a department: work in the own sandbox, use the department's
+# files and talk to colleagues; anything that leaves the sandbox needs a human.
+
+name = "department"
+description = "Department worker: sandbox and department files, team messaging; publishing needs approval."
+default = "require_approval"
+
+[limits]
+max_session_secs = 28800
+max_actions = 2000
+max_model_calls = 2000
+idle_timeout_secs = 28800
+approval_timeout_secs = 900
+max_output_bytes = 65536
+
+[[rules]]
+id = "deny-secrets"
+description = "Credentials and key material must never be read or written by an agent."
+effect = "deny"
+kinds = ["file_read", "file_write"]
+paths = ["**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/id_rsa*", "**/id_ed25519*", "**/.aws/**", "**/.ssh/**", "**/.git/config"]
+
+[[rules]]
+id = "deny-destructive-commands"
+description = "Destructive or privilege-escalating commands are blocked."
+effect = "deny"
+kinds = ["exec"]
+commands = ["rm -rf /*", "rm -rf ~*", "sudo *", "su *", "mkfs*", "dd *of=/dev/*", "* | sh", "* | bash", "curl *| *sh*", "wget *| *sh*"]
+
+[[rules]]
+id = "allow-insights"
+description = "Reading granted business data and the organisation's metrics, and proposing improvements (people apply them)."
+effect = "allow"
+kinds = ["tool_call"]
+tools = ["data_list_sources", "data_query", "insights_*"]
+
+[[rules]]
+id = "allow-outbox-drafts"
+description = "Drafting messages for outward channels: a person approves each one before it is sent (unless the channel was set to send without approval)."
+effect = "allow"
+kinds = ["tool_call"]
+tools = ["outbox_*"]
+
+[[rules]]
+id = "allow-team"
+description = "Messages to colleagues and the department's shared files."
+effect = "allow"
+kinds = ["tool_call"]
+tools = ["team_list_colleagues", "team_read_messages", "team_send_message", "team_list_files", "team_read_file", "team_write_file", "team_list_goals", "team_report_progress"]
+
+[[rules]]
+id = "allow-workspace-files"
+description = "Read and write anything inside the own workspace."
+effect = "allow"
+kinds = ["file_read", "file_write"]
+paths = ["/workspace/**"]
+
+[[rules]]
+id = "allow-inspection"
+description = "Inspect and process files in the workspace."
+effect = "allow"
+kinds = ["exec"]
+commands = ["ls*", "cat *", "head *", "tail *", "wc *", "grep *", "rg *", "find *", "pwd", "echo *", "diff *", "sort *", "uniq *", "jq *", "python3 *", "python *"]
+
+# ---- departments linked to a GitHub project ---------------------------------
+
+[[rules]]
+id = "allow-github-reads"
+description = "Reading issues, milestones, the board and discussions of the linked repository."
+effect = "allow"
+kinds = ["tool_call"]
+tools = ["github_list_*", "github_get_*", "propose_pull_request"]
+
+[[rules]]
+id = "approve-github-writes"
+description = "Comments and changes on GitHub are visible to the whole team: a person approves."
+effect = "require_approval"
+kinds = ["tool_call"]
+tools = ["github_comment_*", "github_create_*", "github_update_*", "github_set_*"]

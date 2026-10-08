@@ -59,7 +59,255 @@ export interface SessionContext {
   work_branch?: string;
   delivery_branch?: string;
   pull_request_url?: string;
+  department_id?: string;
+  department_name?: string;
+  org_agent_id?: string;
+  org_agent_kind?: AgentKind;
 }
+
+// ---- organisations (crates/agentcore-core/src/org.rs) ----
+
+export type AgentKind = "worker" | "communicator";
+export type Desired = "stopped" | "running" | "paused";
+
+export interface OrgSettings {
+  max_departments: number;
+  max_agents_per_department: number;
+}
+
+export interface OrgAgent {
+  id: string;
+  department_id: string;
+  name: string;
+  kind: AgentKind;
+  agent: string;
+  instructions: string;
+  desired: Desired;
+  node: string | null;
+  session_id: string | null;
+  status: string | null;
+  note: string | null;
+  changed_by: string;
+  created_at: string;
+}
+
+export interface Department {
+  id: string;
+  name: string;
+  description: string;
+  mission: string;
+  policy: string;
+  tools: string[];
+  communicator_agent: string;
+  state: "active" | "paused";
+  template: string | null;
+  project_id: string | null;
+  role: string | null;
+  created_at: string;
+  updated_by: string;
+  agents: OrgAgent[];
+}
+
+export interface NodeInfo {
+  name: string;
+  internal_url: string;
+  capacity: number;
+  version: string;
+  started_at: string;
+  last_seen: string;
+  agents: number;
+  alive: boolean;
+}
+
+export interface OrgGoal {
+  id: string;
+  title: string;
+  description: string;
+  department_id: string | null;
+  status: "active" | "achieved" | "dropped";
+  progress: string;
+  progress_by: string | null;
+  progress_at: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+export interface CheckIn {
+  id: string;
+  department_id: string;
+  agent_id: string | null;
+  name: string;
+  message: string;
+  every_minutes: number;
+  next_run_at: string;
+  last_run_at: string | null;
+  enabled: boolean;
+  created_by: string;
+}
+
+export interface OrgOverview {
+  node: string;
+  profile: OrgProfile;
+  settings: OrgSettings;
+  departments: Department[];
+  goals: OrgGoal[];
+  check_ins: CheckIn[];
+  data_sources: DataSource[];
+  proposals_pending: number;
+  channels: Channel[];
+  outbox_pending: number;
+  nodes: NodeInfo[];
+  communicator_policy: string;
+}
+
+export interface OrgMessage {
+  id: string;
+  created_at: string;
+  scope: "internal" | "inter_department" | "human";
+  from_agent: string | null;
+  from_department: string | null;
+  from_name: string;
+  to_kind: "agent" | "department" | "all_departments";
+  to_agent: string | null;
+  to_department: string | null;
+  to_name: string;
+  text: string;
+  recipients: string[];
+}
+
+export interface DepartmentFile {
+  path: string;
+  size: number;
+  updated_at: string;
+  updated_by: string;
+}
+
+export interface OrgProfile {
+  company_name: string;
+  company_about: string;
+  blueprint: string | null;
+}
+
+export interface TemplateAgent {
+  name: string;
+  title: string;
+  core: boolean;
+  instructions: string;
+}
+
+export interface DepartmentTemplate {
+  id: string;
+  name: string;
+  category: string;
+  summary: string;
+  when_to_add: string;
+  mission: string;
+  tools: string[];
+  policy: string | null;
+  pairs_with: string[];
+  agents: TemplateAgent[];
+}
+
+export interface Blueprint {
+  id: string;
+  title: string;
+  level: "starter" | "growing" | "complete";
+  focus: string;
+  audience: string;
+  description: string;
+  stages: { title: string; description: string; departments: string[] }[];
+}
+
+export interface TemplateCatalog {
+  categories: { id: string; title: string; description: string }[];
+  departments: DepartmentTemplate[];
+  blueprints: Blueprint[];
+}
+
+export interface PlannedDepartment {
+  template: string;
+  name: string;
+  description: string;
+  mission: string;
+  tools: string[];
+  policy: string | null;
+  role: string | null;
+  agents: { name: string; title: string; instructions: string }[];
+  exists: boolean;
+}
+
+export interface BuildPlan {
+  departments: PlannedDepartment[];
+  new_departments: number;
+  new_agents: number;
+  limits: OrgSettings;
+  needs: OrgSettings;
+  fits: boolean;
+}
+
+export interface Suggestion {
+  kind: "stage" | "department" | "agent";
+  title: string;
+  reason: string;
+  templates: string[];
+  department_id: string | null;
+  agent: { name: string; title: string; instructions: string } | null;
+  blocked: string | null;
+}
+
+export interface CatalogAgent {
+  id: string;
+  name: string;
+  vendor: string;
+  summary: string;
+  description: string;
+  domains: string[];
+  homepage: string;
+  repository: string;
+  license: string;
+  license_url: string;
+  package: string;
+  verified_version: string;
+  protocols: ProviderKind[];
+  suggested_models: string[];
+  guardrails: "full" | "sandbox";
+  conversation: boolean;
+  installed: string[];
+}
+
+export interface AgentEntry {
+  source: "config" | "catalog";
+  catalog?: string;
+  enabled: boolean;
+  shadowed_by_config?: boolean;
+  updated_at?: string;
+  updated_by?: string;
+  spec: {
+    name: string;
+    adapter: string;
+    description: string;
+    command: string | null;
+    policy: string | null;
+    provider: string | null;
+    model: string | null;
+    image: string | null;
+    catalog: string | null;
+    conversation: boolean;
+  };
+}
+
+export interface AgentCheck {
+  agent: string;
+  program: string;
+  available: boolean;
+  path: string | null;
+  version: string | null;
+  image: string | null;
+  backend: string;
+  hint: string | null;
+}
+
+export type MessageTo = { agent: string } | { department: string } | "all_departments";
 
 export interface CheckResult {
   name: string;
@@ -342,3 +590,209 @@ export type LiveFrame =
   | { frame: "model_end"; call_id: string }
   | { frame: "files"; changes: FileChange[] }
   | { frame: "processes"; processes: ProcessInfo[] };
+
+export type DataSourceKind = "postgres" | "http" | "table";
+
+export interface DataSource {
+  id: string;
+  name: string;
+  kind: DataSourceKind;
+  description: string;
+  config: Record<string, unknown>;
+  secret_hint: string | null;
+  rows: number | null;
+  departments: string[];
+  enabled: boolean;
+  updated_at: string;
+  updated_by: string;
+}
+
+export type ProposalStatus = "open" | "changes_requested" | "applied" | "rejected" | "failed";
+
+/** One concrete change of a proposal; `kind` says which fields it has. */
+export type ProposalAction = { kind: string } & Record<string, unknown>;
+
+export interface ActionResult {
+  kind: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface Proposal {
+  id: string;
+  title: string;
+  problem: string;
+  evidence: string;
+  solution: string;
+  actions: ProposalAction[];
+  status: ProposalStatus;
+  revision: number;
+  history: Record<string, unknown>[];
+  feedback: string | null;
+  proposed_by: string;
+  proposer_agent: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  result: ActionResult[] | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DayMetrics {
+  day: string;
+  messages: number;
+  inter_department: number;
+  sessions: number;
+  failed_sessions: number;
+  model_calls: number;
+  tokens: number;
+  cost_micros: number;
+  denied: number;
+  approvals: number;
+  progress_reports: number;
+}
+
+export interface DepartmentMetrics {
+  id: string;
+  name: string;
+  state: string;
+  workers: number;
+  active_agents: number;
+  asleep_agents: number;
+  sessions: number;
+  failed_sessions: number;
+  agent_hours: number;
+  model_calls: number;
+  tokens: number;
+  cost_micros: number;
+  messages_sent: number;
+  messages_received: number;
+  avg_wait_secs: number | null;
+  waiting_now: number;
+  denied: number;
+  approvals: number;
+  avg_approval_wait_secs: number | null;
+  progress_reports: number;
+  data_queries: number;
+  last_activity: string | null;
+}
+
+export interface AgentMetrics {
+  id: string;
+  department_id: string;
+  name: string;
+  kind: string;
+  desired: string;
+  status: string | null;
+  sessions: number;
+  failed_sessions: number;
+  agent_hours: number;
+  model_calls: number;
+  tokens: number;
+  cost_micros: number;
+  messages_sent: number;
+  last_active: string | null;
+}
+
+export interface Signal {
+  severity: "high" | "medium" | "low";
+  kind: string;
+  title: string;
+  detail: string;
+  suggestion: string;
+  department_id: string | null;
+  agent_id: string | null;
+  goal_id: string | null;
+}
+
+export interface OrgMetrics {
+  metrics: {
+    days: number;
+    since: string;
+    daily: DayMetrics[];
+    departments: DepartmentMetrics[];
+    agents: AgentMetrics[];
+    goals: { id: string; title: string; status: string; department_id: string | null; created_at: string; progress_at: string | null; progress_reports: number }[];
+    proposals: { open: number; changes_requested: number; applied: number; rejected: number; failed: number };
+  };
+  signals: Signal[];
+  budgets: BudgetStatus[];
+  currency: string;
+}
+
+export type BudgetPeriod = "day" | "week" | "month";
+export type BudgetAction = "warn" | "pause";
+
+export interface BudgetStatus {
+  id: string;
+  department_id: string | null;
+  period: BudgetPeriod;
+  limit_micros: number;
+  action: BudgetAction;
+  warn_percent: number;
+  updated_at: string;
+  updated_by: string;
+  period_start: string;
+  period_end: string;
+  spent_micros: number;
+  paused_departments: string[];
+  exhausted_period: string | null;
+}
+
+export interface ModelPrice {
+  provider: string;
+  model: string;
+  input_per_mtok: number;
+  output_per_mtok: number;
+  updated_at: string;
+  updated_by: string;
+}
+
+export interface Spending {
+  currency: string;
+  prices: ModelPrice[];
+  budgets: BudgetStatus[];
+  unpriced_calls: number;
+  days: number;
+}
+
+export type ChannelKind = "email" | "slack" | "webhook";
+
+export interface Channel {
+  id: string;
+  name: string;
+  kind: ChannelKind;
+  description: string;
+  config: Record<string, unknown>;
+  secret_hint: string | null;
+  departments: string[];
+  requires_approval: boolean;
+  max_per_day: number;
+  disclosure: string;
+  enabled: boolean;
+  updated_at: string;
+  updated_by: string;
+}
+
+export type OutboxStatus = "pending" | "changes_requested" | "sending" | "sent" | "rejected" | "failed";
+
+export interface OutboxItem {
+  id: string;
+  channel_id: string;
+  department_id: string | null;
+  agent_id: string | null;
+  drafted_by: string;
+  recipients: string[];
+  subject: string;
+  body: string;
+  status: OutboxStatus;
+  revision: number;
+  history: Record<string, unknown>[];
+  feedback: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  sent_at: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+}

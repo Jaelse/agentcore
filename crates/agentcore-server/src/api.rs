@@ -53,12 +53,16 @@ pub async fn system_card(State(state): State<AppState>, _caller: Caller) -> Json
     let mut agents: Vec<_> = state
         .manager
         .agents()
+        .into_iter()
         .map(|a| {
             json!({
                 "name": a.name,
                 "adapter": a.adapter,
                 "description": a.description,
                 "policy": a.policy,
+                "catalog": a.catalog,
+                "provider": a.provider,
+                "model": a.model,
             })
         })
         .collect();
@@ -194,8 +198,13 @@ pub async fn stop_all(
     let reason = body
         .and_then(|Json(b)| b.reason)
         .unwrap_or_else(|| "emergency stop".into());
+    // Department agents on every node, then everything running here; other
+    // nodes stop their own sessions when they hear about it.
+    let agents = crate::org::stop_all_agents(&state, &caller.name, &reason).await?;
     let stopped = state.manager.stop_all(caller.principal(), &reason).await;
-    Ok(Json(json!({ "stopped": stopped })))
+    Ok(Json(
+        json!({ "stopped": stopped, "department_agents": agents }),
+    ))
 }
 
 pub async fn list_approvals(

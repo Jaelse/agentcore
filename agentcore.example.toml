@@ -42,6 +42,22 @@ default = "default"
 [roles]
 dir = "roles"
 
+# Department templates and growth paths for building an organisation.
+[templates]
+dir = "templates"
+
+# Multi-agent organisations (docs/MULTI_AGENT.md).
+# [org]
+# communicator_policy = "communicator"
+# default_max_departments = 10
+# default_max_agents_per_department = 10
+
+# Only when several agentcore VMs share the database (docs/DEPLOYMENT.md).
+# [cluster]
+# node_name = "vm-1"
+# internal_url = "http://10.0.0.11:8080"
+# max_agents = 20
+
 [sandbox]
 backend = "docker"          # "process" = no isolation, development only
 

@@ -66,6 +66,7 @@ fn agent(name: &str, script: &str) -> AgentSpec {
         policy: None,
         tty: None,
         follow_up_args: vec![],
+        ..Default::default()
     }
 }
 
@@ -424,13 +425,22 @@ async fn model_gateway_injects_keys_and_records_calls() {
 
     // Full bodies are in PostgreSQL and served to viewers.
     let call_id = calls[0]["call_id"].as_str().unwrap();
-    let (code, detail) = http(
-        "GET",
-        &format!("{}/api/v1/sessions/{id}/model-calls/{call_id}", server.base),
-        Some("viewer-token"),
-        None,
-    )
-    .await;
+    // The row is written just after the audit event: wait for it.
+    let mut found = (0, Value::Null);
+    for _ in 0..50 {
+        found = http(
+            "GET",
+            &format!("{}/api/v1/sessions/{id}/model-calls/{call_id}", server.base),
+            Some("viewer-token"),
+            None,
+        )
+        .await;
+        if found.0 == 200 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let (code, detail) = found;
     assert_eq!(code, 200);
     assert!(
         detail["request_body"]

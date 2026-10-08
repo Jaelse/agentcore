@@ -46,6 +46,7 @@ fn agent(name: &str, script: &str) -> AgentSpec {
         policy: None,
         tty: None,
         follow_up_args: vec![],
+        ..Default::default()
     }
 }
 
@@ -70,6 +71,10 @@ fn manager(dir: &std::path::Path) -> SessionManager {
         vec![
             agent("hello", "echo \"working on: $0\"; echo oops >&2"),
             agent("sleepy", "sleep 60"),
+            AgentSpec {
+                follow_up_args: vec!["-c".into(), "echo \"got: $0\"".into(), "{task}".into()],
+                ..agent("listener", "echo ready")
+            },
             agent(
                 "ticker",
                 "[ -t 1 ] && printf '\\033[32mon a terminal\\033[0m\\n'; \
@@ -396,4 +401,45 @@ async fn live_view_pause_resume_and_recording() {
     let cast = String::from_utf8(cast).unwrap();
     assert!(cast.contains("paused by alice"));
     assert!(cast.contains("\"m\",\"turn 1\""));
+}
+
+#[tokio::test]
+async fn messages_wake_an_agent_waiting_for_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = manager(dir.path());
+    let session = create(&manager, "listener");
+    wait_for(&session, |s| s == SessionStatus::AwaitingInput).await;
+
+    let message = agentcore_core::DeliveredMessage {
+        message_id: uuid::Uuid::now_v7(),
+        from: "analyst (Research)".into(),
+        to: "communicator (Research)".into(),
+        scope: agentcore_core::MessageScope::Internal,
+        text: "ask Eng for the limits".into(),
+        sent_at: chrono::Utc::now(),
+    };
+    session.deliver_messages(vec![message.clone()]).unwrap();
+    // A second delivery while the turn runs is refused (it stays queued).
+    assert!(session.deliver_messages(vec![message]).is_err());
+    for _ in 0..200 {
+        if kinds(&session)
+            .iter()
+            .filter(|k| **k == "turn_ended")
+            .count()
+            == 2
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let (events, _) = session.subscribe();
+    assert!(events.iter().any(|e| matches!(
+        &e.kind,
+        EventKind::MessagesDelivered { messages } if messages[0].from == "analyst (Research)"
+    )));
+    assert!(events.iter().any(|e| matches!(
+        &e.kind,
+        EventKind::Output { line, .. } if line.contains("got: You have 1 new message(s)")
+    )));
+    session.stop(Principal::human("alice"), "done").await;
 }

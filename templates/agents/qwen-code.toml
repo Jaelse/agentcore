@@ -1,0 +1,53 @@
+# See codex.toml for the placeholders.
+id = "qwen-code"
+name = "Qwen Code"
+vendor = "Qwen (Alibaba)"
+summary = "Coding agent for the terminal, for any OpenAI-compatible model."
+description = """
+A coding agent that works with any OpenAI-compatible model (Qwen, GPT, open
+models behind an OpenAI-compatible server). Its own file, shell, web and
+memory tools are excluded, so it works through agentcore's policy-checked
+tools.
+"""
+domains = ["software"]
+homepage = "https://qwenlm.github.io/qwen-code-docs/"
+repository = "https://github.com/QwenLM/qwen-code"
+license = "Apache-2.0"
+license_url = "https://github.com/QwenLM/qwen-code/blob/main/LICENSE"
+package = "npm: @qwen-code/qwen-code"
+verified_version = "0.25.0"
+protocols = ["openai"]
+suggested_models = ["qwen3-coder-plus", "gpt-5.1"]
+guardrails = "full"
+conversation = true
+
+[spec]
+command = "qwen"
+tty = false
+args = ["--approval-mode", "yolo", "--auth-type", "openai", "--model", "{model}", "{task}"]
+follow_up_args = ["--continue", "--approval-mode", "yolo", "--auth-type", "openai", "--model", "{model}", "{task}"]
+
+[spec.env]
+OPENAI_API_KEY = "{gateway_token}"
+OPENAI_BASE_URL = "{openai_base_url}"
+OPENAI_MODEL = "{model}"
+
+[spec.files]
+".qwen/settings.json" = '''
+{
+  "mcpServers": {
+    "agentcore": {
+      "httpUrl": "{gateway_url}",
+      "headers": { "Authorization": "Bearer {gateway_token}" },
+      "trust": true
+    }
+  },
+  "tools": {
+    "exclude": ["read_file", "write_file", "edit", "run_shell_command", "glob", "grep_search",
+                "list_directory", "read_many_files", "web_fetch", "web_search", "save_memory", "task"]
+  },
+  "memory": { "enableManagedAutoMemory": false, "enableManagedAutoDream": false, "enableAutoSkill": false },
+  "telemetry": { "enabled": false },
+  "privacy": { "usageStatisticsEnabled": false }
+}
+'''

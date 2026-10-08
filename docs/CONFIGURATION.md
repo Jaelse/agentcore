@@ -128,7 +128,54 @@ Published in the UI ("About this system") and at `/api/v1/system-card`
 (EU AI Act Art. 13 and 50): `system_name`, `provider`, `contact`,
 `intended_purpose`, `limitations` (list).
 
+## `[templates]`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `dir` | `templates` | Department templates (`departments/*.toml`) and growth paths (`blueprints/*.toml`). Validated at startup; a missing directory just means no templates. See [Building an organisation](MULTI_AGENT.md#building-an-organisation). |
+
+## `[cluster]`
+
+Mostly needed when several agentcore nodes (VMs) share one database. See
+[Multi-agent organisations](MULTI_AGENT.md#running-on-several-vms). On a
+single node the defaults apply; `heartbeat_secs` also sets how often
+budgets are checked and due check-ins are sent, and `reconcile_millis` how
+quickly agents are started, paused, put to sleep and woken.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `node_name` | `$HOSTNAME`, else `local` | Unique name of this node |
+| `internal_url` | the gateway URL | How other nodes reach this node's API (private network); session requests are forwarded here |
+| `max_agents` | `20` | Department agents this node runs at the same time |
+| `heartbeat_secs` | `5` | How often the node reports that it is alive, checks budgets and sends due check-ins |
+| `node_timeout_secs` | `30` | A node silent for longer is considered lost; its agents are marked stopped |
+| `reconcile_millis` | `2000` | Period of the reconcile pass (it also runs on every change notification): start, pause, stop, deliver messages, sleep, wake, continue |
+
+Every node needs the same `[[server.operators]]`, `[[agents]]`, policies and
+master key.
+
+## `[org]`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `communicator_policy` | `communicator` | Policy every communicator agent runs under |
+| `default_max_departments` | `10` | Initial limit, until an admin changes it in the UI |
+| `default_max_agents_per_department` | `10` | Initial limit (communicators are not counted) |
+
+### Set in the web UI, not in the file
+
+Organisation settings live in PostgreSQL, so every node shares them, and are
+changed in the UI (or the API) by admins: limits and the company profile,
+goals and check-ins, business data sources, model prices, currency and
+budgets, outward channels, and which kinds of improvements are applied
+without asking. See [Multi-agent organisations](MULTI_AGENT.md) and the
+[Guide](GUIDE.md).
+
 ## `[[agents]]`
+
+Agents can also be added without editing this file, from the
+[agent catalogue](AGENT_CATALOG.md) in the web UI. An agent defined here wins
+over an added one of the same name.
 
 | Key | Meaning |
 |---|---|
@@ -137,11 +184,25 @@ Published in the UI ("About this system") and at `/api/v1/system-card`
 | `description` | Shown in the UI |
 | `image` | Sandbox image override |
 | `command` | Program (opencode adapter: defaults to `opencode`) |
-| `args` | Arguments; `{task}`, `{workspace}`, `{gateway_url}`, `{session_id}` are substituted. The first turn's `{task}` is the composed prompt (role, conventions, issue, task). |
+| `args` | Arguments; placeholders are substituted (table below). The first turn's `{task}` is the composed prompt (role, conventions, issue, task). Never `{gateway_token}`: arguments are audited. |
 | `follow_up_args` | `command` adapter: arguments for follow-up turns (`{task}` = the human's message). Empty = single run. opencode continues with `--continue` automatically. |
 | `env` | Extra environment; values may use `{env:NAME}` to pass an agentcore environment variable. Not audited (secrets are fine), but model keys belong in the model gateway, not here. |
 | `policy` | Default guardrail policy for this agent |
 | `tty` | Run the agent in a pseudo-terminal for the live view (default `true`); set `false` for agents that misbehave in a terminal |
+| `files` | Files written before each turn: path (relative to the agent's `$HOME`, or absolute) → content. Contents may use every placeholder including `{gateway_token}`; they are not audited. |
+| `provider` | Model provider (by name) for `{model_base_url}`/`{openai_base_url}` |
+| `protocol` | Provider kind to pick a provider by when `provider` is not set (`anthropic`, `openai`) |
+| `model` | Model name for `{model}` |
+
+| Placeholder | Value |
+|---|---|
+| `{task}` | The task or follow-up message |
+| `{workspace}`, `{home}`, `{session_id}` | Workspace and home inside the sandbox, the session id |
+| `{gateway_url}` | MCP tool gateway of the session |
+| `{model}`, `{provider}`, `{protocol}` | The agent's model, provider name and provider kind |
+| `{model_base_url}`, `{openai_base_url}` | The provider on the model gateway (without / with `/v1`) |
+| `{gateway_token}` | Session token for both gateways: `env` and `files` only |
+| `{env:NAME}` | An environment variable of agentcore (`env` only) |
 
 ```toml
 [[agents]]
@@ -156,6 +217,19 @@ adapter = "command"
 command = "my-agent"
 args = ["--prompt", "{task}"]
 follow_up_args = ["--continue", "--prompt", "{task}"]
+
+[[agents]]
+name = "my-mcp-agent"
+adapter = "command"
+command = "my-agent"
+protocol = "anthropic"
+model = "claude-sonnet-4-5"
+args = ["--model", "{model}", "{task}"]
+[agents.env]
+MY_AGENT_BASE_URL = "{model_base_url}"
+MY_AGENT_API_KEY = "{gateway_token}"
+[agents.files]
+".my-agent/mcp.json" = '{ "url": "{gateway_url}", "token": "{gateway_token}" }'
 ```
 
 ## Guardrail limits (per policy)

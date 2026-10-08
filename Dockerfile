@@ -21,6 +21,7 @@ COPY --from=build /src/target/release/agentcore /usr/local/bin/agentcore
 COPY --from=web /src/web/dist /opt/agentcore/web/dist
 COPY policies /opt/agentcore/policies
 COPY roles /opt/agentcore/roles
+COPY templates /opt/agentcore/templates
 WORKDIR /opt/agentcore
 EXPOSE 8080
 HEALTHCHECK CMD curl -fsS http://127.0.0.1:8080/api/v1/health || exit 1

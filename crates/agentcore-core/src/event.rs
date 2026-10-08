@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    Action, ActionOutcome, CheckResult, ModelCallOutcome, Principal, PullRequestProposal,
-    SessionId, SessionStatus, Verdict,
+    Action, ActionOutcome, CheckResult, DeliveredMessage, ModelCallOutcome, Principal,
+    PullRequestProposal, SessionId, SessionStatus, Verdict,
 };
 
 /// A single, immutable fact about a session. Events are numbered per session
@@ -70,6 +70,11 @@ pub enum EventKind {
     UserMessage {
         by: Principal,
         text: String,
+    },
+    /// Messages from colleagues, communicators or people in the agent's
+    /// organisation were handed to the agent.
+    MessagesDelivered {
+        messages: Vec<DeliveredMessage>,
     },
     ChecksCompleted {
         requested_by: Principal,
@@ -171,6 +176,7 @@ impl EventKind {
             Self::TurnStarted { .. } => "turn_started",
             Self::TurnEnded { .. } => "turn_ended",
             Self::UserMessage { .. } => "user_message",
+            Self::MessagesDelivered { .. } => "messages_delivered",
             Self::ChecksCompleted { .. } => "checks_completed",
             Self::PullRequestProposed { .. } => "pull_request_proposed",
             Self::Delivered { .. } => "delivered",

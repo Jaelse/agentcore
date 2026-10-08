@@ -129,7 +129,7 @@ reconnect with `?after=<last seq>`. Event types: `session_created`,
 `workspace_prepared`, `sandbox_started`, `role_applied`, `agent_started`,
 `turn_started`, `output`, `action_requested`, `policy_evaluated`,
 `approval_requested`, `approval_resolved`, `action_completed`, `model_call`,
-`user_message`, `checks_completed`, `pull_request_proposed`, `delivered`,
+`user_message`, `messages_delivered`, `checks_completed`, `pull_request_proposed`, `delivered`,
 `status_changed`, `paused`, `resumed`, `stop_requested`, `turn_ended`,
 `recording_closed`, `session_ended`. The same JSON objects form the audit log.
 Session statuses: `pending`, `running`, `awaiting_approval`, `awaiting_input`,
@@ -163,6 +163,59 @@ data: {"frame":"model_delta","call_id":"…","kind":"thinking","text":"Let me ru
 the session is over (also sent at once for finished sessions); use
 `/recording` for the replay.
 
+## Agents (`/api/v1/agents`)
+
+| Method & path | Role | What |
+|---|---|---|
+| `GET /agents/catalog` | viewer | The [agent catalogue](AGENT_CATALOG.md): each entry with license, protocols, guardrail level, verified version, and the names it was added as |
+| `GET /agents` | viewer | Every agent: from the configuration file (`source: config`) and added from the catalogue (`source: catalog`) |
+| `POST /agents` | admin | Add a catalogue agent: `{"catalog": "codex", "name": "codex", "provider": "openai", "model": "gpt-5.1", "policy"?, "image"?, "description"?}`. The provider must be of a kind the agent speaks; the model must pass the provider's allow-list. |
+| `PUT /agents/{name}` | admin | Change `provider`, `model`, `policy`, `image`, `description`, `enabled` (re-created from the current catalogue entry) |
+| `DELETE /agents/{name}` | admin | Remove an added agent (running sessions continue) |
+| `POST /agents/{name}/check` | operator | Start a throwaway sandbox and look for the agent's program: `{"available", "path", "version", "hint"}` |
+
+## Organisations (`/api/v1/org`)
+
+Departments, their agents, messages and department files, plus control at
+every level. The full list is in
+[Multi-agent organisations](MULTI_AGENT.md#api). `GET /org/stream` is an SSE
+stream of change notifications (`event: org`, data `{"kind": ...}`); clients
+refetch what changed.
+
+Building from templates: `GET /org/templates` (categories, department
+templates, blueprints), `GET`/`PUT /org/profile` (company name, description,
+growth path), `GET /org/suggestions` (what to add next) and
+`POST /org/build` (admin):
+
+```json
+{ "profile": {"company_name": "Acme", "company_about": "...", "blueprint": "solo-developer"},
+  "departments": ["engineering"], "size": "lean", "agent": "opencode",
+  "start": true, "goal": "Reach 10 paying customers", "check_ins": true,
+  "raise_limits": false, "dry_run": false }
+```
+
+Goals (`/org/goals`) and scheduled check-ins
+(`/org/departments/{id}/checkins`, `/org/checkins/{id}`) keep an
+organisation working without a person writing to it; see
+[Goals, check-ins and agents that keep going](MULTI_AGENT.md#goals-check-ins-and-agents-that-keep-going).
+
+Metrics (`GET /org/metrics?days=`), improvement proposals
+(`/org/proposals`, apply / change / send back / reject, `/org/auto-apply`),
+business data sources (`/org/data-sources`), and prices and budgets
+(`/org/spending`, `/org/prices`, `/org/budgets`, `/org/currency`), and the
+outbox and channels (`/org/outbox`, `/org/channels`): see
+[Talking to the outside world](MULTI_AGENT.md#talking-to-the-outside-world),
+[Spending and budgets](MULTI_AGENT.md#spending-and-budgets),
+[Business data](MULTI_AGENT.md#business-data) and
+[Metrics, the retrospective and improvements](MULTI_AGENT.md#metrics-the-retrospective-and-improvements).
+
+`dry_run` returns the plan only. A plan that does not fit the limits is
+refused with `409` (the body holds the plan) unless `raise_limits` is set.
+
+Session endpoints (`/sessions/{id}/...`) work on any node: a node that does
+not run the session forwards the request (streams included) to the node
+that does, or answers `503` if that node is unreachable.
+
 ## Tool gateway (`/mcp/{session}`)
 
 MCP over Streamable HTTP (JSON responses, protocol `2025-06-18`). Methods:
@@ -175,6 +228,13 @@ MCP over Streamable HTTP (JSON responses, protocol `2025-06-18`). Methods:
 | `write_file {path, content}` | `file_write` | Audit records the SHA-256 of the content |
 | `list_files {path?}` | `exec` (`ls -la`) | |
 | `github_*`, `propose_pull_request` | `tool_call` | Only those the session's role allows; see [Ways of working](WAYS_OF_WORKING.md) |
+| `team_*` | `tool_call` | Department agents: messages, department files, goals ([Agent tools](MULTI_AGENT.md#agent-tools)) |
+| `data_list_sources`, `data_query` | `tool_call` | Workers of departments granted business data ([Business data](MULTI_AGENT.md#business-data)) |
+| `insights_*` | `tool_call` | Workers of departments granted `insights`: metrics and proposals ([The retrospective](MULTI_AGENT.md#the-retrospective)) |
+| `outbox_*` | `tool_call` | Workers of departments that may use a channel: drafts people approve ([Talking to the outside world](MULTI_AGENT.md#talking-to-the-outside-world)) |
+
+A session only sees the tools it may use; a tool that is not listed is also
+refused if called.
 
 Every call is policy-checked; denied calls return an error result starting
 with `DENIED:` and "Do not retry this action".
@@ -184,13 +244,14 @@ with `DENIED:` and "Do not retry this action".
 A transparent reverse proxy: the agent calls `/llm/{session}/{provider}/v1/messages`
 (or `/v1/chat/completions`, …) exactly as it would call the provider. agentcore
 replaces the session token with the provider's real key, streams the response
-back and records the call.
+back and records the call, priced with the model's price if one is set
+([Spending and budgets](MULTI_AGENT.md#spending-and-budgets)).
 
 | Status | Meaning |
 |---|---|
 | 400 | Invalid path (`.` / `..` segments) |
 | 401 | Unknown session or wrong token |
-| 403 | Session stopped, provider disabled, or model not in `allowed_models` |
+| 403 | Session stopped, provider disabled, model not in `allowed_models`, or a `pause` budget covering the session's department (or the organisation) is used up |
 | 404 | No provider with that name |
 | 429 | `max_model_calls` reached |
 | 502 | Provider unreachable |

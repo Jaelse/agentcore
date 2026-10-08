@@ -38,6 +38,34 @@ the high-risk dates.
 | **Art. 50(2)** Marking AI-generated content | Synthetic content should be marked in a machine-readable way. | `AGENTCORE_AI_GENERATED=agentcore/ai-generated` is set for the agent and every command, so tooling (e.g. a git commit hook adding an `AI-Generated:` trailer) can mark output; write outcomes record content hashes, so audited output is attributable. | Configure your tooling to apply the marker (e.g. commit trailers, PR labels). |
 | **Art. 4** AI literacy | Staff dealing with AI systems need sufficient AI literacy. | Clear UI wording; documentation of limitations. | Train operators and approvers. |
 
+### Multi-agent organisations
+
+When agents work in [departments](MULTI_AGENT.md), the same obligations apply
+to every agent, and agentcore adds:
+
+* **Record-keeping (Art. 12).** Every message between agents is stored with
+  sender, addressee, scope and time; each delivery is also recorded in the
+  receiving agent's hash-chained audit log (`messages_delivered`), and each
+  send is an audited, policy-checked tool call of the sender. Organisation
+  changes (departments, limits, profile) are in the admin log.
+* **Human oversight (Art. 14).** People see every message in the
+  organisation and every department, can talk to any agent, and can pause,
+  resume or stop one agent, a department or everything, on every node.
+  Communicators can be required to ask a person before any message leaves
+  a department.
+* **Risk management (Art. 9).** Admins limit the number of departments and
+  agents; departments only get the tools and data they need (business data
+  is read-only); budgets can pause the work when spending runs out;
+  improvements the retrospective proposes change nothing until a person
+  applies them.
+* **Transparency to people outside (Art. 50).** Agents cannot send email,
+  Slack messages or webhook posts themselves: they draft into the
+  [outbox](MULTI_AGENT.md#talking-to-the-outside-world), a person approves
+  (or edits, sends back, rejects) each message, and every channel appends a
+  disclosure ("This message was written by an AI agent.", configurable);
+  webhooks also receive `"ai_generated": true`. Who drafted, who approved
+  and every revision are kept with the message and in the admin log.
+
 ## Where humans oversee the agent (Art. 14)
 
 ```mermaid
@@ -79,3 +107,8 @@ verification at that line.
   retention and access rules as the audit logs.
 * Operator identity is token based; OIDC/SSO is planned to tie interventions to
   corporate identities.
+* Business data read by agents and messages in the outbox can contain
+  personal data (customers, leads): set retention and access rules for
+  `org_outbox`, `org_messages` and `department_files`, and grant data sources
+  only where needed. The AI disclosure on outward messages is configurable
+  per channel; keep it on for people outside the organisation.

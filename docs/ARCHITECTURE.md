@@ -1,8 +1,9 @@
 # Architecture
 
 This document explains how agentcore is built and how its parts interact.
-For *using* it, start with the [README](../README.md); for the concepts behind
-roles, read [Ways of working](WAYS_OF_WORKING.md).
+For *using* it, start with the [README](../README.md) and the
+[Guide](GUIDE.md); for the concepts behind roles, read
+[Ways of working](WAYS_OF_WORKING.md).
 
 - [System overview](#system-overview)
 - [Crates](#crates)
@@ -10,13 +11,14 @@ roles, read [Ways of working](WAYS_OF_WORKING.md).
 - [Event pipeline](#event-pipeline)
 - [Life of an action](#life-of-an-action)
 - [Stopping](#stopping)
-- [Live view: watching the agent work](#live-view)
+- [Live view: watching the agent work](#live-view-watching-the-agent-work)
 - [Pausing](#pausing)
 - [Model gateway](#model-gateway)
 - [Team work: repository, conversation, delivery](#team-work)
 - [Persistence](#persistence)
 - [Agents and adapters](#agents-and-adapters)
 - [Sandbox backends](#sandbox-backends)
+- [Organisations and clusters](#organisations-and-clusters) (and the [life of an outward message](#life-of-an-outward-message))
 - [Roadmap](#roadmap)
 
 ## System overview
@@ -36,13 +38,19 @@ flowchart LR
     GW -- "real API key" --> PROV["LLM providers"]
     RT -- "GitHub token" --> GH["GitHub<br/>repo · issues · board"]
     RT --> PG[("PostgreSQL")]
+    GW -- "read-only queries<br/>(granted sources)" --> DATA["Business data<br/>DB · APIs · tables"]
+    UI -- "approved messages" --> OUT["Email · Slack ·<br/>webhooks"]
 ```
 
 The agent can only reach agentcore. Every side effect is a tool call through
 the tool gateway, which the runtime checks against policy and then executes
 inside the sandbox (or on GitHub); every LLM call goes through the model
 gateway. Real
-credentials (model API keys, the GitHub token) never enter the sandbox.
+credentials (model API keys, the GitHub token, data source and channel
+secrets) never enter the sandbox. Business data is read by the server on
+the agent's behalf (read-only, granted per department); messages to the
+outside world are drafted by agents and sent by the server only after a
+person approves them.
 
 ## Crates
 
@@ -78,8 +86,8 @@ flowchart TD
 | **sandbox** | `SandboxProvider` creates a `Sandbox` that can spawn the agent (in a pseudo-terminal), run commands (streaming their output), read/write workspace files, list its processes, `pause()`/`resume()` and `kill()` everything. Backends: Docker (hardened), process (dev only). |
 | **roles** | Role (playbook) files, capability → tool mapping, check definitions, and composition of the agent's first prompt. |
 | **runtime** | `SessionManager` and `Session`: turns, policy gating, approvals, stop, pause/resume, the live view (`LiveHub`: terminal, recording, files, processes), change snapshots, checks, git bundle export, built-in adapters. |
-| **store** | PostgreSQL: session index, model providers, GitHub connection (secrets AES-256-GCM encrypted), projects, model calls, change snapshots, admin log. |
-| **server** | axum: operator API, SSE event and live streams, MCP tool gateway, model gateway (including the token stream for the live view), GitHub client and tools, repository checkout and delivery, auth, UI hosting. |
+| **store** | PostgreSQL: session index, model providers, GitHub connection (secrets AES-256-GCM encrypted), projects, model calls (priced when recorded), change snapshots, admin log, organisations (departments, agents, messages, inboxes, department files, profile and limits), node registry, goals and check-ins (`rhythm.rs`), data sources, activity, metrics and proposals (`insights.rs`), prices and budgets (`spending.rs`), channels and the outbox (`outbox.rs`). |
+| **server** | axum: operator API, SSE event and live streams, MCP tool gateway, model gateway (including the token stream for the live view and the budget check), GitHub client and tools, repository checkout and delivery, auth, UI hosting, organisations (`org.rs`), templates (`templates.rs`), agent catalogue (`catalog.rs`), cluster (`cluster.rs`), business data, metrics, signals and proposals (`insights.rs`), budgets (`budgets.rs`), channels and the outbox (`outbox.rs`). |
 | **cli** | `agentcore serve`, `policy check/eval`, `audit verify/show`, `hash-token`. |
 
 ## Session lifecycle
@@ -290,11 +298,12 @@ sequenceDiagram
     GW->>GW: under max_model_calls? (429) · session running? (403)
     GW->>DB: provider + decrypted key
     GW->>GW: provider enabled? (403) · model allowed? (403)
+    GW->>GW: a pausing budget covering it used up? (403, with the reason)
     GW->>UP: same request, real key, session token stripped
     UP-->>GW: response (streamed)
     GW-->>AG: relayed chunk by chunk (aborted if the session stops)
     GW->>GW: event model_call: model, status, tokens, duration, SHA-256s
-    GW->>DB: full request and response bodies
+    GW->>DB: full request and response bodies, cost from the model's price
 ```
 
 Every agent gets `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY` and
@@ -465,9 +474,10 @@ erDiagram
 | Data | Where | Why |
 |---|---|---|
 | Session events | `data/audit/<session>.jsonl` | Tamper-evident hash chain; the authoritative record |
+| Organisations, messages, department files, nodes, goals, check-ins, data sources, activity, proposals, prices, budgets, channels, outbox | PostgreSQL (migrations `0004`–`0011`; see [Multi-agent organisations](MULTI_AGENT.md#data-model)) | Shared by every node |
 | Sessions, projects, providers, GitHub connection, model calls, changes, admin log | PostgreSQL (migrations in `crates/agentcore-store/migrations`) | Queryable state that survives restarts |
 | Repository mirrors and workspaces | `data/repos/`, `data/workspaces/` | Agent checkouts and agentcore's push source |
-| Master key | `data/master.key` or `$AGENTCORE_MASTER_KEY` | Decrypts provider keys and the GitHub token; back it up |
+| Master key | `data/master.key` or `$AGENTCORE_MASTER_KEY` | Decrypts provider keys, the GitHub token, data source and channel secrets; back it up |
 
 ## Agents and adapters
 
@@ -497,6 +507,11 @@ arguments):
 
 Adding a new agent:
 
+* **from the catalogue**: popular open-source agents are ready-made recipes
+  (`templates/agents/*.toml`) that an admin adds in the UI; see
+  [Agent catalogue](AGENT_CATALOG.md). A recipe is a `command`-adapter spec
+  with placeholders for the model gateway, the tool gateway and the session
+  token, plus config files written into the agent's home before each turn;
 * **any CLI agent**: use the `command` adapter, point its MCP client at
   `$AGENTCORE_GATEWAY_URL` and its model SDK at the standard variables;
   set `follow_up_args` if it can continue a conversation;
@@ -526,6 +541,46 @@ read/write file, pause, resume, processes, kill, destroy, cleanup of
 orphans). Candidates: Firecracker
 microVMs, Kubernetes pods, remote sandboxes.
 
+## Organisations and clusters
+
+Departments of agents, communicators, message routing and running on
+several VMs are described in [Multi-agent organisations](MULTI_AGENT.md);
+running an app with them in the [Guide](GUIDE.md). Where the code is:
+
+| Module (server) | What |
+|---|---|
+| `org.rs` | Organisation API, the `team_*` tools, message routing, the first prompt of a department agent (mission, colleagues, goals, notes, data, channels, budget, pending messages) and starting its session. |
+| `templates.rs` | Department templates and growth paths: plans what to create and suggests what to add next. |
+| `cluster.rs` | Node heartbeat (lost nodes, budgets, check-ins), the `LISTEN/NOTIFY` listener, the reconciler (start, pause, stop, deliver, sleep, wake, continue), request forwarding to the node that owns a session. |
+| `insights.rs` | `data_*` tools and reading data sources; `insights_*` tools; signals; checking and applying proposals; their API. |
+| `budgets.rs` | Budget evaluation, the gateway's budget check, prices and budgets API. |
+| `outbox.rs` | `outbox_*` tools, sending over SMTP (lettre), Slack and webhooks, the approval flow and channel API. |
+
+Every decision that must happen once across nodes is a conditional update
+in PostgreSQL: check-ins are claimed with `FOR UPDATE SKIP LOCKED`; budget
+steps, proposal and outbox decisions compare a period or a revision and
+the current status.
+
+### Life of an outward message
+
+```mermaid
+sequenceDiagram
+    participant A as Agent (sandbox)
+    participant G as Tool gateway
+    participant DB as PostgreSQL
+    participant P as Person (web UI)
+    participant C as Channel (SMTP / Slack / webhook)
+    A->>G: outbox_draft {channel, to, subject, text}
+    G->>G: department may use the channel? recipients allowed?
+    G->>DB: org_outbox (pending, revision 1)
+    P->>DB: edit → revision 2 (history kept)
+    P->>G: send {revision: 2}
+    G->>DB: daily limit, claim (pending → sending, if revision matches)
+    G->>C: message + AI disclosure (secret from the encrypted store)
+    G->>DB: sent / failed (+ admin log, activity)
+    G-->>A: message: "sent (approved by …)" (wakes it)
+```
+
 ## Roadmap
 
 * **Steering**: interrupt a running turn with a message (not only between
@@ -541,5 +596,6 @@ microVMs, Kubernetes pods, remote sandboxes.
 * **Egress proxy**: network access per policy `network` rules.
 * **OpenTelemetry export**; SIEM forwarding of audit logs.
 * **SSO (OIDC)** for operators.
-* **Spend limits**: token/cost budgets per session and provider.
+* **Spend limits per session** (budgets exist per organisation and
+  department).
 * **External anchoring** of audit chain heads (WORM storage / transparency log).

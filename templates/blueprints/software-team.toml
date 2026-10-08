@@ -1,0 +1,31 @@
+id = "software-team"
+title = "Software product team"
+level = "growing"
+focus = "software"
+audience = "You lead a product and want a complete product-development team."
+description = "Engineering and product first, then design and QA, then platform, security, data and docs."
+
+[[stages]]
+title = "Build the right thing"
+description = "Product decides what and why; engineering builds it."
+departments = ["engineering", "product"]
+
+[[stages]]
+title = "Build it well"
+description = "Design for usability, QA for quality."
+departments = ["design", "qa"]
+
+[[stages]]
+title = "Run it safely"
+description = "Reliable releases and operations, and security reviews."
+departments = ["devops", "security"]
+
+[[stages]]
+title = "Learn and explain"
+description = "Metrics to steer by, and documentation for users."
+departments = ["data", "docs"]
+
+[[stages]]
+title = "Improve how you work"
+departments = ["retrospective"]
+description = "An agent that watches the metrics and proposes improvements you approve."

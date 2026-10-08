@@ -12,6 +12,14 @@ Trust boundaries:
 2. **Gateway policy (fine-grained boundary).** Governs what the agent may do
    through agentcore tools, and adds human approval and audit.
 3. **Operator API.** Only authenticated humans can start, approve or stop.
+4. **Departments** (multi-agent organisations). A worker can only message its
+   own department and use its own department's files; the department is
+   taken from the agent's identity, never from tool arguments. Other
+   departments are reached only through communicators, which have no tools
+   but messaging. This limits what a manipulated agent can reach directly;
+   it does not stop a communicator from *relaying* text it was given, so
+   treat messages between departments as untrusted input and use approvals
+   (`team_send_to_department`) where information must not leave a department.
 
 ```mermaid
 flowchart LR
@@ -82,6 +90,9 @@ do, and every attempt is recorded.
       separately from the database backups. Losing it makes stored provider
       keys unrecoverable; leaking it together with a DB dump exposes them.
 - [ ] Use provider API keys with spending limits, and set `allowed_models`.
+      Set model prices and an organisation budget with `pause` as a second
+      line of defence (the provider's limit stays the hard one: calls in
+      flight can take a budget slightly over).
 - [ ] Use a dedicated PostgreSQL role and TLS (`?sslmode=require`) for remote databases.
 - [ ] Restrict access to the `model_calls` table: it contains prompts and responses.
 - [ ] Use a dedicated bot account or fine-grained token for GitHub with access
@@ -89,6 +100,23 @@ do, and every attempt is recorded.
       branch protection and required reviews so agent PRs need human approval.
 - [ ] Store `data/` on an encrypted volume with backups; restrict who can read audit logs and terminal recordings (`data/recordings`): they contain whatever the agent printed.
 - [ ] Never use the `process` backend outside local development.
+- [ ] Several VMs: keep `internal_url` on a private network, use TLS and a
+      dedicated role for PostgreSQL (anyone who can write to it can direct
+      agents), and give every node the same master key and operator list.
+- [ ] Set organisation limits (departments, agents per department) and each
+      node's `max_agents` to what you can supervise and pay for.
+- [ ] Business data: give PostgreSQL sources a database user that can only
+      `SELECT` the tables departments need (queries also run in a read-only
+      transaction with a time limit, but a read-only role is the real
+      guarantee); give HTTP sources a read-only API key and allowed path
+      prefixes; grant each source only to the departments that need it.
+- [ ] Outward channels: use a dedicated mailbox or bot for agent mail, set
+      allowed recipient domains where you can, keep "a person approves every
+      message" on for anything customers or the public see, and keep daily
+      limits low.
+- [ ] Keep "apply without asking" empty unless you trust the retrospective's
+      judgement for that kind of change; structural changes (agents,
+      departments, limits) always need an admin to apply them.
 
 ## Known limitations
 
@@ -97,7 +125,28 @@ do, and every attempt is recorded.
   host symlink tricks. Policies match the requested path, not a symlink's
   target inside the container.
 * Agents with native tools that bypass the gateway are only constrained by the
-  sandbox, not by policy.
+  sandbox, not by policy. In the [agent catalogue](docs/AGENT_CATALOG.md#guardrail-levels)
+  these are marked *Sandbox only* (Aider, mini-SWE-agent); the others have
+  their native side-effecting tools switched off by their launch recipe,
+  which depends on each agent's configuration options: re-verify when you
+  upgrade an agent.
+* Catalogue agents are third-party software installed into the sandbox
+  image; pin their versions (the install script does) and review upgrades.
+* Node-to-node requests are plain HTTP to `internal_url` unless you put TLS in
+  front of it; they carry the operator's token.
+* Communicators are language models: they can be persuaded to pass on
+  information. The department boundary controls tools and data access, not
+  what text crosses it.
+* Business data an agent reads becomes part of its prompt and is sent to the
+  model provider; grant sources with that in mind, and use read-only
+  credentials (the read-only transaction is a second line, not the first).
+  Rows can also flow into department files, messages and drafts.
+* Text agents read (business data, issues and comments, messages from other
+  departments) can contain instructions meant to steer them. People approving
+  outbox messages and proposals are the control for what leaves the
+  organisation or changes it; review drafts as if a stranger wrote them.
+* Budgets act on recorded costs with a few seconds of delay; calls in flight
+  can take spending over a limit. Keep a spending limit at the provider.
 
 ## Reporting vulnerabilities
 

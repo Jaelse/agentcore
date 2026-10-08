@@ -40,11 +40,11 @@ impl AdapterRegistry {
     }
 }
 
-/// Expand `{env:NAME}` references and the standard placeholders. Only used for
-/// environment values: arguments are recorded in the audit log, so secrets
-/// must never be expanded into them.
-pub fn expand(template: &str, ctx: &LaunchContext) -> String {
-    let mut out = ctx.substitute(template);
+/// Expand `{env:NAME}` references and every placeholder, secrets included.
+/// Only used for environment values and files: arguments are recorded in the
+/// audit log, so secrets must never be expanded into them.
+pub fn expand(spec: &AgentSpec, template: &str, ctx: &LaunchContext) -> String {
+    let mut out = ctx.render(spec, template, true);
     while let Some(start) = out.find("{env:") {
         let Some(len) = out[start..].find('}') else {
             break;
@@ -59,8 +59,71 @@ pub fn expand(template: &str, ctx: &LaunchContext) -> String {
 fn expand_env(spec: &AgentSpec, ctx: &LaunchContext) -> BTreeMap<String, String> {
     spec.env
         .iter()
-        .map(|(k, v)| (k.clone(), expand(v, ctx)))
+        .map(|(k, v)| (k.clone(), expand(spec, v, ctx)))
         .collect()
+}
+
+/// Writes the files handed over in `AGENTCORE_FILE_<n>_PATH/_CONTENT`
+/// (relative paths below `$HOME`), then runs the agent. Contents travel in
+/// the environment, which is not audited, so they may hold the session token.
+const WRITE_FILES: &str = r#"set -e
+i=0
+while [ "$i" -lt "${AGENTCORE_FILE_COUNT:-0}" ]; do
+  eval "p=\${AGENTCORE_FILE_${i}_PATH}; c=\${AGENTCORE_FILE_${i}_CONTENT}"
+  unset "AGENTCORE_FILE_${i}_PATH" "AGENTCORE_FILE_${i}_CONTENT"
+  case "$p" in /*) ;; *) p="$HOME/$p" ;; esac
+  mkdir -p "$(dirname "$p")"
+  printf '%s' "$c" > "$p"
+  i=$((i + 1))
+done
+unset AGENTCORE_FILE_COUNT
+exec "$@""#;
+
+/// A plan for `spec` with the given argument templates (first turn or
+/// follow-up), writing the spec's files first.
+fn command_plan(
+    spec: &AgentSpec,
+    ctx: &LaunchContext,
+    args: &[String],
+) -> Result<LaunchPlan, AdapterError> {
+    spec.validate()?;
+    let program = spec.command.clone().ok_or_else(|| {
+        AdapterError::InvalidSpec(spec.name.clone(), "`command` is required".into())
+    })?;
+    let args: Vec<String> = args.iter().map(|a| ctx.render(spec, a, false)).collect();
+    let mut env = expand_env(spec, ctx);
+    if spec.files.is_empty() {
+        return Ok(LaunchPlan {
+            program: ctx.render(spec, &program, false),
+            args,
+            env,
+            tty: spec.tty.unwrap_or(true),
+        });
+    }
+    for (i, (path, content)) in spec.files.iter().enumerate() {
+        env.insert(
+            format!("AGENTCORE_FILE_{i}_PATH"),
+            ctx.render(spec, path, false),
+        );
+        env.insert(
+            format!("AGENTCORE_FILE_{i}_CONTENT"),
+            expand(spec, content, ctx),
+        );
+    }
+    env.insert("AGENTCORE_FILE_COUNT".into(), spec.files.len().to_string());
+    let mut wrapped = vec![
+        "-c".to_string(),
+        WRITE_FILES.to_string(),
+        "agentcore-files".to_string(),
+        ctx.render(spec, &program, false),
+    ];
+    wrapped.extend(args);
+    Ok(LaunchPlan {
+        program: "sh".into(),
+        args: wrapped,
+        env,
+        tty: spec.tty.unwrap_or(true),
+    })
 }
 
 pub struct CommandAdapter;
@@ -83,25 +146,11 @@ impl AgentAdapter for CommandAdapter {
             task: message.to_string(),
             ..ctx.clone()
         };
-        let mut plan = self.plan(spec, &follow_ctx)?;
-        plan.args = spec
-            .follow_up_args
-            .iter()
-            .map(|a| follow_ctx.substitute(a))
-            .collect();
-        Ok(Some(plan))
+        command_plan(spec, &follow_ctx, &spec.follow_up_args).map(Some)
     }
 
     fn plan(&self, spec: &AgentSpec, ctx: &LaunchContext) -> Result<LaunchPlan, AdapterError> {
-        let program = spec.command.clone().ok_or_else(|| {
-            AdapterError::InvalidSpec(spec.name.clone(), "`command` is required".into())
-        })?;
-        Ok(LaunchPlan {
-            program,
-            args: spec.args.iter().map(|a| ctx.substitute(a)).collect(),
-            env: expand_env(spec, ctx),
-            tty: spec.tty.unwrap_or(true),
-        })
+        command_plan(spec, ctx, &spec.args)
     }
 }
 
@@ -208,7 +257,10 @@ impl AgentAdapter for OpenCodeAdapter {
         let args = if spec.args.is_empty() {
             vec!["run".into(), ctx.task.clone()]
         } else {
-            spec.args.iter().map(|a| ctx.substitute(a)).collect()
+            spec.args
+                .iter()
+                .map(|a| ctx.render(spec, a, false))
+                .collect()
         };
         let mut env = expand_env(spec, ctx);
         env.insert(
@@ -233,6 +285,7 @@ mod tests {
             session_id: uuid::Uuid::nil(),
             task: "fix the bug".into(),
             workspace: "/workspace".into(),
+            home: "/home/agent".into(),
             gateway_url: "http://gw/mcp/x".into(),
             gateway_token: "secret".into(),
             model_gateway_url: "http://gw/llm/x".into(),
@@ -255,6 +308,7 @@ mod tests {
             policy: None,
             tty: None,
             follow_up_args: vec![],
+            ..Default::default()
         }
     }
 

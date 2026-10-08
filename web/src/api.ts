@@ -10,7 +10,21 @@ import type {
   TeamRole,
   AdminEvent,
   AgentEvent,
+  Department,
+  DepartmentFile,
   LiveFrame,
+  MessageTo,
+  OrgAgent,
+  OrgMessage,
+  OrgOverview,
+  OrgSettings,
+  BuildPlan,
+  OrgProfile,
+  Suggestion,
+  TemplateCatalog,
+  AgentCheck,
+  AgentEntry,
+  CatalogAgent,
   Me,
   ModelCallRecord,
   PendingApproval,
@@ -18,6 +32,21 @@ import type {
   ProviderKind,
   SessionInfo,
   SystemCard,
+  OrgGoal,
+  CheckIn,
+  DataSource,
+  DataSourceKind,
+  OrgMetrics,
+  Proposal,
+  ProposalAction,
+  ProposalStatus,
+  Spending,
+  ModelPrice,
+  BudgetPeriod,
+  BudgetAction,
+  Channel,
+  ChannelKind,
+  OutboxItem,
 } from "./types";
 
 const TOKEN_KEY = "agentcore.token";
@@ -174,6 +203,167 @@ export const api = {
   ) => request<ProviderInfo>("PATCH", `/providers/${encodeURIComponent(name)}`, update),
   deleteProvider: (name: string) => request<void>("DELETE", `/providers/${encodeURIComponent(name)}`),
   adminEvents: () => request<AdminEvent[]>("GET", "/admin-events"),
+  org: () => request<OrgOverview>("GET", "/org"),
+  saveOrgSettings: (s: OrgSettings) => request<OrgSettings>("PUT", "/org/settings", s),
+  saveDepartment: (
+    id: string | null,
+    body: {
+      name: string;
+      description: string;
+      mission: string;
+      policy: string;
+      tools: string[];
+      communicator_agent: string;
+      project_id: string | null;
+      role: string | null;
+    },
+  ) =>
+    id ? request<Department>("PUT", `/org/departments/${id}`, body) : request<Department>("POST", "/org/departments", body),
+  deleteDepartment: (id: string) => request<void>("DELETE", `/org/departments/${id}`),
+  controlDepartment: (id: string, control: "start" | "pause" | "resume" | "stop") =>
+    request<{ changed: number; failed: { agent: string; error: string }[] }>("POST", `/org/departments/${id}/${control}`),
+  addAgent: (department: string, body: { name: string; agent: string; instructions: string }) =>
+    request<OrgAgent>("POST", `/org/departments/${department}/agents`, body),
+  updateAgent: (id: string, body: { agent?: string; instructions?: string }) =>
+    request<OrgAgent>("PUT", `/org/agents/${id}`, body),
+  deleteAgent: (id: string) => request<void>("DELETE", `/org/agents/${id}`),
+  controlAgent: (id: string, control: "start" | "pause" | "resume" | "stop") =>
+    request<OrgAgent>("POST", `/org/agents/${id}/${control}`),
+  agentCatalog: () => request<{ agents: CatalogAgent[]; allowed_licenses: string[] }>("GET", "/agents/catalog"),
+  agentList: () => request<AgentEntry[]>("GET", "/agents"),
+  installAgent: (body: {
+    catalog: string;
+    name: string;
+    provider: string;
+    model: string;
+    policy?: string;
+    image?: string;
+    description?: string;
+  }) => request<unknown>("POST", "/agents", body),
+  updateAgentInstall: (
+    name: string,
+    body: Partial<{ provider: string; model: string; policy: string; image: string; enabled: boolean }>,
+  ) => request<unknown>("PUT", `/agents/${encodeURIComponent(name)}`, body),
+  uninstallAgent: (name: string) => request<void>("DELETE", `/agents/${encodeURIComponent(name)}`),
+  checkAgent: (name: string) => request<AgentCheck>("POST", `/agents/${encodeURIComponent(name)}/check`),
+  templates: () => request<TemplateCatalog>("GET", "/org/templates"),
+  suggestions: () => request<Suggestion[]>("GET", "/org/suggestions"),
+  saveProfile: (p: OrgProfile) => request<OrgProfile>("PUT", "/org/profile", p),
+  build: (body: {
+    profile?: OrgProfile;
+    departments: string[];
+    size: "lean" | "full";
+    agent?: string;
+    communicator_agent?: string;
+    project_id?: string | null;
+    start?: boolean;
+    goal?: string;
+    check_ins?: boolean;
+    raise_limits?: boolean;
+    dry_run?: boolean;
+  }) =>
+    request<{ plan: BuildPlan; created?: Department[]; errors?: { department: string; agent?: string; error: string }[] }>(
+      "POST",
+      "/org/build",
+      body,
+    ),
+  createGoal: (body: { title: string; description: string; department_id: string | null }) =>
+    request<OrgGoal>("POST", "/org/goals", body),
+  updateGoal: (
+    id: string,
+    body: Partial<{ title: string; description: string; department_id: string | null; status: OrgGoal["status"] }>,
+  ) => request<OrgGoal>("PUT", `/org/goals/${id}`, body),
+  deleteGoal: (id: string) => request<void>("DELETE", `/org/goals/${id}`),
+  goalProgress: (id: string, text: string) => request<OrgGoal>("POST", `/org/goals/${id}/progress`, { text }),
+  createCheckIn: (
+    department: string,
+    body: { name: string; message: string; every_minutes: number; agent_id: string | null },
+  ) => request<CheckIn>("POST", `/org/departments/${department}/checkins`, body),
+  updateCheckIn: (id: string, body: Partial<{ name: string; message: string; every_minutes: number; enabled: boolean }>) =>
+    request<CheckIn>("PUT", `/org/checkins/${id}`, body),
+  deleteCheckIn: (id: string) => request<void>("DELETE", `/org/checkins/${id}`),
+  runCheckIn: (id: string) => request<CheckIn>("POST", `/org/checkins/${id}/run`),
+  metrics: (days: number) => request<OrgMetrics>("GET", `/org/metrics?days=${days}`),
+  proposals: (status?: ProposalStatus) =>
+    request<Proposal[]>("GET", `/org/proposals${status ? `?status=${status}` : ""}`),
+  updateProposal: (
+    id: string,
+    body: Partial<{ title: string; problem: string; evidence: string; solution: string; actions: ProposalAction[]; note: string }>,
+  ) => request<Proposal>("PUT", `/org/proposals/${id}`, body),
+  applyProposal: (id: string, revision: number) => request<Proposal>("POST", `/org/proposals/${id}/apply`, { revision }),
+  requestChanges: (id: string, text: string) => request<Proposal>("POST", `/org/proposals/${id}/changes`, { text }),
+  rejectProposal: (id: string, text: string) => request<Proposal>("POST", `/org/proposals/${id}/reject`, { text }),
+  autoApply: () => request<{ kinds: string[]; by: string | null; available: string[] }>("GET", "/org/auto-apply"),
+  setAutoApply: (kinds: string[]) => request<{ kinds: string[] }>("PUT", "/org/auto-apply", { kinds }),
+  dataSources: () => request<DataSource[]>("GET", "/org/data-sources"),
+  createDataSource: (body: {
+    name: string;
+    kind: DataSourceKind;
+    description: string;
+    config: Record<string, unknown>;
+    secret?: string;
+    content?: string;
+    departments: string[];
+  }) => request<DataSource>("POST", "/org/data-sources", body),
+  updateDataSource: (
+    id: string,
+    body: Partial<{ description: string; config: Record<string, unknown>; secret: string; content: string; departments: string[]; enabled: boolean }>,
+  ) => request<DataSource>("PUT", `/org/data-sources/${id}`, body),
+  deleteDataSource: (id: string) => request<void>("DELETE", `/org/data-sources/${id}`),
+  testDataSource: (id: string, args?: Record<string, unknown>) =>
+    request<{ ok: boolean; result?: unknown; error?: string }>("POST", `/org/data-sources/${id}/test`, args ?? {}),
+  spending: (days = 30) => request<Spending>("GET", `/org/spending?days=${days}`),
+  setPrice: (body: { provider: string; model: string; input_per_mtok: number; output_per_mtok: number }) =>
+    request<ModelPrice>("PUT", "/org/prices", body),
+  deletePrice: (provider: string, model: string) =>
+    request<void>("DELETE", `/org/prices?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}`),
+  pricePastCalls: () => request<{ priced: number }>("POST", "/org/prices/backfill"),
+  setCurrency: (currency: string) => request<{ currency: string }>("PUT", "/org/currency", { currency }),
+  createBudget: (body: { department_id: string | null; period: BudgetPeriod; limit_micros: number; action: BudgetAction; warn_percent: number }) =>
+    request<unknown>("POST", "/org/budgets", body),
+  updateBudget: (id: string, body: Partial<{ limit_micros: number; action: BudgetAction; warn_percent: number }>) =>
+    request<unknown>("PUT", `/org/budgets/${id}`, body),
+  deleteBudget: (id: string) => request<void>("DELETE", `/org/budgets/${id}`),
+  outbox: () => request<OutboxItem[]>("GET", "/org/outbox"),
+  editOutbox: (id: string, body: Partial<{ recipients: string[]; subject: string; body: string; note: string }>) =>
+    request<OutboxItem>("PUT", `/org/outbox/${id}`, body),
+  sendOutbox: (id: string, revision: number) => request<OutboxItem>("POST", `/org/outbox/${id}/send`, { revision }),
+  outboxChanges: (id: string, text: string) => request<OutboxItem>("POST", `/org/outbox/${id}/changes`, { text }),
+  rejectOutbox: (id: string, text: string) => request<OutboxItem>("POST", `/org/outbox/${id}/reject`, { text }),
+  createChannel: (body: {
+    name: string;
+    kind: ChannelKind;
+    description: string;
+    config: Record<string, unknown>;
+    secret?: string;
+    departments: string[];
+    requires_approval: boolean;
+    max_per_day: number;
+    disclosure?: string;
+  }) => request<Channel>("POST", "/org/channels", body),
+  updateChannel: (
+    id: string,
+    body: Partial<{ description: string; config: Record<string, unknown>; secret: string; departments: string[]; requires_approval: boolean; max_per_day: number; disclosure: string; enabled: boolean }>,
+  ) => request<Channel>("PUT", `/org/channels/${id}`, body),
+  deleteChannel: (id: string) => request<void>("DELETE", `/org/channels/${id}`),
+  testChannel: (id: string, to: string[]) => request<{ ok: boolean; error?: string }>("POST", `/org/channels/${id}/test`, { to }),
+  pauseAll: () => request<void>("POST", "/org/pause-all"),
+  resumeAll: () => request<void>("POST", "/org/resume-all"),
+  messages: (q: { department?: string; agent?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (q.department) params.set("department", q.department);
+    if (q.agent) params.set("agent", q.agent);
+    if (q.limit) params.set("limit", String(q.limit));
+    const query = params.toString();
+    return request<OrgMessage[]>("GET", `/org/messages${query ? `?${query}` : ""}`);
+  },
+  postMessage: (to: MessageTo, text: string) => request<OrgMessage>("POST", "/org/messages", { to, text }),
+  departmentFiles: (id: string) => request<DepartmentFile[]>("GET", `/org/departments/${id}/files`),
+  departmentFile: (id: string, path: string) =>
+    request<{ path: string; content: string }>(
+      "GET",
+      `/org/departments/${id}/files/${path.split("/").map(encodeURIComponent).join("/")}`,
+    ),
   async downloadAudit(id: string) {
     const res = await fetch(`/api/v1/sessions/${id}/audit`, { headers: headers() });
     if (!res.ok) throw new ApiError(res.status, res.statusText);
@@ -206,6 +396,41 @@ async function readSse(res: Response, onMessage: (type: string, data: string) =>
       if (data.length) onMessage(type, data.join("\n"));
     }
   }
+}
+
+/**
+ * Organisation change notifications from every node. Each one only says
+ * what changed; `onChange` refetches. Reconnects automatically.
+ */
+export function streamOrg(onChange: (kind: string) => void): () => void {
+  const controller = new AbortController();
+  const run = async () => {
+    while (!controller.signal.aborted) {
+      try {
+        const res = await fetch("/api/v1/org/stream", {
+          headers: headers({ Accept: "text/event-stream" }),
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new ApiError(res.status, res.statusText);
+        onChange("resync");
+        await readSse(res, (type, data) => {
+          if (type === "lagged") onChange("resync");
+          else if (type === "org") {
+            try {
+              onChange((JSON.parse(data) as { kind?: string }).kind ?? "resync");
+            } catch {
+              onChange("resync");
+            }
+          }
+        });
+      } catch {
+        if (controller.signal.aborted) return;
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  };
+  void run();
+  return () => controller.abort();
 }
 
 /**

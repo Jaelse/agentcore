@@ -1,0 +1,21 @@
+id = "agency"
+title = "Agency / services company"
+level = "growing"
+focus = "services"
+audience = "You deliver projects for clients (software, design, consulting)."
+description = "Deliver client projects first, then win more clients, then run the business."
+
+[[stages]]
+title = "Deliver projects"
+departments = ["projects", "engineering", "design"]
+description = "Plan client projects and deliver them."
+
+[[stages]]
+title = "Win clients"
+departments = ["sales", "marketing"]
+description = "Proposals, outreach and a reputation."
+
+[[stages]]
+title = "Run the business"
+departments = ["finance", "legal", "people"]
+description = "Invoices, contracts and the team."

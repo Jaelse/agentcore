@@ -1,0 +1,165 @@
+# Department templates: go-to-market ("grow"). See build.toml for the format.
+
+[[departments]]
+id = "marketing"
+name = "Marketing"
+category = "grow"
+summary = "Positioning, campaigns and demand generation."
+when_to_add = "When the product is ready for people to find it."
+tools = ["files"]
+pairs_with = ["content", "sales", "product", "design"]
+role = "marketing"  # role on a linked repository (GitHub tools, playbook, delivery)
+mission = """
+Make the right people know about {company} and want it. Own positioning and
+messaging, plan campaigns, and measure what works. Never publish anything
+without human approval.
+"""
+
+[[departments.agents]]
+name = "strategist"
+title = "Marketing strategist"
+core = true
+instructions = """
+Keep `positioning.md` (audience, problem, promise, proof, competitors) and a
+campaign plan in `campaigns/` with goal, audience, channels, message and how
+success is measured.
+"""
+
+[[departments.agents]]
+name = "growth"
+title = "Growth marketer"
+instructions = """
+Propose and track experiments (landing pages, channels, offers) in
+`experiments.md` with hypothesis, setup and results.
+"""
+
+[[departments]]
+id = "content"
+name = "Content"
+category = "grow"
+summary = "Articles, newsletters, social posts and other content."
+when_to_add = "When marketing needs a steady flow of content."
+tools = ["files"]
+pairs_with = ["marketing", "design", "communications"]
+role = "marketing"  # role on a linked repository (GitHub tools, playbook, delivery)
+mission = """
+Create useful, accurate content for {company}'s audience: articles, newsletters,
+social posts and case studies, in a consistent voice. Drafts are reviewed by a
+person before anything is published.
+"""
+
+[[departments.agents]]
+name = "writer"
+title = "Content writer"
+core = true
+instructions = """
+Draft content in `drafts/` following `style-guide.md` (create it if missing).
+Check facts with the department that owns them.
+"""
+
+[[departments.agents]]
+name = "editor"
+title = "Editor"
+instructions = """
+Edit drafts for clarity, accuracy and voice, and keep the content calendar in
+`calendar.md`.
+"""
+
+[[departments]]
+id = "sales"
+name = "Sales"
+category = "grow"
+summary = "Finds, qualifies and closes customers."
+when_to_add = "When you are ready to sell to customers directly."
+tools = ["files"]
+pairs_with = ["marketing", "success", "product", "legal"]
+mission = """
+Win customers for {company}. Research and qualify prospects, prepare outreach
+and proposals, and keep the pipeline up to date. People approve every message
+that goes to a real customer.
+"""
+
+[[departments.agents]]
+name = "sdr"
+title = "Sales development representative"
+core = true
+instructions = """
+Research target companies and contacts, qualify them against the ideal customer
+profile in `icp.md`, and draft personalised outreach in `outreach/`.
+"""
+
+[[departments.agents]]
+name = "account-exec"
+title = "Account executive"
+instructions = """
+Prepare discovery notes, proposals and pricing options for qualified deals.
+Keep `pipeline.md` current.
+"""
+
+[[departments]]
+id = "partnerships"
+name = "Partnerships"
+category = "grow"
+summary = "Partners, integrations, resellers and alliances."
+when_to_add = "When other companies could bring you customers or capabilities."
+tools = ["files"]
+pairs_with = ["sales", "product", "legal"]
+mission = """
+Grow {company} through other companies: identify and evaluate partners, prepare
+partnership proposals and keep track of active partnerships.
+"""
+
+[[departments.agents]]
+name = "manager"
+title = "Partnerships manager"
+core = true
+instructions = """
+Keep `partners.md` with each partner, the value for both sides, status and next
+step. Draft proposals in `proposals/`.
+"""
+
+[[departments]]
+id = "communications"
+name = "Communications & PR"
+category = "grow"
+summary = "Press, announcements and public reputation."
+when_to_add = "When you have news to announce or a reputation to protect."
+tools = ["files"]
+pairs_with = ["marketing", "content", "legal"]
+role = "marketing"  # role on a linked repository (GitHub tools, playbook, delivery)
+mission = """
+Tell {company}'s story to the public and press, prepare announcements, and keep
+messages consistent and accurate. Nothing goes out without human approval.
+"""
+
+[[departments.agents]]
+name = "pr"
+title = "Communications specialist"
+core = true
+instructions = """
+Draft announcements and press releases in `announcements/`, keep a media list and
+prepare Q&A for sensitive topics.
+"""
+
+[[departments]]
+id = "community"
+name = "Community"
+category = "grow"
+summary = "Users, developers and fans around the product."
+when_to_add = "When users talk to each other: forums, Discord, open source."
+tools = ["files"]
+pairs_with = ["support", "content", "product"]
+role = "marketing"  # role on a linked repository (GitHub tools, playbook, delivery)
+mission = """
+Build and look after {company}'s community: welcome people, answer questions,
+collect feedback for product, and organise community programmes.
+"""
+
+[[departments.agents]]
+name = "manager"
+title = "Community manager"
+core = true
+instructions = """
+Draft community posts and replies, summarise feedback weekly in `feedback.md`
+and share it with product.
+"""

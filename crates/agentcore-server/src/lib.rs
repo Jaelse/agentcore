@@ -7,14 +7,21 @@
 
 pub mod api;
 pub mod auth;
+pub mod budgets;
+pub mod catalog;
+pub mod cluster;
 pub mod config;
 mod error;
 pub mod github;
+pub mod insights;
 pub mod live;
 pub mod llm;
 pub mod mcp;
+pub mod org;
+pub mod outbox;
 pub mod sessions;
 pub mod teamwork;
+pub mod templates;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -42,6 +49,18 @@ pub struct AppState {
     pub roles: Arc<agentcore_roles::RoleSet>,
     /// Sessions with a delivery in progress.
     pub delivering: Arc<tokio::sync::Mutex<std::collections::HashSet<uuid::Uuid>>>,
+    /// This node's name in the cluster.
+    pub node: Arc<str>,
+    /// Organisation change notifications (from every node), for `/org/stream`.
+    pub org_events: tokio::sync::broadcast::Sender<serde_json::Value>,
+    /// Wakes this node's reconciler.
+    pub reconcile: Arc<tokio::sync::Notify>,
+    /// Client for node-to-node requests (never through an HTTP proxy).
+    pub cluster_http: reqwest::Client,
+    /// Department templates and blueprints.
+    pub templates: Arc<templates::Catalog>,
+    /// Open-source agents that can be added from the web UI.
+    pub agent_catalog: Arc<catalog::AgentCatalog>,
 }
 
 impl AppState {
@@ -59,12 +78,48 @@ impl AppState {
                 anyhow::bail!("role `{}` uses unknown policy `{policy}`", role.name);
             }
         }
+        let catalog = templates::Catalog::load_dir(&config.templates.dir).with_context(|| {
+            format!("loading templates from {}", config.templates.dir.display())
+        })?;
+        if catalog.departments.is_empty() {
+            tracing::warn!(dir = %config.templates.dir.display(), "no department templates found");
+        }
+        for role in catalog.roles() {
+            if roles.get(role).is_none() {
+                anyhow::bail!("a department template uses unknown role `{role}`");
+            }
+        }
+        for policy in catalog.policies() {
+            if policies.get(policy).is_none() {
+                anyhow::bail!("a department template uses unknown policy `{policy}`");
+            }
+        }
+        let agent_catalog = catalog::AgentCatalog::load_dir(&config.templates.dir.join("agents"))
+            .with_context(|| {
+            format!(
+                "loading the agent catalogue from {}",
+                config.templates.dir.join("agents").display()
+            )
+        })?;
         let provider = config.sandbox.provider()?;
         let cipher = Cipher::load_or_create(&config.master_key_file())?;
         let store = Store::connect(&config.database_url()?, cipher)
             .await
             .context("connecting to PostgreSQL")?;
-        sessions::recover(&store, provider.as_ref()).await;
+        let node = config.node_name();
+        sessions::recover(&store, provider.as_ref(), &node).await;
+        if policies.get(&config.org.communicator_policy).is_none() {
+            tracing::warn!(
+                policy = %config.org.communicator_policy,
+                "the communicator policy does not exist: departments cannot be created"
+            );
+        }
+        store
+            .seed_org_settings(agentcore_core::OrgSettings {
+                max_departments: config.org.default_max_departments,
+                max_agents_per_department: config.org.default_max_agents_per_department,
+            })
+            .await?;
         let manager = SessionManager::new(
             RuntimeConfig {
                 data_dir: config.storage.data_dir.clone(),
@@ -85,14 +140,28 @@ impl AppState {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .context("building HTTP client")?;
-        Ok(Self {
+        let cluster_http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .context("building cluster HTTP client")?;
+        let state = Self {
             manager: Arc::new(manager),
             config: Arc::new(config),
             store,
             http,
             roles: Arc::new(roles),
             delivering: Arc::default(),
-        })
+            node: node.into(),
+            org_events: tokio::sync::broadcast::channel(256).0,
+            reconcile: Arc::default(),
+            cluster_http,
+            templates: Arc::new(catalog),
+            agent_catalog: Arc::new(agent_catalog),
+        };
+        state.reload_agents().await;
+        Ok(state)
     }
 }
 
@@ -157,7 +226,130 @@ pub fn router(state: AppState) -> Router {
         .route("/sessions/{id}/finish", post(teamwork::finish_session))
         .route("/sessions/{id}/changes", get(teamwork::changes))
         .route("/sessions/{id}/checks", post(teamwork::run_checks))
-        .route("/sessions/{id}/deliver", post(teamwork::deliver_session));
+        .route("/sessions/{id}/deliver", post(teamwork::deliver_session))
+        .route("/agents", get(catalog::list_agents).post(catalog::install))
+        .route("/agents/catalog", get(catalog::list_catalog))
+        .route(
+            "/agents/{name}",
+            put(catalog::update).delete(catalog::uninstall),
+        )
+        .route("/agents/{name}/check", post(catalog::check))
+        .route("/org", get(org::overview))
+        .route("/org/stream", get(org::stream))
+        .route("/org/templates", get(org::templates))
+        .route("/org/suggestions", get(org::suggestions))
+        .route("/org/profile", get(org::get_profile).put(org::put_profile))
+        .route("/org/build", post(org::build))
+        .route(
+            "/org/settings",
+            get(org::get_settings).put(org::put_settings),
+        )
+        .route("/org/departments", post(org::create_department))
+        .route(
+            "/org/departments/{id}",
+            put(org::update_department).delete(org::delete_department),
+        )
+        .route("/org/departments/{id}/agents", post(org::add_agent))
+        .route("/org/departments/{id}/files", get(org::list_files))
+        .route(
+            "/org/departments/{id}/checkins",
+            get(org::list_check_ins).post(org::create_check_in),
+        )
+        .route(
+            "/org/checkins/{id}",
+            put(org::update_check_in).delete(org::delete_check_in),
+        )
+        .route("/org/checkins/{id}/run", post(org::run_check_in))
+        .route("/org/goals", get(org::list_goals).post(org::create_goal))
+        .route("/org/metrics", get(insights::metrics))
+        .route("/org/spending", get(budgets::spending))
+        .route("/org/outbox", get(outbox::list))
+        .route("/org/outbox/{id}", put(outbox::edit))
+        .route("/org/outbox/{id}/send", post(outbox::approve))
+        .route("/org/outbox/{id}/changes", post(outbox::request_changes))
+        .route("/org/outbox/{id}/reject", post(outbox::reject))
+        .route(
+            "/org/channels",
+            get(outbox::list_channels).post(outbox::create_channel),
+        )
+        .route(
+            "/org/channels/{id}",
+            put(outbox::update_channel).delete(outbox::delete_channel),
+        )
+        .route("/org/channels/{id}/test", post(outbox::test_channel))
+        .route(
+            "/org/prices",
+            put(budgets::put_price).delete(budgets::delete_price),
+        )
+        .route("/org/prices/backfill", post(budgets::price_past_calls))
+        .route("/org/currency", put(budgets::put_currency))
+        .route("/org/budgets", post(budgets::create_budget))
+        .route(
+            "/org/budgets/{id}",
+            put(budgets::update_budget).delete(budgets::delete_budget),
+        )
+        .route(
+            "/org/proposals",
+            get(insights::list_proposals).post(insights::create_proposal),
+        )
+        .route(
+            "/org/proposals/{id}",
+            get(insights::get_proposal).put(insights::update_proposal),
+        )
+        .route("/org/proposals/{id}/apply", post(insights::apply_proposal))
+        .route(
+            "/org/proposals/{id}/changes",
+            post(insights::request_changes),
+        )
+        .route(
+            "/org/proposals/{id}/reject",
+            post(insights::reject_proposal),
+        )
+        .route(
+            "/org/auto-apply",
+            get(insights::get_auto_apply).put(insights::put_auto_apply),
+        )
+        .route(
+            "/org/data-sources",
+            get(insights::list_data_sources).post(insights::create_data_source),
+        )
+        .route(
+            "/org/data-sources/{id}",
+            put(insights::update_data_source).delete(insights::delete_data_source),
+        )
+        .route(
+            "/org/data-sources/{id}/test",
+            post(insights::test_data_source),
+        )
+        .route(
+            "/org/goals/{id}",
+            put(org::update_goal).delete(org::delete_goal),
+        )
+        .route("/org/goals/{id}/progress", post(org::goal_progress))
+        .route(
+            "/org/departments/{id}/files/{*path}",
+            get(org::get_file).put(org::put_file),
+        )
+        .route(
+            "/org/departments/{id}/{control}",
+            post(org::control_department),
+        )
+        .route(
+            "/org/agents/{id}",
+            put(org::update_agent).delete(org::delete_agent),
+        )
+        .route("/org/agents/{id}/{control}", post(org::control_agent))
+        .route("/org/pause-all", post(org::pause_all))
+        .route("/org/resume-all", post(org::resume_all))
+        .route(
+            "/org/messages",
+            get(org::list_messages).post(org::post_message),
+        )
+        // Session endpoints are served by the node that runs the session.
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            cluster::forward_sessions,
+        ));
 
     let ui_dir = &state.config.server.ui_dir;
     let ui = ServeDir::new(ui_dir).fallback(ServeFile::new(ui_dir.join("index.html")));
@@ -165,6 +357,11 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .nest("/api/v1", api)
         .route("/mcp/{id}", post(mcp::handle).get(mcp::method_not_allowed))
+        // Some MCP clients (fast-agent) append `/mcp` to every server URL.
+        .route(
+            "/mcp/{id}/mcp",
+            post(mcp::handle).get(mcp::method_not_allowed),
+        )
         .route("/llm/{id}/{provider}/{*rest}", any(llm::proxy))
         .fallback_service(ui)
         .layer(RequestBodyLimitLayer::new(32 * 1024 * 1024))
@@ -182,6 +379,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         );
     }
     let state = AppState::new(config).await?;
+    let cluster = cluster::start(&state).await?;
     let manager = state.manager.clone();
     let listener = tokio::net::TcpListener::bind(bind)
         .await
@@ -205,6 +403,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
             state.persist(&session).await;
         }
     }
+    cluster.cancel();
     tracing::info!(stopped, "shutdown complete");
     Ok(())
 }

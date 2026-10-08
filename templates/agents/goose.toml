@@ -1,0 +1,135 @@
+# See codex.toml for the placeholders.
+id = "goose"
+name = "goose"
+vendor = "Agentic AI Foundation (originally Block)"
+summary = "General-purpose agent: research, writing, planning, coding."
+description = """
+A general-purpose agent that works with whatever tools it is given. Its
+built-in extensions (shell, editor, apps, sub-agents, ...) are switched off;
+it gets agentcore's tools, and in a department its team tools, so it fits
+business departments (marketing, finance, operations, ...) as well as
+engineering.
+"""
+domains = ["general", "business", "software"]
+homepage = "https://block.github.io/goose/"
+repository = "https://github.com/block/goose"
+license = "Apache-2.0"
+license_url = "https://github.com/block/goose/blob/main/LICENSE"
+package = "binary: GitHub release goose-x86_64-unknown-linux-gnu"
+verified_version = "1.53.0"
+protocols = ["anthropic", "openai"]
+suggested_models = ["claude-sonnet-4-5", "gpt-5.1"]
+guardrails = "full"
+conversation = true
+
+[spec]
+command = "goose"
+tty = false
+args = ["run", "--name", "agentcore", "--text", "{task}"]
+follow_up_args = ["run", "--name", "agentcore", "--resume", "--text", "{task}"]
+
+[spec.env]
+GOOSE_PROVIDER = "{protocol}"
+GOOSE_MODEL = "{model}"
+ANTHROPIC_HOST = "{model_base_url}"
+ANTHROPIC_API_KEY = "{gateway_token}"
+OPENAI_HOST = "{model_base_url}"
+OPENAI_API_KEY = "{gateway_token}"
+GOOSE_TELEMETRY_ENABLED = "false"
+GOOSE_DISABLE_KEYRING = "1"
+GOOSE_MODE = "auto"
+
+[spec.files]
+".config/goose/config.yaml" = '''
+GOOSE_PROVIDER: "{protocol}"
+GOOSE_MODEL: "{model}"
+GOOSE_TELEMETRY_ENABLED: false
+extensions:
+  agentcore:
+    enabled: true
+    type: streamable_http
+    name: agentcore
+    description: agentcore tools (policy-checked)
+    uri: "{gateway_url}"
+    headers:
+      Authorization: "Bearer {gateway_token}"
+    timeout: 300
+  developer:
+    enabled: false
+    type: platform
+    name: developer
+    description: disabled by agentcore
+    bundled: true
+  analyze:
+    enabled: false
+    type: platform
+    name: analyze
+    description: disabled by agentcore
+    bundled: true
+  tom:
+    enabled: false
+    type: platform
+    name: tom
+    description: disabled by agentcore
+    bundled: true
+  extensionmanager:
+    enabled: false
+    type: platform
+    name: extensionmanager
+    description: disabled by agentcore
+    bundled: true
+  apps:
+    enabled: false
+    type: platform
+    name: apps
+    description: disabled by agentcore
+    bundled: true
+  skills:
+    enabled: false
+    type: platform
+    name: skills
+    description: disabled by agentcore
+    bundled: true
+  scheduler:
+    enabled: false
+    type: platform
+    name: scheduler
+    description: disabled by agentcore
+    bundled: true
+  summon:
+    enabled: false
+    type: platform
+    name: summon
+    description: disabled by agentcore
+    bundled: true
+  code_execution:
+    enabled: false
+    type: platform
+    name: code_execution
+    description: disabled by agentcore
+    bundled: true
+  orchestrator:
+    enabled: false
+    type: platform
+    name: orchestrator
+    description: disabled by agentcore
+    bundled: true
+  chatrecall:
+    enabled: false
+    type: platform
+    name: chatrecall
+    description: disabled by agentcore
+    bundled: true
+  todo:
+    enabled: false
+    type: platform
+    name: todo
+    description: disabled by agentcore
+    bundled: true
+  summarize:
+    enabled: false
+    type: platform
+    name: summarize
+    description: disabled by agentcore
+    bundled: true
+'''

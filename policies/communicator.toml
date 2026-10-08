@@ -1,0 +1,21 @@
+# Communicator agents: they only pass messages between departments.
+# Everything else is denied, even if a tool were offered by mistake.
+
+name = "communicator"
+description = "Only organisation messaging: talk to the own department and to other departments' communicators."
+default = "deny"
+
+[limits]
+max_session_secs = 28800
+max_actions = 2000
+max_model_calls = 2000
+idle_timeout_secs = 28800
+approval_timeout_secs = 900
+max_output_bytes = 65536
+
+[[rules]]
+id = "allow-messaging"
+description = "Read the inbox, see colleagues, talk inside the department and to other departments."
+effect = "allow"
+kinds = ["tool_call"]
+tools = ["team_list_colleagues", "team_read_messages", "team_send_message", "team_send_to_department"]

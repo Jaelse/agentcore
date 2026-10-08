@@ -1,0 +1,31 @@
+id = "saas-startup"
+title = "SaaS startup"
+level = "growing"
+focus = "business"
+audience = "You are building a software business: product, customers and revenue."
+description = "Build the product, then find users, then sell and retain, then run the company."
+
+[[stages]]
+title = "Build the product"
+departments = ["engineering", "product"]
+description = "What to build and building it."
+
+[[stages]]
+title = "Find and help users"
+departments = ["marketing", "support"]
+description = "Get the word out and help the first users."
+
+[[stages]]
+title = "Sell and retain"
+departments = ["sales", "success", "data"]
+description = "Turn interest into customers, keep them, and measure it."
+
+[[stages]]
+title = "Run the company"
+departments = ["finance", "legal", "people"]
+description = "Money, contracts and people."
+
+[[stages]]
+title = "Improve how you work"
+departments = ["retrospective"]
+description = "An agent that watches the metrics and proposes improvements you approve."

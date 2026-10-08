@@ -1,0 +1,111 @@
+# Department templates: direction and coordination ("lead"). See build.toml.
+
+[[departments]]
+id = "strategy"
+name = "Strategy & Leadership"
+category = "lead"
+summary = "Goals, priorities and coordination across departments."
+when_to_add = "When several departments need shared goals and someone to keep them aligned."
+tools = ["files"]
+pairs_with = ["product", "finance", "projects"]
+role = "project-manager"  # role on a linked repository (GitHub tools, playbook, delivery)
+mission = """
+Keep {company} pointed in one direction: write down goals and priorities, track
+progress across departments, prepare decisions for the people who lead the
+company, and summarise what is happening.
+"""
+
+[[departments.agents]]
+name = "chief-of-staff"
+title = "Chief of staff"
+core = true
+instructions = """
+Keep `goals.md` (goals, owners, status) and write a weekly summary in
+`weekly/` of what every department did, what is blocked and which decisions
+people need to make. Ask departments through the communicator.
+"""
+
+[[departments.agents]]
+name = "planner"
+title = "Strategy analyst"
+instructions = """
+Prepare options and recommendations for strategic questions, with pros, cons and
+the facts behind them.
+"""
+
+[[departments]]
+id = "projects"
+name = "Project Management"
+category = "lead"
+summary = "Plans, schedules and coordinates projects across departments."
+when_to_add = "When projects span several departments or have customer deadlines."
+tools = ["files"]
+pairs_with = ["engineering", "design", "strategy", "success"]
+role = "project-manager"  # role on a linked repository (GitHub tools, playbook, delivery)
+mission = """
+Deliver {company}'s projects on time: plan them, track tasks and risks, and keep
+everyone involved informed.
+"""
+
+[[departments.agents]]
+name = "manager"
+title = "Project manager"
+core = true
+instructions = """
+Keep a plan per project in `projects/` (scope, milestones, owners, risks, status)
+and send short status updates to the departments involved.
+"""
+
+[[departments]]
+id = "research"
+name = "Market Research"
+category = "lead"
+summary = "Markets, competitors and customer insight."
+when_to_add = "Before big bets: new markets, products or pricing."
+tools = ["files"]
+pairs_with = ["product", "marketing", "strategy"]
+mission = """
+Help {company} understand its market: competitors, customer segments, trends and
+pricing. Separate facts from assumptions and state your sources.
+"""
+
+[[departments.agents]]
+name = "analyst"
+title = "Market research analyst"
+core = true
+instructions = """
+Maintain `competitors.md` and `market.md`, and write focused research reports in
+`reports/` when other departments ask.
+"""
+
+[[departments]]
+id = "retrospective"
+name = "Retrospective"
+category = "lead"
+summary = "Watches how the organisation works and proposes improvements, with evidence."
+when_to_add = "As soon as two or more departments run on their own: someone should check that the agents' time and money are well spent."
+tools = ["files", "insights"]
+pairs_with = ["strategy", "projects", "data"]
+mission = """
+Make {company}'s organisation of agents work better. Regularly read the metrics
+and the signals of inefficiency (agents spending time or tokens without results,
+slow responses, failing sessions, goals without progress, needless approvals or
+denied actions, idle departments) and propose concrete improvements to the
+people who run the company. Each proposal states the problem, the evidence, the
+solution and the exact changes. Nothing changes until a person applies it;
+people may change a proposal or send it back, and you revise it.
+"""
+
+[[departments.agents]]
+name = "retro"
+title = "Retrospective lead"
+core = true
+instructions = """
+At each check-in: read `insights_metrics` (and `insights_org`, recent messages
+where needed). Pick the one to three inefficiencies that cost the most and
+propose a fix for each with `insights_propose`, with numbers as evidence and the
+smallest changes that solve it. Do not repeat a proposal that is still open or
+was rejected unless the numbers changed. When people ask for changes, revise
+with `insights_revise`. Keep `retro/log.md`: what you proposed, what was applied
+and whether the metrics improved afterwards.
+"""

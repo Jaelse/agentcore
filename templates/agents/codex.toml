@@ -1,0 +1,54 @@
+# Agent catalogue entry. Admins add it in the web UI (Settings → Agents);
+# agentcore fills in the placeholders for each session:
+#   {model}, {protocol}, {model_base_url}, {openai_base_url}: the chosen model
+#   provider on agentcore's model gateway; {gateway_url}: the MCP tool gateway;
+#   {home}, {workspace}, {task}; {gateway_token} (env and files only).
+id = "codex"
+name = "Codex CLI"
+vendor = "OpenAI"
+summary = "OpenAI's coding agent for the terminal."
+description = """
+Reads, changes and tests code. Its own shell, sub-agents, image viewer and
+hosted web search are switched off, so every command and file change goes
+through agentcore's policy-checked tools.
+"""
+domains = ["software"]
+homepage = "https://developers.openai.com/codex"
+repository = "https://github.com/openai/codex"
+license = "Apache-2.0"
+license_url = "https://github.com/openai/codex/blob/main/LICENSE"
+package = "npm: @openai/codex"
+verified_version = "0.161.0"
+protocols = ["openai"]
+suggested_models = ["gpt-5.1-codex", "gpt-5.1"]
+guardrails = "full"
+conversation = true
+
+[spec]
+command = "codex"
+tty = false
+args = ["exec", "--disable", "shell_tool", "--disable", "unified_exec", "--disable", "multi_agent", "--disable", "view_image",
+        "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "--color", "never", "{task}"]
+follow_up_args = ["exec", "resume", "--last", "--disable", "shell_tool", "--disable", "unified_exec", "--disable", "multi_agent",
+                  "--disable", "view_image", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "{task}"]
+
+[spec.env]
+OPENAI_API_KEY = "{gateway_token}"
+
+[spec.files]
+".codex/config.toml" = '''
+model = "{model}"
+model_provider = "agentcore"
+check_for_update_on_startup = false
+web_search = "disabled"
+
+[model_providers.agentcore]
+name = "agentcore"
+base_url = "{openai_base_url}"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+
+[mcp_servers.agentcore]
+url = "{gateway_url}"
+bearer_token_env_var = "AGENTCORE_GATEWAY_TOKEN"
+'''

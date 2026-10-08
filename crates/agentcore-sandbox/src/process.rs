@@ -251,6 +251,10 @@ impl Sandbox for ProcessSandbox {
         serde_json::json!({ "workspace": self.root, "isolation": "none" })
     }
 
+    fn home(&self) -> String {
+        self.home.to_string_lossy().into_owned()
+    }
+
     async fn spawn(&self, plan: &LaunchPlan) -> Result<AgentProcess> {
         self.check_alive()?;
         let mut cmd = self.command(&plan.program, &plan.args, &self.root);

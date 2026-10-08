@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ModelEndpoint, ProviderKind, SessionId};
 
-/// Declarative agent definition, loaded from configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Declarative agent definition, loaded from configuration or created from
+/// the agent catalogue.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSpec {
     /// Unique name users refer to, e.g. `opencode`.
     pub name: String,
@@ -42,6 +43,48 @@ pub struct AgentSpec {
     /// interactive output) can be watched live. Default: true.
     #[serde(default)]
     pub tty: Option<bool>,
+    /// Files written before the agent starts (path relative to its HOME, or
+    /// absolute → content). Contents may use every placeholder, including
+    /// `{gateway_token}`; they are not audited.
+    #[serde(default)]
+    pub files: BTreeMap<String, String>,
+    /// Model provider (by name) the agent uses; see `{model_base_url}`.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Wire protocol to pick a provider by when `provider` is not set.
+    #[serde(default)]
+    pub protocol: Option<ProviderKind>,
+    /// Model name, for `{model}`.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Catalogue entry the agent was created from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<String>,
+}
+
+/// Placeholders that expand to secrets: allowed in `env` and `files` only,
+/// never in arguments (those are recorded in the audit log).
+pub const SECRET_PLACEHOLDERS: [&str; 1] = ["{gateway_token}"];
+
+impl AgentSpec {
+    /// Refuse specs that would put a secret into audited arguments.
+    pub fn validate(&self) -> Result<(), AdapterError> {
+        for arg in self
+            .args
+            .iter()
+            .chain(&self.follow_up_args)
+            .chain(&self.command)
+        {
+            if SECRET_PLACEHOLDERS.iter().any(|s| arg.contains(s)) {
+                return Err(AdapterError::InvalidSpec(
+                    self.name.clone(),
+                    "`{gateway_token}` may only be used in `env` and `files`, never in arguments"
+                        .into(),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Everything an adapter needs to know to build a launch plan.
@@ -51,6 +94,8 @@ pub struct LaunchContext {
     pub task: String,
     /// Workspace path as seen from inside the sandbox.
     pub workspace: String,
+    /// The agent's `HOME` as seen from inside the sandbox.
+    pub home: String,
     /// MCP tool gateway URL as seen from inside the sandbox.
     pub gateway_url: String,
     /// Bearer token scoped to this session's gateways (tools and models).
@@ -97,11 +142,49 @@ impl LaunchContext {
     }
 
     pub fn substitute(&self, template: &str) -> String {
+        // `{task}` last, so placeholders written in the task stay literal.
         template
-            .replace("{task}", &self.task)
             .replace("{workspace}", &self.workspace)
+            .replace("{home}", &self.home)
             .replace("{gateway_url}", &self.gateway_url)
             .replace("{session_id}", &self.session_id.to_string())
+            .replace("{task}", &self.task)
+    }
+
+    /// The model provider an agent uses: the one it names, else the first of
+    /// its protocol, else the first one.
+    pub fn endpoint(&self, spec: &AgentSpec) -> Option<&ModelEndpoint> {
+        match (&spec.provider, spec.protocol) {
+            (Some(name), _) => self.models.iter().find(|m| &m.name == name),
+            (None, Some(kind)) => self.model(kind),
+            (None, None) => self.models.first(),
+        }
+    }
+
+    /// Expand every placeholder for an agent:
+    ///
+    /// * `{workspace}`, `{home}`, `{gateway_url}`, `{session_id}`, `{task}`;
+    /// * `{model}`, `{provider}`: the agent's model and provider name;
+    /// * `{protocol}`: the provider's kind (`anthropic`, `openai`);
+    /// * `{model_base_url}`: the provider's base URL on the model gateway
+    ///   (no version suffix), `{openai_base_url}`: the same with `/v1`;
+    /// * with `secrets`: `{gateway_token}`, the session's token for both
+    ///   gateways (it is the "API key" agents present to the model gateway).
+    pub fn render(&self, spec: &AgentSpec, template: &str, secrets: bool) -> String {
+        let endpoint = self.endpoint(spec);
+        let base = endpoint
+            .map(|e| self.model_base_url(&e.name))
+            .unwrap_or_default();
+        let mut out = template
+            .replace("{model_base_url}", &base)
+            .replace("{openai_base_url}", &format!("{base}/v1"))
+            .replace("{provider}", endpoint.map_or("", |e| e.name.as_str()))
+            .replace("{protocol}", endpoint.map_or("", |e| e.kind.as_str()))
+            .replace("{model}", spec.model.as_deref().unwrap_or_default());
+        if secrets {
+            out = out.replace("{gateway_token}", &self.gateway_token);
+        }
+        self.substitute(&out)
     }
 }
 
