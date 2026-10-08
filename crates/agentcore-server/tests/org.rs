@@ -53,6 +53,20 @@ case "$0" in
 esac
 "#;
 
+/// Long-running worker: reports progress on the first turn of every
+/// session and says what its prompt told it.
+const GOAL_WORKER: &str = r###"
+case "$0" in
+  "You have "*" new message(s):"*) ;;
+  *)
+    call team_list_goals '{}'
+    call team_report_progress '{"goal":"Reach 10 paying customers","text":"Drafted the pricing page"}'
+    case "$0" in *"Reach 10 paying customers"*) echo GOAL-IN-PROMPT ;; esac
+    case "$0" in *"You are continuing"*) echo CONTINUING ;; esac
+    case "$0" in *"## New messages"*"check-in: daily"*) echo WOKEN-BY-CHECK-IN ;; esac ;;
+esac
+"###;
+
 /// Runs a script on the first turn and on every message (`$0` = text).
 fn agent(name: &str, script: &str) -> AgentSpec {
     let first = format!("{CALL}\nset -- \"$0\"\n{script}\necho \"{name} turn: $0\" | head -c 300");
@@ -113,6 +127,7 @@ fn config(dir: &std::path::Path, db_url: &str, bind: std::net::SocketAddr, node:
         agent("relay-bot", RELAY),
         agent("dev-bot", DEV),
         agent("idle-bot", ""),
+        agent("goal-bot", GOAL_WORKER),
     ];
     config
 }
@@ -124,10 +139,21 @@ struct Node {
 }
 
 async fn start(dir: &std::path::Path, db_url: &str, name: &str, capacity: u32) -> Node {
+    start_with(dir, db_url, name, capacity, |_| {}).await
+}
+
+async fn start_with(
+    dir: &std::path::Path,
+    db_url: &str,
+    name: &str,
+    capacity: u32,
+    change: impl FnOnce(&mut Config),
+) -> Node {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let mut config = config(dir, db_url, addr, name);
     config.cluster.max_agents = capacity;
+    change(&mut config);
     let state = AppState::new(config).await.unwrap();
     let cluster = cluster::start(&state).await.unwrap();
     let app = router(state.clone());
@@ -818,7 +844,10 @@ async fn build_an_organisation_from_templates_and_grow_it() {
             "/org/build",
             Some(build(
                 json!(all),
-                json!({ "raise_limits": true, "size": "full" }),
+                json!({
+                    "raise_limits": true, "size": "full", "check_ins": true,
+                    "goal": "Ship version 1",
+                }),
             )),
         )
         .await;
@@ -831,7 +860,215 @@ async fn build_an_organisation_from_templates_and_grow_it() {
     assert_eq!(big["settings"]["max_departments"], all.len());
     let org = node.ok("GET", "/org", None).await;
     assert_eq!(org["departments"].as_array().unwrap().len(), all.len());
+    // Kept running: a daily check-in for each new department's lead, a
+    // weekly review in Strategy, and the first goal.
+    assert_eq!(big["goal"]["title"], "Ship version 1");
+    let check_ins = org["check_ins"].as_array().unwrap();
+    let daily = check_ins.iter().filter(|c| c["name"] == "daily").count();
+    assert_eq!(daily, all.len() - 1);
+    assert_eq!(
+        check_ins
+            .iter()
+            .filter(|c| c["name"] == "weekly review")
+            .count(),
+        1
+    );
 
     node.ok("POST", "/stop-all", None).await;
+    node.cluster.cancel();
+}
+
+/// Policies of the repository plus two with short limits.
+fn short_policies(dir: &std::path::Path) -> std::path::PathBuf {
+    let policies = dir.join("policies");
+    std::fs::create_dir_all(&policies).unwrap();
+    let source = concat!(env!("CARGO_MANIFEST_DIR"), "/../../policies");
+    for entry in std::fs::read_dir(source).unwrap() {
+        let path = entry.unwrap().path();
+        std::fs::copy(&path, policies.join(path.file_name().unwrap())).unwrap();
+    }
+    let department = std::fs::read_to_string(policies.join("department.toml")).unwrap();
+    for (name, max, idle) in [("short-idle", 3600, 2), ("short-life", 3, 3600)] {
+        let text = department
+            .replace("name = \"department\"", &format!("name = \"{name}\""))
+            .replace(
+                "max_session_secs = 28800",
+                &format!("max_session_secs = {max}"),
+            )
+            .replace(
+                "idle_timeout_secs = 28800",
+                &format!("idle_timeout_secs = {idle}"),
+            );
+        std::fs::write(policies.join(format!("{name}.toml")), text).unwrap();
+    }
+    policies
+}
+
+#[tokio::test]
+async fn goals_check_ins_and_agents_that_keep_going() {
+    let Some((_, db_url)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let policies = short_policies(dir.path());
+    let node = start_with(dir.path(), &db_url, "n1", 10, |c| c.policies.dir = policies).await;
+
+    // Goals: operators set them, viewers cannot.
+    let (code, _) = node
+        .call(
+            "POST",
+            "/org/goals",
+            "viewer-token",
+            Some(json!({ "title": "x" })),
+        )
+        .await;
+    assert_eq!(code, 403);
+    let (code, goal) = node
+        .call(
+            "POST",
+            "/org/goals",
+            "alice-token",
+            Some(json!({ "title": "Reach 10 paying customers", "description": "By March." })),
+        )
+        .await;
+    assert_eq!(code, 201, "{goal}");
+    let goal_id = goal["id"].as_str().unwrap().to_string();
+
+    // A worker that sleeps when idle: it sees the goal and reports progress.
+    let mut ops = department("Ops", &["files"]);
+    ops["policy"] = json!("short-idle");
+    let ops = node.ok("POST", "/org/departments", Some(ops)).await;
+    let ops_id = ops["id"].as_str().unwrap();
+    let worker = node
+        .ok(
+            "POST",
+            &format!("/org/departments/{ops_id}/agents"),
+            Some(json!({ "name": "worker", "agent": "goal-bot" })),
+        )
+        .await;
+    let worker_id = worker["id"].as_str().unwrap();
+    node.ok("POST", &format!("/org/departments/{ops_id}/start"), None)
+        .await;
+    let first = node
+        .wait_agent(worker_id, "worker started", |a| a["session_id"].is_string())
+        .await;
+    let first_session = first["session_id"].as_str().unwrap().to_string();
+    for _ in 0..200 {
+        let goals = node.ok("GET", "/org/goals", None).await;
+        if goals[0]["progress"] == "Drafted the pricing page" {
+            assert_eq!(goals[0]["progress_by"], "worker (Ops)");
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let goals = node.ok("GET", "/org/goals", None).await;
+    assert_eq!(goals[0]["progress"], "Drafted the pricing page", "{goals}");
+
+    // Nothing to do: the session ends at the idle timeout and the agent
+    // sleeps, still wanted.
+    let asleep = node
+        .wait_agent(worker_id, "worker asleep", |a| a["status"] == "asleep")
+        .await;
+    assert_eq!(asleep["desired"], "running");
+    let out = output(&node.events(&first_session).await);
+    assert!(out.contains("GOAL-IN-PROMPT"), "{out}");
+
+    // A check-in wakes it in a fresh session with the message in its prompt.
+    let (code, check_in) = node
+        .call(
+            "POST",
+            &format!("/org/departments/{ops_id}/checkins"),
+            "alice-token",
+            Some(json!({
+                "name": "daily", "message": "What moves the goal today?",
+                "every_minutes": 1440, "agent_id": worker_id,
+            })),
+        )
+        .await;
+    assert_eq!(code, 201, "{check_in}");
+    let check_id = check_in["id"].as_str().unwrap();
+    let ran = node
+        .ok("POST", &format!("/org/checkins/{check_id}/run"), None)
+        .await;
+    assert!(ran["last_run_at"].is_string());
+    let woken = node
+        .wait_agent(worker_id, "worker woken", |a| {
+            a["session_id"].is_string() && a["session_id"] != first_session.as_str()
+        })
+        .await;
+    let second = woken["session_id"].as_str().unwrap().to_string();
+    node.wait_agent(worker_id, "worker asleep again", |a| {
+        a["status"] == "asleep"
+    })
+    .await;
+    let out = output(&node.events(&second).await);
+    assert!(out.contains("WOKEN-BY-CHECK-IN"), "{out}");
+    assert!(
+        out.contains("CONTINUING"),
+        "a woken agent starts from its notes: {out}"
+    );
+    let overview = node.ok("GET", "/org", None).await;
+    assert_eq!(overview["goals"][0]["id"], goal_id.as_str());
+    assert_eq!(overview["check_ins"][0]["name"], "daily");
+
+    // Turned off, it cannot be run; stopping a sleeping agent stops it.
+    node.ok(
+        "PUT",
+        &format!("/org/checkins/{check_id}"),
+        Some(json!({ "enabled": false })),
+    )
+    .await;
+    let (code, _) = node
+        .call(
+            "POST",
+            &format!("/org/checkins/{check_id}/run"),
+            "alice-token",
+            None,
+        )
+        .await;
+    assert_eq!(code, 409);
+    node.ok("POST", &format!("/org/agents/{worker_id}/stop"), None)
+        .await;
+    node.wait_agent(worker_id, "worker stopped", |a| {
+        a["status"] == "stopped" && a["desired"] == "stopped"
+    })
+    .await;
+
+    // Out of time: the agent continues in a fresh session.
+    let mut night = department("Night", &["files"]);
+    night["policy"] = json!("short-life");
+    let night = node.ok("POST", "/org/departments", Some(night)).await;
+    let night_id = night["id"].as_str().unwrap();
+    let owl = node
+        .ok(
+            "POST",
+            &format!("/org/departments/{night_id}/agents"),
+            Some(json!({ "name": "owl", "agent": "goal-bot" })),
+        )
+        .await;
+    let owl_id = owl["id"].as_str().unwrap();
+    node.ok("POST", &format!("/org/agents/{owl_id}/start"), None)
+        .await;
+    let first = node
+        .wait_agent(owl_id, "owl started", |a| a["session_id"].is_string())
+        .await;
+    let first_session = first["session_id"].as_str().unwrap().to_string();
+    let next = node
+        .wait_agent(owl_id, "owl continued", |a| {
+            a["session_id"].is_string() && a["session_id"] != first_session.as_str()
+        })
+        .await;
+    let next_session = next["session_id"].as_str().unwrap().to_string();
+    node.wait_session(&next_session, |s| s != "starting").await;
+    for _ in 0..100 {
+        if output(&node.events(&next_session).await).contains("CONTINUING") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let out = output(&node.events(&next_session).await);
+    assert!(out.contains("CONTINUING"), "{out}");
+    node.ok("POST", &format!("/org/agents/{owl_id}/stop"), None)
+        .await;
     node.cluster.cancel();
 }

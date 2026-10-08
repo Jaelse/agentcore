@@ -15,11 +15,12 @@
 //! * **Forwarding**: session endpoints are served by the node that owns the
 //!   session; other nodes forward requests (and streams) to it.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use agentcore_core::{DepartmentState, Desired, OrgAgent, SessionStatus};
-use agentcore_runtime::Session;
+use agentcore_runtime::{EndCause, Session};
 use agentcore_store::ORG_CHANNEL;
 use axum::body::Body;
 use axum::extract::{FromRequestParts, OriginalUri, Request, State};
@@ -110,7 +111,33 @@ async fn heartbeat(state: AppState, cancel: CancellationToken) {
             Ok(_) => {}
             Err(err) => tracing::warn!(error = %err, "checking for lost nodes failed"),
         }
+        // Any node may send due check-ins; each is claimed by exactly one.
+        if let Err(err) = run_check_ins(&state).await {
+            tracing::warn!(error = %err, "sending check-ins failed");
+        }
     }
+}
+
+/// Send the check-ins that are due. Their messages wake sleeping agents.
+pub async fn run_check_ins(state: &AppState) -> anyhow::Result<usize> {
+    let due = state.store.claim_due_schedules().await?;
+    for check_in in &due {
+        let to = match check_in.agent_id {
+            Some(agent) => org::Recipient::Agent(agent),
+            None => org::Recipient::Department(check_in.department_id),
+        };
+        let from = org::Sender::Human(format!("check-in: {}", check_in.name));
+        match org::send(&state.store, &from, to, &check_in.message).await {
+            Ok(_) => tracing::info!(check_in = %check_in.name, "check-in sent"),
+            Err(err) => {
+                tracing::warn!(check_in = %check_in.name, error = %err, "check-in not sent");
+            }
+        }
+    }
+    if !due.is_empty() {
+        org::notify(&state.store, json!({ "kind": "checkins" })).await;
+    }
+    Ok(due.len())
 }
 
 async fn listen(state: AppState, cancel: CancellationToken) {
@@ -196,11 +223,32 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
     let mut waiting: Vec<(Uuid, Arc<Session>)> = Vec::new();
     let mut models = None;
 
+    // Agents whose session ended for lack of work, and that may be woken.
+    let mut sleepers: Vec<&OrgAgent> = Vec::new();
+
     for agent in &mine {
         let Some(dept) = org.department(agent.department_id) else {
             continue;
         };
         let session = agent.session_id.and_then(|id| state.manager.get(id).ok());
+        if agent.status.as_deref() == Some("asleep")
+            && !session.as_ref().is_some_and(|s| !s.status().is_terminal())
+        {
+            // Asleep: nothing runs (also after a node restart).
+            match agent.desired {
+                Desired::Stopped => {
+                    store
+                        .agent_ended(agent.id, agent.session_id, "stopped", None)
+                        .await?;
+                    changed = true;
+                }
+                Desired::Running if dept.state == DepartmentState::Active => {
+                    sleepers.push(agent);
+                }
+                _ => {}
+            }
+            continue;
+        }
         match session {
             Some(session) if !session.status().is_terminal() => {
                 let id = session.id();
@@ -239,13 +287,46 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
                 }
             }
             Some(session) => {
-                // The session is over: the agent is stopped now.
+                // The session is over. A long-running agent carries on: in a
+                // fresh session when time ran out, asleep until the next
+                // message when there was nothing to do. Otherwise it is
+                // stopped now.
                 let status = status_str(session.status());
-                if agent.desired != Desired::Stopped || agent.status.as_deref() != Some(&status) {
-                    store
-                        .agent_ended(agent.id, Some(session.id()), &status, None)
-                        .await?;
-                    changed = true;
+                let wanted = agent.desired == Desired::Running;
+                match session.end_cause() {
+                    Some(EndCause::TimeBudget) if wanted => {
+                        if dept.state == DepartmentState::Active {
+                            let models = endpoints(store, &mut models).await?;
+                            start_agent(
+                                state,
+                                &org,
+                                agent,
+                                models,
+                                Some(
+                                    "Your previous session reached its time limit, so it was \
+                                     ended.",
+                                ),
+                            )
+                            .await?;
+                        } else {
+                            // Paused department: sleep; resumed work wakes it.
+                            store.agent_asleep(agent.id, session.id()).await?;
+                        }
+                        changed = true;
+                    }
+                    Some(EndCause::Idle | EndCause::Finished) if wanted => {
+                        changed |= store.agent_asleep(agent.id, session.id()).await?;
+                    }
+                    _ => {
+                        if agent.desired != Desired::Stopped
+                            || agent.status.as_deref() != Some(&status)
+                        {
+                            store
+                                .agent_ended(agent.id, Some(session.id()), &status, None)
+                                .await?;
+                            changed = true;
+                        }
+                    }
                 }
             }
             None => match agent.session_id {
@@ -271,14 +352,25 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
                 None if agent.desired == Desired::Running
                     && dept.state == DepartmentState::Active =>
                 {
-                    if models.is_none() {
-                        models = Some(store.enabled_endpoints().await?);
-                    }
-                    start_agent(state, &org, agent, models.clone().unwrap_or_default()).await?;
+                    // Started by a person: the loop guard starts over.
+                    forget_starts(agent.id);
+                    let models = endpoints(store, &mut models).await?;
+                    start_agent(state, &org, agent, models, None).await?;
                     changed = true;
                 }
                 None => {}
             },
+        }
+    }
+
+    // Wake sleeping agents that have mail.
+    if !sleepers.is_empty() {
+        let ids: Vec<Uuid> = sleepers.iter().map(|a| a.id).collect();
+        let with_mail = store.agents_with_mail(&ids).await?;
+        for agent in sleepers.into_iter().filter(|a| with_mail.contains(&a.id)) {
+            let models = endpoints(store, &mut models).await?;
+            start_agent(state, &org, agent, models, Some("You were asleep: there was nothing to do, so your previous session ended. New messages woke you.")).await?;
+            changed = true;
         }
     }
 
@@ -307,16 +399,78 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Enabled model endpoints, loaded once per pass.
+async fn endpoints(
+    store: &agentcore_store::Store,
+    cache: &mut Option<Vec<agentcore_core::ModelEndpoint>>,
+) -> anyhow::Result<Vec<agentcore_core::ModelEndpoint>> {
+    if cache.is_none() {
+        *cache = Some(store.enabled_endpoints().await?);
+    }
+    Ok(cache.clone().unwrap_or_default())
+}
+
+/// At most this many automatic starts of one agent per hour: an agent that
+/// keeps ending at once (a broken agent, two agents waking each other) is
+/// stopped instead of burning money.
+const MAX_STARTS_PER_HOUR: usize = 6;
+
+static STARTS: LazyLock<Mutex<HashMap<Uuid, VecDeque<Instant>>>> = LazyLock::new(Default::default);
+
+/// Record a start; false when the agent started too often recently.
+fn may_start(agent: Uuid) -> bool {
+    let now = Instant::now();
+    let hour = Duration::from_secs(3600);
+    let mut starts = STARTS.lock().unwrap_or_else(|e| e.into_inner());
+    starts.retain(|_, s| s.back().is_some_and(|t| now.duration_since(*t) < hour));
+    let recent = starts.entry(agent).or_default();
+    while recent
+        .front()
+        .is_some_and(|t| now.duration_since(*t) >= hour)
+    {
+        recent.pop_front();
+    }
+    if recent.len() >= MAX_STARTS_PER_HOUR {
+        return false;
+    }
+    recent.push_back(now);
+    true
+}
+
+fn forget_starts(agent: Uuid) {
+    STARTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&agent);
+}
+
 async fn start_agent(
     state: &AppState,
     org: &Org,
     agent: &OrgAgent,
     models: Vec<agentcore_core::ModelEndpoint>,
+    continuing: Option<&str>,
 ) -> anyhow::Result<()> {
     let Some(dept) = org.department(agent.department_id) else {
         return Ok(());
     };
-    match org::start_agent_session(state, org, agent, dept, models).await {
+    if !may_start(agent.id) {
+        tracing::warn!(agent = %agent.name, "agent started too often; stopping it");
+        state
+            .store
+            .agent_ended(
+                agent.id,
+                agent.session_id,
+                "stopped",
+                Some(&format!(
+                    "started {MAX_STARTS_PER_HOUR} times within an hour; stopped to stop a loop \
+                     (start it again when ready)"
+                )),
+            )
+            .await?;
+        return Ok(());
+    }
+    match org::start_agent_session(state, org, agent, dept, models, continuing).await {
         Ok(session) => {
             tracing::info!(
                 agent = %agent.name,
@@ -338,7 +492,7 @@ async fn start_agent(
                 .store
                 .agent_ended(
                     agent.id,
-                    None,
+                    agent.session_id,
                     "failed",
                     Some(&format!("could not start: {}", err.message())),
                 )

@@ -21,8 +21,9 @@ pub use event::{Event, EventKind, OutputStream};
 pub use live::{FileChange, FileChangeKind, LiveFrame, ModelDeltaKind, ProcessInfo};
 pub use model::{ModelCallOutcome, ModelEndpoint, ProviderKind};
 pub use org::{
-    AgentKind, DeliveredMessage, Department, DepartmentId, DepartmentState, Desired, MessageScope,
-    NodeInfo, OrgAgent, OrgAgentId, OrgMessage, OrgProfile, OrgSettings,
+    AgentKind, DeliveredMessage, Department, DepartmentId, DepartmentState, Desired, GoalStatus,
+    MessageScope, NodeInfo, OrgAgent, OrgAgentId, OrgGoal, OrgMessage, OrgProfile, OrgSchedule,
+    OrgSettings,
 };
 pub use principal::Principal;
 pub use session::{SessionId, SessionInfo, SessionStatus};

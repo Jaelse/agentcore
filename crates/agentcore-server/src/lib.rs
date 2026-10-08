@@ -249,6 +249,21 @@ pub fn router(state: AppState) -> Router {
         .route("/org/departments/{id}/agents", post(org::add_agent))
         .route("/org/departments/{id}/files", get(org::list_files))
         .route(
+            "/org/departments/{id}/checkins",
+            get(org::list_check_ins).post(org::create_check_in),
+        )
+        .route(
+            "/org/checkins/{id}",
+            put(org::update_check_in).delete(org::delete_check_in),
+        )
+        .route("/org/checkins/{id}/run", post(org::run_check_in))
+        .route("/org/goals", get(org::list_goals).post(org::create_goal))
+        .route(
+            "/org/goals/{id}",
+            put(org::update_goal).delete(org::delete_goal),
+        )
+        .route("/org/goals/{id}/progress", post(org::goal_progress))
+        .route(
             "/org/departments/{id}/files/{*path}",
             get(org::get_file).put(org::put_file),
         )

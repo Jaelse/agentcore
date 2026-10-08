@@ -30,6 +30,24 @@ use crate::work::{
 };
 use crate::{RuntimeError, manager::RuntimeConfig};
 
+/// Why the system stops a session that ran out of time.
+pub const TIME_BUDGET_REASON: &str = "maximum session duration exceeded";
+/// Why the system stops a session nobody talked to for too long.
+pub const IDLE_REASON: &str = "no input from a human within the idle timeout";
+
+/// Why a session ended, as far as continuing the agent is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndCause {
+    /// The session reached `max_session_secs`.
+    TimeBudget,
+    /// Nobody sent a message within `idle_timeout_secs`.
+    Idle,
+    /// A single-run agent finished its task successfully.
+    Finished,
+    /// Stopped by a person, failed, finished by a person, ...
+    Other,
+}
+
 /// Events kept in memory for late subscribers. The audit log has all of them.
 const HISTORY_LIMIT: usize = 10_000;
 const MAX_LINE: usize = 8 * 1024;
@@ -189,6 +207,25 @@ impl Session {
 
     pub fn audit_path(&self) -> &std::path::Path {
         self.audit.path()
+    }
+
+    /// Why the session ended (`None` while it runs).
+    pub fn end_cause(&self) -> Option<EndCause> {
+        let state = self.lock();
+        let ended = state.history.iter().rev().find_map(|e| match &e.kind {
+            EventKind::SessionEnded { status, reason, .. } => Some((*status, reason.clone())),
+            _ => None,
+        })?;
+        let stop = state.history.iter().rev().find_map(|e| match &e.kind {
+            EventKind::StopRequested { by, reason } => Some((by.clone(), reason.clone())),
+            _ => None,
+        });
+        Some(match (stop, ended) {
+            (Some((Principal::System, r)), _) if r == TIME_BUDGET_REASON => EndCause::TimeBudget,
+            (Some((Principal::System, r)), _) if r == IDLE_REASON => EndCause::Idle,
+            (None, (SessionStatus::Completed, None)) => EndCause::Finished,
+            _ => EndCause::Other,
+        })
     }
 
     /// Constant-time comparison of a presented gateway token.
@@ -814,12 +851,12 @@ impl Session {
                 msg = inbox.recv() => msg,
                 () = self.cancel.cancelled() => return Ok((SessionStatus::Stopped, None, None)),
                 () = idle => {
-                    let reason = "no input from a human within the idle timeout";
+                    let reason = IDLE_REASON;
                     self.stop(Principal::System, reason).await;
                     return Ok((SessionStatus::Stopped, None, Some(reason.into())));
                 }
                 () = overall => {
-                    let reason = "maximum session duration exceeded";
+                    let reason = TIME_BUDGET_REASON;
                     self.stop(Principal::System, reason).await;
                     return Ok((SessionStatus::Stopped, None, Some(reason.into())));
                 }
@@ -945,7 +982,7 @@ impl Session {
                 }
                 () = self.cancel.cancelled() => break TurnOutcome::Stopped(None),
                 () = &mut deadline => {
-                    let reason = "maximum session duration exceeded";
+                    let reason = TIME_BUDGET_REASON;
                     self.stop(Principal::System, reason).await;
                     break TurnOutcome::Stopped(Some(reason.into()));
                 }

@@ -58,6 +58,8 @@ export function OrgBuilder({ me, card, org, initialMode, initialPick, onDone, on
   const [size, setSize] = useState<"lean" | "full">("lean");
   const [agent, setAgent] = useState(card.agents[0]?.name ?? "");
   const [startNow, setStartNow] = useState(false);
+  const [goal, setGoal] = useState("");
+  const [keepRunning, setKeepRunning] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState<string>("");
   const [raise, setRaise] = useState(false);
@@ -137,6 +139,8 @@ export function OrgBuilder({ me, card, org, initialMode, initialPick, onDone, on
         agent,
         project_id: projectId || null,
         start: startNow,
+        goal: goal.trim() || undefined,
+        check_ins: keepRunning,
         raise_limits: raise,
       });
       for (const e of r.errors ?? []) onError(new Error(`${e.department}${e.agent ? `/${e.agent}` : ""}: ${e.error}`));
@@ -362,6 +366,20 @@ export function OrgBuilder({ me, card, org, initialMode, initialPick, onDone, on
                 </p>
               )
             )}
+            <label>
+              A goal for the organisation (optional)
+              <input
+                value={goal}
+                onChange={(e) => setGoal(e.target.value)}
+                placeholder="Reach 10 paying customers by March"
+                maxLength={200}
+              />
+            </label>
+            <label className="inline-check">
+              <input type="checkbox" checked={keepRunning} onChange={(e) => setKeepRunning(e.target.checked)} /> Keep it
+              running: a daily check-in for each new department (and a weekly review in Strategy) wakes the agents to
+              work towards the goals
+            </label>
             <label className="inline-check">
               <input type="checkbox" checked={startNow} onChange={(e) => setStartNow(e.target.checked)} /> Start the new
               departments right away

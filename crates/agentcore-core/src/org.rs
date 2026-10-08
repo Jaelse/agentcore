@@ -350,6 +350,72 @@ impl DeliveredMessage {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalStatus {
+    Active,
+    Achieved,
+    Dropped,
+}
+
+impl GoalStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Achieved => "achieved",
+            Self::Dropped => "dropped",
+        }
+    }
+}
+
+impl std::str::FromStr for GoalStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "active" => Ok(Self::Active),
+            "achieved" => Ok(Self::Achieved),
+            "dropped" => Ok(Self::Dropped),
+            other => Err(format!("unknown goal status `{other}`")),
+        }
+    }
+}
+
+/// A goal people set for the organisation (optionally owned by a
+/// department). Agents read goals and report progress; people decide when a
+/// goal is achieved or dropped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrgGoal {
+    pub id: Uuid,
+    pub title: String,
+    pub description: String,
+    pub department_id: Option<DepartmentId>,
+    pub status: GoalStatus,
+    /// Latest progress report (by an agent or a person).
+    pub progress: String,
+    pub progress_by: Option<String>,
+    pub progress_at: Option<DateTime<Utc>>,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// A check-in: a message sent to a department (or one agent) on a schedule,
+/// which wakes the agents it reaches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrgSchedule {
+    pub id: Uuid,
+    pub department_id: DepartmentId,
+    /// `None`: everyone in the department.
+    pub agent_id: Option<OrgAgentId>,
+    pub name: String,
+    pub message: String,
+    pub every_minutes: u32,
+    pub next_run_at: DateTime<Utc>,
+    pub last_run_at: Option<DateTime<Utc>>,
+    pub enabled: bool,
+    pub created_by: String,
+}
+
 /// A node of the cluster (one agentcore process, usually one VM).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeInfo {

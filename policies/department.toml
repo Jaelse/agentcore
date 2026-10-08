@@ -32,7 +32,7 @@ id = "allow-team"
 description = "Messages to colleagues and the department's shared files."
 effect = "allow"
 kinds = ["tool_call"]
-tools = ["team_list_colleagues", "team_read_messages", "team_send_message", "team_list_files", "team_read_file", "team_write_file"]
+tools = ["team_list_colleagues", "team_read_messages", "team_send_message", "team_list_files", "team_read_file", "team_write_file", "team_list_goals", "team_report_progress"]
 
 [[rules]]
 id = "allow-workspace-files"

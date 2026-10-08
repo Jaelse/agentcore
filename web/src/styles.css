@@ -386,3 +386,10 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
 .installed-agent { padding: 10px 12px; display: grid; gap: 6px; }
 .catalog-agent details p { margin: 6px 0; }
 .agent-catalog .chip { cursor: pointer; }
+
+/* Goals and check-ins */
+.status-asleep { background: var(--neutral-bg); color: var(--muted); }
+.side-stack { display: grid; gap: 12px; min-width: 0; }
+.goal-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.goal { display: grid; gap: 4px; padding: 8px 0; border-top: 1px solid var(--border); }
+.goal:first-child { border-top: none; }

@@ -32,6 +32,8 @@ import type {
   ProviderKind,
   SessionInfo,
   SystemCard,
+  OrgGoal,
+  CheckIn,
 } from "./types";
 
 const TOKEN_KEY = "agentcore.token";
@@ -242,6 +244,8 @@ export const api = {
     communicator_agent?: string;
     project_id?: string | null;
     start?: boolean;
+    goal?: string;
+    check_ins?: boolean;
     raise_limits?: boolean;
     dry_run?: boolean;
   }) =>
@@ -250,6 +254,22 @@ export const api = {
       "/org/build",
       body,
     ),
+  createGoal: (body: { title: string; description: string; department_id: string | null }) =>
+    request<OrgGoal>("POST", "/org/goals", body),
+  updateGoal: (
+    id: string,
+    body: Partial<{ title: string; description: string; department_id: string | null; status: OrgGoal["status"] }>,
+  ) => request<OrgGoal>("PUT", `/org/goals/${id}`, body),
+  deleteGoal: (id: string) => request<void>("DELETE", `/org/goals/${id}`),
+  goalProgress: (id: string, text: string) => request<OrgGoal>("POST", `/org/goals/${id}/progress`, { text }),
+  createCheckIn: (
+    department: string,
+    body: { name: string; message: string; every_minutes: number; agent_id: string | null },
+  ) => request<CheckIn>("POST", `/org/departments/${department}/checkins`, body),
+  updateCheckIn: (id: string, body: Partial<{ name: string; message: string; every_minutes: number; enabled: boolean }>) =>
+    request<CheckIn>("PUT", `/org/checkins/${id}`, body),
+  deleteCheckIn: (id: string) => request<void>("DELETE", `/org/checkins/${id}`),
+  runCheckIn: (id: string) => request<CheckIn>("POST", `/org/checkins/${id}/run`),
   pauseAll: () => request<void>("POST", "/org/pause-all"),
   resumeAll: () => request<void>("POST", "/org/resume-all"),
   messages: (q: { department?: string; agent?: string; limit?: number } = {}) => {

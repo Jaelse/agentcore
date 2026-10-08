@@ -423,3 +423,112 @@ async fn sessions_remember_their_node() {
         ("vm-1", "http://vm-1", true)
     );
 }
+
+#[tokio::test]
+async fn goals_and_check_ins() {
+    let Some((store, url)) = fresh_store().await else {
+        return;
+    };
+    let d = store.create_department(dept("Eng"), "alice").await.unwrap();
+    let goal = store
+        .create_goal(
+            agentcore_store::GoalInput {
+                title: "Reach 100 paying customers".into(),
+                description: "By the end of the quarter.".into(),
+                department_id: Some(d.id),
+            },
+            "alice",
+        )
+        .await
+        .unwrap();
+    assert_eq!(goal.status, agentcore_core::GoalStatus::Active);
+    let goal = store
+        .report_goal_progress(goal.id, "12 so far", "Sales/sdr")
+        .await
+        .unwrap();
+    assert_eq!(goal.progress_by.as_deref(), Some("Sales/sdr"));
+    let goal = store
+        .update_goal(
+            goal.id,
+            agentcore_store::GoalUpdate {
+                status: Some(agentcore_core::GoalStatus::Achieved),
+                department_id: Some(None),
+                ..Default::default()
+            },
+            "alice",
+        )
+        .await
+        .unwrap();
+    assert!(goal.department_id.is_none());
+    // Only active goals take progress reports.
+    assert!(matches!(
+        store.report_goal_progress(goal.id, "more", "x").await,
+        Err(StoreError::Invalid(_))
+    ));
+
+    let check = store
+        .create_schedule(
+            d.id,
+            agentcore_store::ScheduleInput {
+                name: "Daily stand-up".into(),
+                message: "What did you do, what next?".into(),
+                every_minutes: 60 * 24,
+                agent_id: None,
+                first_run_at: None,
+            },
+            "alice",
+        )
+        .await
+        .unwrap();
+    assert!(check.next_run_at > chrono::Utc::now());
+    assert!(store.claim_due_schedules().await.unwrap().is_empty());
+    store.run_schedule_now(check.id).await.unwrap();
+
+    // Two nodes claim at the same time: the check-in fires once.
+    let other = agentcore_store::Store::connect(&url, agentcore_store::Cipher::from_key(&[42; 32]))
+        .await
+        .unwrap();
+    let (a, b) = tokio::join!(store.claim_due_schedules(), other.claim_due_schedules());
+    assert_eq!(a.unwrap().len() + b.unwrap().len(), 1);
+    let after = store.get_schedule(check.id).await.unwrap();
+    assert!(after.last_run_at.is_some());
+    assert!(after.next_run_at > chrono::Utc::now() + chrono::Duration::hours(23));
+    assert!(store.claim_due_schedules().await.unwrap().is_empty());
+
+    let off = store
+        .update_schedule(
+            check.id,
+            agentcore_store::ScheduleUpdate {
+                enabled: Some(false),
+                ..Default::default()
+            },
+            "alice",
+        )
+        .await
+        .unwrap();
+    assert!(!off.enabled);
+    store.run_schedule_now(check.id).await.unwrap();
+    assert!(
+        store.claim_due_schedules().await.unwrap().is_empty(),
+        "disabled"
+    );
+    assert!(matches!(
+        store
+            .create_schedule(
+                d.id,
+                agentcore_store::ScheduleInput {
+                    name: "x".into(),
+                    message: "y".into(),
+                    every_minutes: 0,
+                    ..Default::default()
+                },
+                "alice",
+            )
+            .await,
+        Err(StoreError::Invalid(_))
+    ));
+    // Deleting the department removes its check-ins; goals stay.
+    store.delete_department(d.id, "alice").await.unwrap();
+    assert!(store.list_schedules(None).await.unwrap().is_empty());
+    assert_eq!(store.list_goals().await.unwrap().len(), 1);
+}

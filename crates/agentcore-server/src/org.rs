@@ -21,8 +21,8 @@ use agentcore_core::{
 };
 use agentcore_runtime::{CreateSession, Session, SessionOptions, ToolHandler};
 use agentcore_store::{
-    AgentInput, AgentScope, COMMUNICATOR_NAME, DepartmentInput, MessageFilter, NewMessage, Store,
-    StoreError,
+    AgentInput, AgentScope, COMMUNICATOR_NAME, DepartmentInput, GoalInput, GoalUpdate,
+    MessageFilter, NewMessage, ScheduleInput, ScheduleUpdate, Store, StoreError,
 };
 use async_trait::async_trait;
 use axum::Json;
@@ -52,6 +52,7 @@ pub struct Org {
     pub departments: Vec<Department>,
     pub agents: Vec<OrgAgent>,
     pub profile: OrgProfile,
+    pub goals: Vec<agentcore_core::OrgGoal>,
 }
 
 impl Org {
@@ -60,6 +61,7 @@ impl Org {
             departments: store.list_departments().await?,
             agents: store.list_agents(None).await?,
             profile: store.org_profile().await?,
+            goals: store.list_goals().await?,
         })
     }
 
@@ -482,6 +484,22 @@ impl ToolHandler for TeamTools {
                 &[],
             ),
         ];
+        if self.kind == AgentKind::Worker {
+            tools.push(def(
+                "team_list_goals",
+                "The organisation's goals that people set, with their latest progress.",
+                json!({}),
+                &[],
+            ));
+            tools.push(def(
+                "team_report_progress",
+                "Report progress on an active goal (replaces its latest progress note). Be \
+                 factual: what changed, evidence, what is next. People decide when a goal is \
+                 achieved.",
+                json!({ "goal": { "type": "string", "description": "Goal id or title" }, "text": text }),
+                &["goal", "text"],
+            ));
+        }
         if self.kind == AgentKind::Communicator {
             tools.push(def(
                 "team_send_to_department",
@@ -531,6 +549,35 @@ impl ToolHandler for TeamTools {
             "team_send_message" => self.send_message(arguments).await,
             "team_read_messages" => self.read_messages().await,
             "team_send_to_department" => self.send_to_department(arguments).await,
+            "team_list_goals" => {
+                let goals = self.store.list_goals().await.map_err(|e| e.to_string())?;
+                Ok(json!({ "goals": goals.iter().map(|g| json!({
+                    "id": g.id, "title": g.title, "description": g.description,
+                    "status": g.status, "progress": g.progress, "progress_by": g.progress_by,
+                    "progress_at": g.progress_at,
+                })).collect::<Vec<_>>() }))
+            }
+            "team_report_progress" => {
+                let key = text_arg(arguments, "goal")?;
+                let report = text_arg(arguments, "text")?;
+                let (org, me) = self.me().await?;
+                let goal = org
+                    .goals
+                    .iter()
+                    .filter(|g| g.status == agentcore_core::GoalStatus::Active)
+                    .find(|g| {
+                        g.id.to_string() == key.trim() || g.title.eq_ignore_ascii_case(key.trim())
+                    })
+                    .ok_or_else(|| format!("no active goal `{key}` (see team_list_goals)"))?;
+                let by = org.label(&me);
+                let updated = self
+                    .store
+                    .report_goal_progress(goal.id, &report, &by)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                notify(&self.store, json!({ "kind": "goals" })).await;
+                Ok(json!({ "goal": updated.title, "recorded": true }))
+            }
             "team_list_files" => {
                 let files = self
                     .store
@@ -594,12 +641,28 @@ pub struct RepoInfo {
     pub tools: Vec<String>,
 }
 
+/// Extra context for an agent's first prompt.
+#[derive(Default)]
+pub struct StartContext<'a> {
+    pub repo: Option<&'a RepoInfo>,
+    /// Why this session continues an earlier one, if it does.
+    pub continuing: Option<&'a str>,
+    /// Messages that arrived while the agent was asleep.
+    pub messages: &'a [OrgMessage],
+}
+
+/// Where an agent keeps its working notes (department files).
+pub fn notes_path(agent: &OrgAgent) -> String {
+    format!("notes/{}.md", agent.name)
+}
+
 pub fn compose_prompt(
     org: &Org,
     agent: &OrgAgent,
     dept: &Department,
-    repo: Option<&RepoInfo>,
+    start: &StartContext<'_>,
 ) -> String {
+    let repo = start.repo;
     let others: Vec<&str> = org
         .departments
         .iter()
@@ -746,6 +809,68 @@ pub fn compose_prompt(
             ));
         }
     }
+    let goals: Vec<&agentcore_core::OrgGoal> = org
+        .goals
+        .iter()
+        .filter(|g| g.status == agentcore_core::GoalStatus::Active)
+        .collect();
+    if !goals.is_empty() {
+        p.push_str("\n## The organisation's goals\n\nSet by the people who run the company:\n\n");
+        for g in goals {
+            let owner = g
+                .department_id
+                .and_then(|d| org.department(d))
+                .map(|d| format!(" (owned by {})", d.name))
+                .unwrap_or_default();
+            p.push_str(&format!("- **{}**{owner}", g.title));
+            if !g.description.trim().is_empty() {
+                p.push_str(&format!(": {}", g.description.trim()));
+            }
+            if !g.progress.trim().is_empty() {
+                p.push_str(&format!(" Latest progress: {}", g.progress.trim()));
+            }
+            p.push('\n');
+        }
+        if agent.kind == AgentKind::Worker {
+            p.push_str(
+                "\nWork towards them, and report progress with `team_report_progress` when \
+                 something changes.\n",
+            );
+        }
+    }
+    if agent.kind == AgentKind::Worker && dept.grants(TOOL_FILES) {
+        p.push_str(&format!(
+            "\n## Your notes\n\nKeep your working notes in the department file `{}`: what you \
+             are working on, decisions, and the next steps. Sessions have a time limit; when one \
+             ends you continue in a fresh session, starting from these notes.\n",
+            notes_path(agent)
+        ));
+    }
+    if let Some(why) = start.continuing {
+        p.push_str(&format!(
+            "\n## You are continuing\n\n{why} This is a fresh session: your earlier sandbox is \
+             gone{}. Start by reading your notes",
+            if repo.and_then(|r| r.work_branch.as_ref()).is_some() {
+                " and you have a fresh checkout (deliver work before a session ends)"
+            } else {
+                ""
+            }
+        ));
+        p.push_str(
+            if dept.grants(TOOL_FILES) && agent.kind == AgentKind::Worker {
+                " (`team_read_file`) and the recent messages, then carry on.\n"
+            } else {
+                " and the recent messages (`team_read_messages`), then carry on.\n"
+            },
+        );
+    }
+    if !start.messages.is_empty() {
+        p.push_str("\n## New messages\n\n");
+        for m in start.messages {
+            p.push_str(&delivered(m).render());
+            p.push_str("\n\n");
+        }
+    }
     p
 }
 
@@ -756,6 +881,7 @@ pub async fn start_agent_session(
     agent: &OrgAgent,
     dept: &Department,
     models: Vec<agentcore_core::ModelEndpoint>,
+    continuing: Option<&str>,
 ) -> Result<Arc<Session>, ApiError> {
     let policy = match agent.kind {
         AgentKind::Worker => dept.policy.clone(),
@@ -841,10 +967,17 @@ pub async fn start_agent_session(
     }
     options.tools = Some(Arc::new(Toolset(tools)));
     options.context = context;
+    // Messages that arrived while the agent was not running start it off.
+    let pending = state.store.pending_messages(agent.id).await?;
+    let start = StartContext {
+        repo: repo.as_ref(),
+        continuing,
+        messages: &pending,
+    };
     let session = state.manager.create(
         CreateSession {
             agent: agent.agent.clone(),
-            task: compose_prompt(org, agent, dept, repo.as_ref()),
+            task: compose_prompt(org, agent, dept, &start),
             policy: Some(policy),
         },
         principal(&agent.changed_by),
@@ -852,6 +985,10 @@ pub async fn start_agent_session(
     )?;
     if let Some(cell) = mirror_cell {
         let _ = cell.set(state.mirror_path(session.id()));
+    }
+    if !pending.is_empty() {
+        let ids: Vec<Uuid> = pending.iter().map(|m| m.id).collect();
+        state.store.mark_delivered(agent.id, &ids).await?;
     }
     Ok(session)
 }
@@ -909,9 +1046,152 @@ pub async fn overview(State(state): State<AppState>, _caller: Caller) -> ApiResu
         "profile": org.profile,
         "settings": state.store.org_settings().await?,
         "departments": departments,
+        "goals": org.goals,
+        "check_ins": state.store.list_schedules(None).await?,
         "nodes": state.store.list_nodes(state.config.cluster.node_timeout_secs).await?,
         "communicator_policy": state.config.org.communicator_policy,
     })))
+}
+
+// ---- goals and check-ins ----------------------------------------------------------
+
+pub async fn list_goals(State(state): State<AppState>, _caller: Caller) -> ApiResult<Json<Value>> {
+    Ok(Json(json!(state.store.list_goals().await?)))
+}
+
+pub async fn create_goal(
+    State(state): State<AppState>,
+    caller: Caller,
+    Json(input): Json<GoalInput>,
+) -> ApiResult<impl IntoResponse> {
+    caller.require_operator()?;
+    let goal = state.store.create_goal(input, &caller.name).await?;
+    notify(&state.store, json!({ "kind": "goals" })).await;
+    Ok((StatusCode::CREATED, Json(json!(goal))))
+}
+
+pub async fn update_goal(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(id): Path<Uuid>,
+    Json(update): Json<GoalUpdate>,
+) -> ApiResult<Json<Value>> {
+    caller.require_operator()?;
+    let goal = state.store.update_goal(id, update, &caller.name).await?;
+    notify(&state.store, json!({ "kind": "goals" })).await;
+    Ok(Json(json!(goal)))
+}
+
+pub async fn delete_goal(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    caller.require_operator()?;
+    state.store.delete_goal(id, &caller.name).await?;
+    notify(&state.store, json!({ "kind": "goals" })).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProgressInput {
+    pub text: String,
+}
+
+/// A person records progress on a goal (agents use `team_report_progress`).
+pub async fn goal_progress(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(id): Path<Uuid>,
+    Json(input): Json<ProgressInput>,
+) -> ApiResult<Json<Value>> {
+    caller.require_operator()?;
+    let goal = state
+        .store
+        .report_goal_progress(id, &input.text, &caller.name)
+        .await?;
+    notify(&state.store, json!({ "kind": "goals" })).await;
+    Ok(Json(json!(goal)))
+}
+
+pub async fn list_check_ins(
+    State(state): State<AppState>,
+    _caller: Caller,
+    Path(id): Path<DepartmentId>,
+) -> ApiResult<Json<Value>> {
+    Ok(Json(json!(state.store.list_schedules(Some(id)).await?)))
+}
+
+pub async fn create_check_in(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(id): Path<DepartmentId>,
+    Json(input): Json<ScheduleInput>,
+) -> ApiResult<impl IntoResponse> {
+    caller.require_operator()?;
+    let check_in = state.store.create_schedule(id, input, &caller.name).await?;
+    notify(
+        &state.store,
+        json!({ "kind": "checkins", "departments": [id] }),
+    )
+    .await;
+    Ok((StatusCode::CREATED, Json(json!(check_in))))
+}
+
+pub async fn update_check_in(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(id): Path<Uuid>,
+    Json(update): Json<ScheduleUpdate>,
+) -> ApiResult<Json<Value>> {
+    caller.require_operator()?;
+    let check_in = state
+        .store
+        .update_schedule(id, update, &caller.name)
+        .await?;
+    notify(
+        &state.store,
+        json!({ "kind": "checkins", "departments": [check_in.department_id] }),
+    )
+    .await;
+    Ok(Json(json!(check_in)))
+}
+
+pub async fn delete_check_in(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    caller.require_operator()?;
+    let check_in = state.store.get_schedule(id).await?;
+    state.store.delete_schedule(id, &caller.name).await?;
+    notify(
+        &state.store,
+        json!({ "kind": "checkins", "departments": [check_in.department_id] }),
+    )
+    .await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Send a check-in now (its schedule continues from now).
+pub async fn run_check_in(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    caller.require_operator()?;
+    let check_in = state.store.get_schedule(id).await?;
+    if !check_in.enabled {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "this check-in is turned off; turn it on first",
+        ));
+    }
+    state.store.run_schedule_now(id).await?;
+    crate::cluster::run_check_ins(&state)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!(state.store.get_schedule(id).await?)))
 }
 
 pub async fn get_settings(
@@ -1506,6 +1786,13 @@ pub struct BuildRequest {
     /// marketing, ...).
     #[serde(default)]
     pub project_id: Option<Uuid>,
+    /// A first goal for the organisation (its title).
+    #[serde(default)]
+    pub goal: Option<String>,
+    /// Keep the organisation working on its own: a daily check-in for each
+    /// new department and a weekly review in Strategy.
+    #[serde(default)]
+    pub check_ins: bool,
     /// Raise the limits if the plan needs it (admins only).
     #[serde(default)]
     pub raise_limits: bool,
@@ -1515,6 +1802,34 @@ pub struct BuildRequest {
 }
 
 /// Create departments (with their agents) from templates, in one step.
+/// Check-ins that keep a new department working towards the goals: a daily
+/// one for its lead, and a weekly review for Strategy.
+pub fn default_check_ins(template: &str, lead: OrgAgentId) -> Vec<ScheduleInput> {
+    let mut check_ins = vec![ScheduleInput {
+        name: "daily".into(),
+        message: "Daily check-in. Read the goals, your notes and new messages. Decide the most \
+                  valuable next step towards the goals for your department, do it (or ask a \
+                  colleague to), update your notes, and report progress on any goal that moved."
+            .into(),
+        every_minutes: 24 * 60,
+        agent_id: Some(lead),
+        first_run_at: None,
+    }];
+    if template == "strategy" {
+        check_ins.push(ScheduleInput {
+            name: "weekly review".into(),
+            message: "Weekly review. Ask every department (through the communicator) what they \
+                      did, what is blocked and what is next. Update the goals' progress, write \
+                      the weekly summary, and list the decisions people need to make."
+                .into(),
+            every_minutes: 7 * 24 * 60,
+            agent_id: Some(lead),
+            first_run_at: None,
+        });
+    }
+    check_ins
+}
+
 pub async fn build(
     State(state): State<AppState>,
     caller: Caller,
@@ -1607,8 +1922,9 @@ pub async fn build(
                 continue;
             }
         };
+        let mut lead = None;
         for member in &planned.agents {
-            if let Err(err) = state
+            match state
                 .store
                 .add_agent(
                     dept.id,
@@ -1621,12 +1937,39 @@ pub async fn build(
                 )
                 .await
             {
-                errors.push(json!({
+                Ok(a) => {
+                    lead.get_or_insert(a.id);
+                }
+                Err(err) => errors.push(json!({
                     "department": planned.name, "agent": member.name, "error": err.to_string(),
-                }));
+                })),
+            }
+        }
+        if req.check_ins
+            && let Some(lead) = lead
+        {
+            for input in default_check_ins(&planned.template, lead) {
+                if let Err(err) = state
+                    .store
+                    .create_schedule(dept.id, input, &caller.name)
+                    .await
+                {
+                    errors.push(json!({ "department": planned.name, "error": err.to_string() }));
+                }
             }
         }
         created.push(dept);
+    }
+    let mut goal = None;
+    if let Some(title) = req.goal.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        let input = GoalInput {
+            title: title.to_string(),
+            ..Default::default()
+        };
+        match state.store.create_goal(input, &caller.name).await {
+            Ok(g) => goal = Some(g),
+            Err(err) => errors.push(json!({ "goal": title, "error": err.to_string() })),
+        }
     }
     let mut start_failed = Vec::new();
     if req.start {
@@ -1647,6 +1990,7 @@ pub async fn build(
         "created": created,
         "errors": errors,
         "start_failed": start_failed,
+        "goal": goal,
         "profile": profile,
         "settings": state.store.org_settings().await?,
     })))

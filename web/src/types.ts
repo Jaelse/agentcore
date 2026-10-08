@@ -119,11 +119,39 @@ export interface NodeInfo {
   alive: boolean;
 }
 
+export interface OrgGoal {
+  id: string;
+  title: string;
+  description: string;
+  department_id: string | null;
+  status: "active" | "achieved" | "dropped";
+  progress: string;
+  progress_by: string | null;
+  progress_at: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+export interface CheckIn {
+  id: string;
+  department_id: string;
+  agent_id: string | null;
+  name: string;
+  message: string;
+  every_minutes: number;
+  next_run_at: string;
+  last_run_at: string | null;
+  enabled: boolean;
+  created_by: string;
+}
+
 export interface OrgOverview {
   node: string;
   profile: OrgProfile;
   settings: OrgSettings;
   departments: Department[];
+  goals: OrgGoal[];
+  check_ins: CheckIn[];
   nodes: NodeInfo[];
   communicator_policy: string;
 }

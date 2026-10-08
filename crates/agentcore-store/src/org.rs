@@ -944,6 +944,22 @@ impl Store {
         Ok(())
     }
 
+    /// The agent's session ended because there was nothing to do: it stays
+    /// wanted (`desired` running) and sleeps until a message wakes it.
+    /// Returns whether anything changed.
+    pub async fn agent_asleep(&self, id: OrgAgentId, session: SessionId) -> Result<bool> {
+        let updated = sqlx::query(
+            "UPDATE org_agents SET status = 'asleep', updated_at = now()
+             WHERE id = $1 AND session_id = $2 AND desired <> 'stopped'
+               AND status IS DISTINCT FROM 'asleep'",
+        )
+        .bind(id)
+        .bind(session)
+        .execute(&self.pool)
+        .await?;
+        Ok(updated.rows_affected() > 0)
+    }
+
     /// Agents placed on nodes whose heartbeat is older than the timeout are
     /// stopped: their sandboxes are gone with the node.
     pub async fn fail_agents_on_dead_nodes(&self, node_timeout_secs: u64) -> Result<Vec<OrgAgent>> {

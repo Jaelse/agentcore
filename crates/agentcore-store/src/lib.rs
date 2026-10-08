@@ -9,6 +9,7 @@
 mod agents;
 mod crypto;
 mod org;
+mod rhythm;
 mod teamwork;
 #[doc(hidden)]
 pub mod testing;
@@ -30,6 +31,7 @@ pub use org::{
     AgentInput, AgentScope, COMMUNICATOR_NAME, DepartmentInput, FileInfo, MAX_FILE_BYTES,
     MessageFilter, NewMessage, ORG_CHANNEL, RESERVED_NAMES, valid_agent_name,
 };
+pub use rhythm::{GoalInput, GoalUpdate, ScheduleInput, ScheduleUpdate};
 pub use teamwork::{
     BoardColumns, BoardConfig, GitHubConfig, GitHubConnection, GitHubUpdate, Project, ProjectInput,
 };

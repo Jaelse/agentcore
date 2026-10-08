@@ -190,8 +190,14 @@ growth path), `GET /org/suggestions` (what to add next) and
 ```json
 { "profile": {"company_name": "Acme", "company_about": "...", "blueprint": "solo-developer"},
   "departments": ["engineering"], "size": "lean", "agent": "opencode",
-  "start": true, "raise_limits": false, "dry_run": false }
+  "start": true, "goal": "Reach 10 paying customers", "check_ins": true,
+  "raise_limits": false, "dry_run": false }
 ```
+
+Goals (`/org/goals`) and scheduled check-ins
+(`/org/departments/{id}/checkins`, `/org/checkins/{id}`) keep an
+organisation working without a person writing to it; see
+[Goals, check-ins and agents that keep going](MULTI_AGENT.md#goals-check-ins-and-agents-that-keep-going).
 
 `dry_run` returns the plan only. A plan that does not fit the limits is
 refused with `409` (the body holds the plan) unless `raise_limits` is set.

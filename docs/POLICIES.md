@@ -90,8 +90,9 @@ its policy with `policy = "..."`; see [Ways of working](WAYS_OF_WORKING.md).
 
 Department agents use tool calls named `team_list_colleagues`,
 `team_read_messages`, `team_send_message`, `team_send_to_department`
-(communicators only), `team_list_files`, `team_read_file` and
-`team_write_file`. `default` and `department` allow them. To have a person
+(communicators only), `team_list_files`, `team_read_file`,
+`team_write_file`, `team_list_goals` and `team_report_progress`. `default`
+and `department` allow them. To have a person
 approve messages that leave a department, give communicators a policy that
 requires approval for `team_send_to_department`:
 

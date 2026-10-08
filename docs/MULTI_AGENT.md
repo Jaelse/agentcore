@@ -18,6 +18,7 @@ that share one PostgreSQL database.
 - [Messages](#messages)
 - [Data, tools and guardrails per department](#data-tools-and-guardrails-per-department)
 - [Working on a repository](#working-on-a-repository)
+- [Goals, check-ins and agents that keep going](#goals-check-ins-and-agents-that-keep-going)
 - [Human oversight](#human-oversight)
 - [Limits](#limits)
 - [Running on several VMs](#running-on-several-vms)
@@ -296,6 +297,8 @@ flowchart LR
 | `team_read_messages` | ✅ | ✅ | Unread messages from the inbox (marks them delivered). |
 | `team_send_to_department` | ❌ | ✅ | `department`: a department name or `all`. |
 | `team_list_files`, `team_read_file`, `team_write_file` | if the department grants `files` | ❌ | The department's shared files. |
+| `team_list_goals` | ✅ | ❌ | The organisation's goals with their latest progress. |
+| `team_report_progress` | ✅ | ❌ | `goal` (id or title), `text`: replaces the goal's latest progress note. |
 | `run_command`, `read_file`, `write_file`, `list_files` | if the department grants `sandbox` | ❌ | Commands and files in the agent's own sandbox. |
 
 The tool list an agent sees *is* its permission: a tool that is not offered is
@@ -339,6 +342,56 @@ in the sandbox.
 Each new session of an agent starts from a fresh checkout of the base
 branch on a new branch, so work should be delivered before a session ends
 (see the session limits in the policy).
+
+## Goals, check-ins and agents that keep going
+
+An organisation can work towards goals over days and weeks without a person
+writing to it every time. Three things make that possible.
+
+**Goals.** People set the organisation's goals ("Reach 10 paying customers
+by March"), optionally owned by one department. Every agent sees the active
+goals in its prompt; workers read them with `team_list_goals` and report
+progress with `team_report_progress` (the latest note, who wrote it and when
+are shown with the goal). Only people mark a goal *achieved* or *dropped*.
+
+**Check-ins.** A check-in is a message sent on a schedule (every hour, day,
+week, ...) to one agent or to everyone in a department, from
+`check-in: <name>`. It wakes sleeping agents and tells them what to do, for
+example the daily check-in: *"Read the goals, your notes and new messages.
+Decide the most valuable next step towards the goals, do it, update your
+notes, and report progress."* Every node runs the scheduler; each due
+check-in is claimed by exactly one node (row lock with `SKIP LOCKED`), so it
+is sent once. A check-in that was due several times while nothing ran (all
+nodes down) is sent once and continues from now. People can run a check-in
+now, turn it off, or delete it.
+
+**Sleep, wake and continue.** An agent started by a person stays wanted
+(`desired = running`) until a person stops it. When its session ends:
+
+| The session ended because | The agent |
+|---|---|
+| nobody wrote to it within `idle_timeout_secs`, or a single-run agent finished | **sleeps** (`status = asleep`): no session, no sandbox, no cost. The next message (from a colleague, a person or a check-in) wakes it in a fresh session with the messages in its prompt. |
+| it reached `max_session_secs` | **continues** at once in a fresh session (in a paused department: sleeps until resumed). |
+| a person stopped it, it failed, ... | is stopped, as before. |
+
+A fresh session starts from the agent's notes: workers with department files
+keep `notes/<agent>.md` (what they are working on, decisions, next steps),
+and the prompt of a continued or woken session says *"You are continuing"*
+and asks the agent to read its notes and recent messages first. On a linked
+repository it gets a fresh checkout on a new branch, so agents are told to
+deliver work before a session ends. Sleeping agents survive a node restart
+(they have nothing running); pausing or stopping works on them as on any
+agent.
+
+To stop a loop (an agent that ends at once and is woken again, two agents
+waking each other), a node starts one agent automatically at most 6 times an
+hour; after that the agent is stopped with a note. Starting it by hand
+resets the count. Time budgets, model-call limits and the policy still apply
+to every session.
+
+The builder can set both up: *A goal for the organisation* creates the first
+goal, and *Keep it running* adds a daily check-in for the lead of each new
+department and a weekly review in Strategy.
 
 ## Data, tools and guardrails per department
 
@@ -502,6 +555,9 @@ erDiagram
     org_agents ||--o{ org_inbox : "inbox"
     nodes ||--o{ org_agents : "placed on"
     nodes ||--o{ sessions : "owns"
+    departments ||--o{ org_goals : "owns (optional)"
+    departments ||--o{ org_schedules : "check-ins"
+    org_agents ||--o{ org_schedules : "addressed to (optional)"
 
     departments {
         uuid id PK
@@ -525,9 +581,30 @@ erDiagram
         text desired "stopped | running | paused"
         text node FK
         uuid session_id
-        text status
+        text status "... | asleep"
         text note
         text changed_by
+    }
+    org_goals {
+        uuid id PK
+        text title
+        text description
+        uuid department_id FK
+        text status "active | achieved | dropped"
+        text progress "latest note"
+        text progress_by
+        timestamptz progress_at
+    }
+    org_schedules {
+        uuid id PK
+        uuid department_id FK
+        uuid agent_id FK "null: whole department"
+        text name
+        text message
+        int every_minutes
+        timestamptz next_run_at
+        timestamptz last_run_at
+        bool enabled
     }
     org_messages {
         uuid id PK
@@ -565,8 +642,14 @@ an admin.
 
 | Method & path | What |
 |---|---|
-| `GET /org` | Overview: settings, departments with their agents, nodes. |
-| `GET /org/stream` | SSE of change notifications (`agents`, `department`, `message`, `files`, `settings`, `stop_all`, `resync`); clients refetch what changed. |
+| `GET /org` | Overview: settings, departments with their agents, goals, check-ins, nodes. |
+| `GET /org/stream` | SSE of change notifications (`agents`, `department`, `message`, `files`, `settings`, `goals`, `checkins`, `stop_all`, `resync`); clients refetch what changed. |
+| `GET`/`POST /org/goals` | Goals; create `{"title", "description", "department_id"?}` (operators). |
+| `PUT`/`DELETE /org/goals/{id}` | Change `title`, `description`, `department_id` (`null` clears it), `status` (`active`\|`achieved`\|`dropped`); delete. |
+| `POST /org/goals/{id}/progress` | A person records progress: `{"text"}`. |
+| `GET`/`POST /org/departments/{id}/checkins` | Check-ins of a department; create `{"name", "message", "every_minutes", "agent_id"?, "first_run_at"?}` (operators; default first run: one interval from now). |
+| `PUT`/`DELETE /org/checkins/{id}` | Change `name`, `message`, `every_minutes`, `enabled`; delete. |
+| `POST /org/checkins/{id}/run` | Send it now (`409` when turned off); the schedule continues from now. |
 | `GET`/`PUT /org/settings` | Limits (admin). |
 | `POST /org/departments` | Create a department (and its communicator): `{"name", "description", "mission", "policy", "tools", "communicator_agent", "project_id"?, "role"?}`. |
 | `PUT`/`DELETE /org/departments/{id}` | Update; delete (only when all its agents are stopped). |
@@ -582,7 +665,7 @@ an admin.
 | `GET /org/templates` | Template categories, department templates and blueprints. |
 | `GET`/`PUT /org/profile` | Company name and description, chosen blueprint (admin to change). |
 | `GET /org/suggestions` | What to add next: the blueprint's next stage, related departments, more agents; `blocked` says when a limit prevents it. |
-| `POST /org/build` | Create departments from templates (admin): `{"profile", "departments": [ids], "size": "lean"\|"full", "agent", "communicator_agent", "project_id", "start", "raise_limits", "dry_run"}`; with `project_id`, new departments whose template has a role are linked to that project. Existing departments are skipped; a plan over the limits is refused with `409` (body has the plan) unless `raise_limits`. |
+| `POST /org/build` | Create departments from templates (admin): `{"profile", "departments": [ids], "size": "lean"\|"full", "agent", "communicator_agent", "project_id", "goal", "check_ins", "start", "raise_limits", "dry_run"}`; `goal` creates a first goal, `check_ins` a daily check-in per new department (and a weekly review in Strategy); with `project_id`, new departments whose template has a role are linked to that project. Existing departments are skipped; a plan over the limits is refused with `409` (body has the plan) unless `raise_limits`. |
 
 ## Configuration
 
@@ -609,9 +692,8 @@ several VMs: [Deployment](DEPLOYMENT.md#several-vms).
 
 ## What is not there yet
 
-* Scheduled check-ins and organisation goals that keep agents working
-  without a person or a message waking them; continuing an agent in a fresh
-  session when its time budget runs out.
+* Check-ins at a time of day (cron-like); today they run every N minutes
+  from when they were created or last run.
 * Read-only business data (analytics, revenue, support tickets) for the
   departments that steer the company.
 * Moving a running agent between nodes (live migration of a sandbox).

@@ -15,6 +15,7 @@ import type {
   TeamRole,
 } from "../types";
 import { type BuildMode, OrgBuilder } from "./OrgBuilder";
+import { CheckIns, Goals } from "./Rhythm";
 
 interface Props {
   me: Me;
@@ -247,6 +248,7 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
                 onError={onError}
               />
             )}
+            {org.departments.length > 0 && <Goals org={org} canEdit={canOperate} act={act} />}
             <Feed org={org} tick={tick} canPost={canOperate} onError={onError} />
           </div>
         )}
@@ -535,7 +537,10 @@ function DepartmentRoom({
 
       <div className="room-grid">
         <Feed org={org} dept={dept} tick={tick} canPost={canOperate} onError={onError} />
-        {dept.tools.includes("files") && <Files dept={dept} tick={tick} onError={onError} />}
+        <div className="side-stack">
+          <CheckIns dept={dept} org={org} canEdit={canOperate} act={act} />
+          {dept.tools.includes("files") && <Files dept={dept} tick={tick} onError={onError} />}
+        </div>
       </div>
     </div>
   );
@@ -566,7 +571,9 @@ function AgentCard({
       : "stopped"
     : agent.desired === "paused" || dept.state === "paused"
       ? "paused"
-      : (agent.status ?? "starting").replace(/_/g, " ");
+      : agent.status === "asleep"
+        ? "💤 asleep"
+        : (agent.status ?? "starting").replace(/_/g, " ");
   return (
     <div className={`card member ${agent.kind}`}>
       <div className="session-item-top">
@@ -574,7 +581,10 @@ function AgentCard({
           {agent.kind === "communicator" ? "📡 " : ""}
           {agent.name}
         </strong>
-        <span className={`pill ${statusClass(agent)}`}>
+        <span
+          className={`pill ${statusClass(agent)}`}
+          title={live && agent.status === "asleep" ? "Nothing to do: a message or check-in wakes it in a fresh session" : undefined}
+        >
           {live && agent.status === "running" && <span className="pulse" />}
           {label}
         </span>
