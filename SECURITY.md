@@ -110,6 +110,10 @@ do, and every attempt is recorded.
       transaction with a time limit, but a read-only role is the real
       guarantee); give HTTP sources a read-only API key and allowed path
       prefixes; grant each source only to the departments that need it.
+- [ ] Outward channels: use a dedicated mailbox or bot for agent mail, set
+      allowed recipient domains where you can, keep "a person approves every
+      message" on for anything customers or the public see, and keep daily
+      limits low.
 - [ ] Keep "apply without asking" empty unless you trust the retrospective's
       judgement for that kind of change; structural changes (agents,
       departments, limits) always need an admin to apply them.

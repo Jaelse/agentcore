@@ -18,6 +18,7 @@ pub mod live;
 pub mod llm;
 pub mod mcp;
 pub mod org;
+pub mod outbox;
 pub mod sessions;
 pub mod teamwork;
 pub mod templates;
@@ -262,6 +263,20 @@ pub fn router(state: AppState) -> Router {
         .route("/org/goals", get(org::list_goals).post(org::create_goal))
         .route("/org/metrics", get(insights::metrics))
         .route("/org/spending", get(budgets::spending))
+        .route("/org/outbox", get(outbox::list))
+        .route("/org/outbox/{id}", put(outbox::edit))
+        .route("/org/outbox/{id}/send", post(outbox::approve))
+        .route("/org/outbox/{id}/changes", post(outbox::request_changes))
+        .route("/org/outbox/{id}/reject", post(outbox::reject))
+        .route(
+            "/org/channels",
+            get(outbox::list_channels).post(outbox::create_channel),
+        )
+        .route(
+            "/org/channels/{id}",
+            put(outbox::update_channel).delete(outbox::delete_channel),
+        )
+        .route("/org/channels/{id}/test", post(outbox::test_channel))
         .route(
             "/org/prices",
             put(budgets::put_price).delete(budgets::delete_price),

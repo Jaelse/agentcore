@@ -10,6 +10,7 @@ mod agents;
 mod crypto;
 mod insights;
 mod org;
+mod outbox;
 mod rhythm;
 mod spending;
 mod teamwork;
@@ -36,6 +37,10 @@ pub use insights::{
 pub use org::{
     AgentInput, AgentScope, COMMUNICATOR_NAME, DepartmentInput, FileInfo, MAX_FILE_BYTES,
     MessageFilter, NewMessage, ORG_CHANNEL, RESERVED_NAMES, valid_agent_name,
+};
+pub use outbox::{
+    ChannelInput, ChannelUpdate, DEFAULT_DISCLOSURE, MAX_BODY_CHARS, NewOutboxItem, OutboxCounts,
+    OutboxRevision,
 };
 pub use rhythm::{GoalInput, GoalUpdate, ScheduleInput, ScheduleUpdate};
 pub use spending::{BudgetInput, BudgetUpdate, PriceInput};

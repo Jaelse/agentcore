@@ -398,6 +398,128 @@ impl BudgetStatus {
     }
 }
 
+/// Where agents can say something to the outside world.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelKind {
+    /// SMTP.
+    Email,
+    /// A Slack incoming webhook.
+    Slack,
+    /// An HTTP POST with JSON (Zapier, Make, n8n, your own service, ...).
+    Webhook,
+}
+
+impl ChannelKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Email => "email",
+            Self::Slack => "slack",
+            Self::Webhook => "webhook",
+        }
+    }
+}
+
+impl std::str::FromStr for ChannelKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "email" => Ok(Self::Email),
+            "slack" => Ok(Self::Slack),
+            "webhook" => Ok(Self::Webhook),
+            other => Err(format!("unknown channel kind `{other}`")),
+        }
+    }
+}
+
+/// An outward channel and who may use it. Secrets are never part of it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Channel {
+    pub id: Uuid,
+    pub name: String,
+    pub kind: ChannelKind,
+    pub description: String,
+    pub config: Value,
+    pub secret_hint: Option<String>,
+    pub departments: Vec<DepartmentId>,
+    /// Every message waits for a person (the default).
+    pub requires_approval: bool,
+    pub max_per_day: u32,
+    /// Appended to every message.
+    pub disclosure: String,
+    pub enabled: bool,
+    pub updated_at: DateTime<Utc>,
+    pub updated_by: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutboxStatus {
+    /// Waiting for a person.
+    Pending,
+    /// A person asked the agent to change it.
+    ChangesRequested,
+    /// Approved; being sent.
+    Sending,
+    Sent,
+    Rejected,
+    /// Sending failed; `error` says why. It can be approved again.
+    Failed,
+}
+
+impl OutboxStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::ChangesRequested => "changes_requested",
+            Self::Sending => "sending",
+            Self::Sent => "sent",
+            Self::Rejected => "rejected",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl std::str::FromStr for OutboxStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "pending" => Ok(Self::Pending),
+            "changes_requested" => Ok(Self::ChangesRequested),
+            "sending" => Ok(Self::Sending),
+            "sent" => Ok(Self::Sent),
+            "rejected" => Ok(Self::Rejected),
+            "failed" => Ok(Self::Failed),
+            other => Err(format!("unknown outbox status `{other}`")),
+        }
+    }
+}
+
+/// A message an agent wants to send to the outside world.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OutboxItem {
+    pub id: Uuid,
+    pub channel_id: Uuid,
+    pub department_id: Option<DepartmentId>,
+    pub agent_id: Option<OrgAgentId>,
+    pub drafted_by: String,
+    pub recipients: Vec<String>,
+    pub subject: String,
+    pub body: String,
+    pub status: OutboxStatus,
+    pub revision: u32,
+    pub history: Vec<Value>,
+    pub feedback: Option<String>,
+    pub decided_by: Option<String>,
+    pub decided_at: Option<DateTime<Utc>>,
+    pub sent_at: Option<DateTime<Utc>>,
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -44,6 +44,9 @@ import type {
   ModelPrice,
   BudgetPeriod,
   BudgetAction,
+  Channel,
+  ChannelKind,
+  OutboxItem,
 } from "./types";
 
 const TOKEN_KEY = "agentcore.token";
@@ -321,6 +324,29 @@ export const api = {
   updateBudget: (id: string, body: Partial<{ limit_micros: number; action: BudgetAction; warn_percent: number }>) =>
     request<unknown>("PUT", `/org/budgets/${id}`, body),
   deleteBudget: (id: string) => request<void>("DELETE", `/org/budgets/${id}`),
+  outbox: () => request<OutboxItem[]>("GET", "/org/outbox"),
+  editOutbox: (id: string, body: Partial<{ recipients: string[]; subject: string; body: string; note: string }>) =>
+    request<OutboxItem>("PUT", `/org/outbox/${id}`, body),
+  sendOutbox: (id: string, revision: number) => request<OutboxItem>("POST", `/org/outbox/${id}/send`, { revision }),
+  outboxChanges: (id: string, text: string) => request<OutboxItem>("POST", `/org/outbox/${id}/changes`, { text }),
+  rejectOutbox: (id: string, text: string) => request<OutboxItem>("POST", `/org/outbox/${id}/reject`, { text }),
+  createChannel: (body: {
+    name: string;
+    kind: ChannelKind;
+    description: string;
+    config: Record<string, unknown>;
+    secret?: string;
+    departments: string[];
+    requires_approval: boolean;
+    max_per_day: number;
+    disclosure?: string;
+  }) => request<Channel>("POST", "/org/channels", body),
+  updateChannel: (
+    id: string,
+    body: Partial<{ description: string; config: Record<string, unknown>; secret: string; departments: string[]; requires_approval: boolean; max_per_day: number; disclosure: string; enabled: boolean }>,
+  ) => request<Channel>("PUT", `/org/channels/${id}`, body),
+  deleteChannel: (id: string) => request<void>("DELETE", `/org/channels/${id}`),
+  testChannel: (id: string, to: string[]) => request<{ ok: boolean; error?: string }>("POST", `/org/channels/${id}/test`, { to }),
   pauseAll: () => request<void>("POST", "/org/pause-all"),
   resumeAll: () => request<void>("POST", "/org/resume-all"),
   messages: (q: { department?: string; agent?: string; limit?: number } = {}) => {

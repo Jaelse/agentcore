@@ -54,7 +54,17 @@ to every agent, and agentcore adds:
   Communicators can be required to ask a person before any message leaves
   a department.
 * **Risk management (Art. 9).** Admins limit the number of departments and
-  agents; departments only get the tools and data they need.
+  agents; departments only get the tools and data they need (business data
+  is read-only); budgets can pause the work when spending runs out;
+  improvements the retrospective proposes change nothing until a person
+  applies them.
+* **Transparency to people outside (Art. 50).** Agents cannot send email,
+  Slack messages or webhook posts themselves: they draft into the
+  [outbox](MULTI_AGENT.md#talking-to-the-outside-world), a person approves
+  (or edits, sends back, rejects) each message, and every channel appends a
+  disclosure ("This message was written by an AI agent.", configurable);
+  webhooks also receive `"ai_generated": true`. Who drafted, who approved
+  and every revision are kept with the message and in the admin log.
 
 ## Where humans oversee the agent (Art. 14)
 

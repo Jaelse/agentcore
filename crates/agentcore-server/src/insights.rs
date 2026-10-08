@@ -491,9 +491,43 @@ pub fn signals(
     check_ins: &[OrgSchedule],
     budgets: &[agentcore_core::BudgetStatus],
     currency: &str,
+    outbox: &agentcore_store::OutboxCounts,
 ) -> Vec<Signal> {
     let now = chrono::Utc::now();
     let mut out = Vec::new();
+    if let Some(oldest) = outbox.oldest_pending
+        && (now - oldest).num_hours() >= 24
+    {
+        out.push(Signal {
+            severity: "medium",
+            kind: "outbox_waiting",
+            title: format!(
+                "{} outgoing message(s) wait for approval, the oldest for {}",
+                outbox.pending,
+                hours((now - oldest).num_seconds() as f64)
+            ),
+            detail: "Customers, leads or partners are waiting while drafts sit in the outbox."
+                .into(),
+            suggestion: "Review the outbox, or let a trusted internal channel send without \
+                         approval."
+                .into(),
+            department_id: None,
+            agent_id: None,
+            goal_id: None,
+        });
+    }
+    if outbox.failed > 0 {
+        out.push(Signal {
+            severity: "medium",
+            kind: "outbox_failed",
+            title: format!("{} outgoing message(s) failed to send", outbox.failed),
+            detail: "Their channel refused them or could not be reached.".into(),
+            suggestion: "Check the channel's settings (Test), then retry the messages.".into(),
+            department_id: None,
+            agent_id: None,
+            goal_id: None,
+        });
+    }
     let money = |micros: i64| crate::budgets::money(micros, currency);
     for b in budgets {
         let scope = b
@@ -1335,10 +1369,11 @@ impl ToolHandler for InsightsTools {
                 let check_ins = store.list_schedules(None).await.map_err(e)?;
                 let budgets = store.budget_statuses().await.map_err(e)?;
                 let currency = store.currency().await.map_err(e)?;
-                let signals = signals(&metrics, &check_ins, &budgets, &currency);
+                let outbox = store.outbox_counts(metrics.since).await.map_err(e)?;
+                let signals = signals(&metrics, &check_ins, &budgets, &currency, &outbox);
                 Ok(json!({
                     "metrics": metrics, "signals": signals, "budgets": budgets,
-                    "currency": currency,
+                    "currency": currency, "outbox": outbox,
                 }))
             }
             "insights_org" => {
@@ -1498,9 +1533,11 @@ pub async fn metrics(
     let check_ins = state.store.list_schedules(None).await?;
     let budgets = state.store.budget_statuses().await?;
     let currency = state.store.currency().await?;
-    let signals = signals(&metrics, &check_ins, &budgets, &currency);
+    let outbox = state.store.outbox_counts(metrics.since).await?;
+    let signals = signals(&metrics, &check_ins, &budgets, &currency, &outbox);
     Ok(Json(json!({
         "metrics": metrics, "signals": signals, "budgets": budgets, "currency": currency,
+        "outbox": outbox,
     })))
 }
 
@@ -1935,7 +1972,7 @@ mod tests {
             goals: vec![goal],
             proposals: ProposalCounts::default(),
         };
-        let kinds: Vec<&str> = signals(&m, &[], &[], "USD")
+        let kinds: Vec<&str> = signals(&m, &[], &[], "USD", &Default::default())
             .iter()
             .map(|s| s.kind)
             .collect();
@@ -1950,7 +1987,7 @@ mod tests {
             assert!(kinds.contains(&kind), "{kind} in {kinds:?}");
         }
         assert_eq!(
-            signals(&m, &[], &[], "USD")[0].severity,
+            signals(&m, &[], &[], "USD", &Default::default())[0].severity,
             "high",
             "most severe first"
         );
@@ -1968,7 +2005,7 @@ mod tests {
             created_by: "a".into(),
         };
         assert!(
-            !signals(&m, &[check_in], &[], "USD")
+            !signals(&m, &[check_in], &[], "USD", &Default::default())
                 .iter()
                 .any(|s| s.kind == "idle_department")
         );

@@ -668,6 +668,8 @@ pub struct StartContext<'a> {
     /// Budgets that cover this department, and the currency.
     pub budgets: &'a [agentcore_core::BudgetStatus],
     pub currency: &'a str,
+    /// Outward channels the department may draft for.
+    pub channels: &'a [agentcore_core::Channel],
 }
 
 /// Where an agent keeps its working notes (department files).
@@ -902,6 +904,32 @@ pub fn compose_prompt(
             ));
         }
     }
+    if agent.kind == AgentKind::Worker && !start.channels.is_empty() {
+        p.push_str(
+            "\n## Talking to people outside the organisation\n\nYou can draft messages \
+             (`outbox_channels`, `outbox_draft`). Every draft is read by a person who approves, \
+             edits, sends it back or rejects it; you get a message with the decision. Write the \
+             final text, be accurate, never invent facts, prices or promises, and never send \
+             the same thing twice. A note that an AI wrote it is added automatically.\n\n",
+        );
+        for c in start.channels {
+            p.push_str(&format!(
+                "- **{}** ({}){}{}\n",
+                c.name,
+                c.kind.as_str(),
+                if c.description.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", c.description.trim())
+                },
+                if c.requires_approval {
+                    ""
+                } else {
+                    " (sent without approval)"
+                }
+            ));
+        }
+    }
     if agent.kind == AgentKind::Worker && dept.grants(TOOL_INSIGHTS) {
         p.push_str(
             "\n## Improving the organisation\n\nYou can see how the whole organisation works \
@@ -980,15 +1008,26 @@ pub async fn start_agent_session(
     };
     let mut tools: Vec<Arc<dyn ToolHandler>> =
         vec![Arc::new(TeamTools::new(state.store.clone(), agent, dept))];
-    let data_sources = match agent.kind {
-        AgentKind::Worker => state.store.data_sources_for(dept.id).await?,
-        AgentKind::Communicator => Vec::new(),
+    let (data_sources, channels) = match agent.kind {
+        AgentKind::Worker => (
+            state.store.data_sources_for(dept.id).await?,
+            state.store.channels_for(dept.id).await?,
+        ),
+        AgentKind::Communicator => (Vec::new(), Vec::new()),
     };
     if agent.kind == AgentKind::Worker {
         // Business data granted to the department (checked on every call).
         if !data_sources.is_empty() {
             tools.push(Arc::new(crate::insights::DataTools::new(
                 state.store.clone(),
+                agent.id,
+                dept.id,
+            )));
+        }
+        // Outward channels: drafts that people approve.
+        if !channels.is_empty() {
+            tools.push(Arc::new(crate::outbox::OutboxTools::new(
+                state.clone(),
                 agent.id,
                 dept.id,
             )));
@@ -1076,6 +1115,7 @@ pub async fn start_agent_session(
         data_sources: &data_sources,
         budgets: &budgets,
         currency: &currency,
+        channels: &channels,
     };
     let session = state.manager.create(
         CreateSession {
@@ -1152,6 +1192,8 @@ pub async fn overview(State(state): State<AppState>, _caller: Caller) -> ApiResu
         "goals": org.goals,
         "check_ins": state.store.list_schedules(None).await?,
         "data_sources": state.store.list_data_sources().await?,
+        "channels": state.store.list_channels().await?,
+        "outbox_pending": state.store.outbox_counts(chrono::Utc::now()).await?.pending,
         "proposals_pending": state
             .store
             .list_proposals(None)

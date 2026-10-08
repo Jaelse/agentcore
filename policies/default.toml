@@ -89,6 +89,13 @@ kinds = ["tool_call"]
 tools = ["data_list_sources", "data_query", "insights_*"]
 
 [[rules]]
+id = "allow-outbox-drafts"
+description = "Drafting messages for outward channels: a person approves each one before it is sent (unless the channel was set to send without approval)."
+effect = "allow"
+kinds = ["tool_call"]
+tools = ["outbox_*"]
+
+[[rules]]
 id = "allow-team"
 description = "Organisation messaging and department files (multi-agent departments)."
 effect = "allow"

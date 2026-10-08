@@ -72,7 +72,7 @@ esac
 const RETRO: &str = r###"
 case "$0" in
   *"asked for changes"*)
-    id=$(printf %s "$0" | sed -n 's/.*(id \([0-9a-f-]*\)).*/\1/p' | head -n 1)
+    id=$(printf %s "$0" | grep "asked for changes" | sed -n 's/.*(id \([0-9a-f-]*\)).*/\1/p' | head -n 1)
     call insights_revise "{\"proposal\":\"$id\",\"note\":\"as asked\",\"actions\":[{\"kind\":\"create_goal\",\"title\":\"Ship v2\"}]}" ;;
   *PROPOSE-AGAIN*)
     call insights_propose '{"title":"Auto","problem":"p","solution":"s","actions":[{"kind":"create_goal","title":"Auto goal"}]}' ;;
@@ -84,6 +84,23 @@ case "$0" in
     call data_query '{"source":"warehouse","sql":"SELECT 1; DROP TABLE sessions"}'
     call insights_propose '{"title":"More focus","problem":"No goals","evidence":"0 goals","solution":"Add a goal","actions":[{"kind":"create_goal","title":"Ship v1"}]}'
     call insights_propose '{"title":"Room to grow","problem":"Limits too low","solution":"Raise them","actions":[{"kind":"set_limits","max_departments":7}]}' ;;
+esac
+"###;
+
+/// Drafts messages for the outside world; revises when asked.
+const DRAFTER: &str = r###"
+case "$0" in
+  *"asked for changes"*)
+    id=$(printf %s "$0" | grep "asked for changes" | sed -n 's/.*(id \([0-9a-f-]*\)).*/\1/p' | head -n 1)
+    call outbox_revise "{\"draft\":\"$id\",\"text\":\"Launch post FINAL\",\"note\":\"as asked\"}" ;;
+  "You have "*) ;;
+  *)
+    call outbox_channels '{}'
+    call outbox_draft '{"channel":"mail","to":["Ana <ana@customer.com>"],"subject":"Hello","text":"Welcome aboard"}'
+    call outbox_draft '{"channel":"mail","to":["eve@evil.com"],"text":"x"}'
+    call outbox_draft '{"channel":"hooks","subject":"Launch","text":"Launch post DRAFT-1"}'
+    call outbox_draft '{"channel":"team-slack","text":"Status: all good"}'
+    call outbox_draft '{"channel":"team-slack","text":"Second status"}' ;;
 esac
 "###;
 
@@ -158,6 +175,7 @@ fn config(dir: &std::path::Path, db_url: &str, bind: std::net::SocketAddr, node:
         agent("goal-bot", GOAL_WORKER),
         agent("retro-bot", RETRO),
         agent("spender", SPENDER),
+        agent("drafter", DRAFTER),
     ];
     config
 }
@@ -1613,6 +1631,338 @@ async fn budgets_price_calls_and_stop_spending() {
     );
 
     node.ok("POST", &format!("/org/agents/{sid}/stop"), None)
+        .await;
+    node.cluster.cancel();
+}
+
+/// A minimal SMTP server that keeps every message it receives.
+async fn fake_smtp() -> (u16, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let mails = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let store = mails.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((socket, _)) = listener.accept().await else {
+                return;
+            };
+            let store = store.clone();
+            tokio::spawn(async move {
+                let (read, mut write) = socket.into_split();
+                let mut lines = BufReader::new(read).lines();
+                write.write_all(b"220 fake ESMTP\r\n").await.unwrap();
+                let mut data: Option<String> = None;
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if let Some(body) = data.as_mut() {
+                        if line == "." {
+                            store.lock().unwrap().push(std::mem::take(body));
+                            data = None;
+                            write.write_all(b"250 queued\r\n").await.unwrap();
+                        } else {
+                            body.push_str(&line);
+                            body.push('\n');
+                        }
+                        continue;
+                    }
+                    let verb = line
+                        .split(' ')
+                        .next()
+                        .unwrap_or_default()
+                        .to_ascii_uppercase();
+                    let reply: &[u8] = match verb.as_str() {
+                        "EHLO" => b"250-fake\r\n250 OK\r\n",
+                        "DATA" => {
+                            data = Some(String::new());
+                            b"354 go on\r\n"
+                        }
+                        "QUIT" => {
+                            write.write_all(b"221 bye\r\n").await.unwrap();
+                            return;
+                        }
+                        _ => b"250 OK\r\n",
+                    };
+                    write.write_all(reply).await.unwrap();
+                }
+            });
+        }
+    });
+    (port, mails)
+}
+
+type Posts = std::sync::Arc<std::sync::Mutex<Vec<(String, Value, Option<String>)>>>;
+
+/// Slack and webhook endpoints that keep what they receive.
+async fn fake_hooks() -> (String, Posts) {
+    let posts: Posts = Default::default();
+    let keep = |path: &'static str, posts: Posts| {
+        axum::routing::post(
+            move |headers: axum::http::HeaderMap, body: axum::Json<Value>| {
+                let posts = posts.clone();
+                async move {
+                    let token = headers
+                        .get("x-token")
+                        .and_then(|v| v.to_str().ok())
+                        .map(String::from);
+                    posts
+                        .lock()
+                        .unwrap()
+                        .push((path.to_string(), body.0, token));
+                    "ok"
+                }
+            },
+        )
+    };
+    let app = axum::Router::new()
+        .route("/slack", keep("slack", posts.clone()))
+        .route("/hook", keep("hook", posts.clone()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}"), posts)
+}
+
+#[tokio::test]
+async fn outward_messages_wait_for_people() {
+    let Some((_, db_url)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let node = start(dir.path(), &db_url, "n1", 10).await;
+    let (smtp_port, mails) = fake_smtp().await;
+    let (hooks, posts) = fake_hooks().await;
+
+    let sales = node
+        .ok("POST", "/org/departments", Some(department("Sales", &[])))
+        .await;
+    let sid = sales["id"].as_str().unwrap().to_string();
+    let mail = json!({
+        "name": "mail", "kind": "email", "description": "Email to customers",
+        "config": {
+            "host": "127.0.0.1", "port": smtp_port, "tls": "none",
+            "from": "Acme <hello@acme.test>", "allowed_domains": ["customer.com"],
+        },
+        "departments": [sid],
+    });
+    let (code, _) = node
+        .call("POST", "/org/channels", "alice-token", Some(mail.clone()))
+        .await;
+    assert_eq!(code, 403, "admins add channels");
+    let mail = node.ok("POST", "/org/channels", Some(mail)).await;
+    assert_eq!(mail["requires_approval"], true);
+    node.ok(
+        "POST",
+        "/org/channels",
+        Some(json!({
+            "name": "team-slack", "kind": "slack", "secret": format!("{hooks}/slack"),
+            "departments": [sid], "requires_approval": false, "max_per_day": 1,
+        })),
+    )
+    .await;
+    let hook = node
+        .ok(
+            "POST",
+            "/org/channels",
+            Some(json!({
+                "name": "hooks", "kind": "webhook", "secret": "s3cret",
+                "config": { "url": format!("{hooks}/hook"), "header": "X-Token" },
+                "departments": [sid],
+            })),
+        )
+        .await;
+    assert!(hook.get("secret").is_none() && hook["secret_hint"] == "…cret");
+
+    let drafter = node
+        .ok(
+            "POST",
+            &format!("/org/departments/{sid}/agents"),
+            Some(json!({ "name": "rep", "agent": "drafter" })),
+        )
+        .await;
+    let aid = drafter["id"].as_str().unwrap().to_string();
+    node.ok("POST", &format!("/org/agents/{aid}/start"), None)
+        .await;
+    let session = node
+        .wait_agent(&aid, "drafter waiting", |a| a["status"] == "awaiting_input")
+        .await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let out = output(&node.events(&session).await);
+    assert!(out.contains("only sends to @customer.com"), "{out}");
+
+    // The internal Slack channel sends without approval, up to its limit.
+    let outbox = node.ok("GET", "/org/outbox", None).await;
+    let items = outbox.as_array().unwrap().clone();
+    assert_eq!(items.len(), 4, "{outbox}");
+    let find = |text: &str| {
+        items
+            .iter()
+            .find(|i| i["body"].as_str().unwrap().contains(text))
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(find("all good")["status"], "sent");
+    assert_eq!(find("Second status")["status"], "pending");
+    assert_eq!(find("Welcome")["status"], "pending");
+    {
+        let posts = posts.lock().unwrap();
+        assert_eq!(posts.len(), 1);
+        let text = posts[0].1["text"].as_str().unwrap();
+        assert!(text.starts_with("Status: all good"), "{text}");
+        assert!(
+            text.ends_with("This message was written by an AI agent."),
+            "{text}"
+        );
+    }
+    assert!(
+        mails.lock().unwrap().is_empty(),
+        "nothing sent without approval"
+    );
+
+    // A person edits the email, then approves what they read.
+    let welcome = find("Welcome");
+    let wid = welcome["id"].as_str().unwrap();
+    let (code, _) = node
+        .call(
+            "POST",
+            &format!("/org/outbox/{wid}/send"),
+            "viewer-token",
+            Some(json!({ "revision": 1 })),
+        )
+        .await;
+    assert_eq!(code, 403);
+    let (code, edited) = node
+        .call(
+            "PUT",
+            &format!("/org/outbox/{wid}"),
+            "alice-token",
+            Some(json!({ "subject": "Hello Ana", "note": "personal" })),
+        )
+        .await;
+    assert_eq!(code, 200, "{edited}");
+    assert_eq!(edited["revision"], 2);
+    let (code, _) = node
+        .call(
+            "POST",
+            &format!("/org/outbox/{wid}/send"),
+            "alice-token",
+            Some(json!({ "revision": 1 })),
+        )
+        .await;
+    assert_eq!(code, 409, "not what alice read");
+    let (code, sent) = node
+        .call(
+            "POST",
+            &format!("/org/outbox/{wid}/send"),
+            "alice-token",
+            Some(json!({ "revision": 2 })),
+        )
+        .await;
+    assert_eq!(code, 200, "{sent}");
+    assert_eq!(sent["status"], "sent");
+    assert_eq!(sent["decided_by"], "alice");
+    {
+        let mails = mails.lock().unwrap();
+        assert_eq!(mails.len(), 1);
+        let m = &mails[0];
+        assert!(m.contains("Subject: Hello Ana"), "{m}");
+        assert!(m.contains("ana@customer.com"), "{m}");
+        assert!(m.contains("hello@acme.test"), "{m}");
+        assert!(m.contains("Welcome aboard"), "{m}");
+        assert!(m.contains("written by an AI agent"), "{m}");
+    }
+
+    // Sent back: the agent revises; then it goes out through the webhook.
+    let launch = find("DRAFT-1");
+    let lid = launch["id"].as_str().unwrap();
+    node.ok(
+        "POST",
+        &format!("/org/outbox/{lid}/changes"),
+        Some(json!({ "text": "Make it final" })),
+    )
+    .await;
+    let mut revised = Value::Null;
+    for _ in 0..200 {
+        let all = node.ok("GET", "/org/outbox", None).await;
+        revised = all
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == lid)
+            .unwrap()
+            .clone();
+        if revised["revision"] == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(revised["body"], "Launch post FINAL", "{revised}");
+    assert_eq!(revised["status"], "pending");
+    node.ok(
+        "POST",
+        &format!("/org/outbox/{lid}/send"),
+        Some(json!({ "revision": 2 })),
+    )
+    .await;
+    {
+        let posts = posts.lock().unwrap();
+        let (path, body, token) = posts.last().unwrap();
+        assert_eq!(path, "hook");
+        assert_eq!(token.as_deref(), Some("s3cret"));
+        assert_eq!(body["subject"], "Launch");
+        assert_eq!(body["approved_by"], "root");
+        assert_eq!(body["ai_generated"], true);
+        assert!(body["text"].as_str().unwrap().contains("Launch post FINAL"));
+    }
+
+    // Over the daily limit: refused even with approval; a person rejects it.
+    let second = find("Second status");
+    let second_id = second["id"].as_str().unwrap();
+    let (code, err) = node
+        .call(
+            "POST",
+            &format!("/org/outbox/{second_id}/send"),
+            "alice-token",
+            Some(json!({ "revision": 1 })),
+        )
+        .await;
+    assert_eq!(code, 409, "{err}");
+    assert!(err.to_string().contains("limit of 1"), "{err}");
+    let rejected = node
+        .ok(
+            "POST",
+            &format!("/org/outbox/{second_id}/reject"),
+            Some(json!({ "text": "not needed" })),
+        )
+        .await;
+    assert_eq!(rejected["status"], "rejected");
+
+    // The agent heard every decision; admins can test a channel.
+    let mut heard = String::new();
+    for _ in 0..100 {
+        heard = output(&node.events(&session).await);
+        if heard.contains("rejected your") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(heard.contains("was sent (approved by alice)"), "{heard}");
+    assert!(heard.contains("rejected your"), "{heard}");
+    let tested = node
+        .ok(
+            "POST",
+            &format!("/org/channels/{}/test", mail["id"].as_str().unwrap()),
+            Some(json!({ "to": ["ops@customer.com"] })),
+        )
+        .await;
+    assert_eq!(tested["ok"], true, "{tested}");
+    assert_eq!(mails.lock().unwrap().len(), 2);
+    let overview = node.ok("GET", "/org", None).await;
+    assert_eq!(overview["outbox_pending"], 0);
+    assert_eq!(overview["channels"].as_array().unwrap().len(), 3);
+
+    node.ok("POST", &format!("/org/agents/{aid}/stop"), None)
         .await;
     node.cluster.cancel();
 }

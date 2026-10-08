@@ -471,3 +471,7 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
 .price-form { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(160px, 2fr) repeat(2, minmax(80px, 1fr)) auto; gap: 8px; align-items: center; }
 .price-form.currency-form { grid-template-columns: auto auto; justify-content: start; }
 @media (max-width: 640px) { .price-form { grid-template-columns: 1fr 1fr; } }
+
+/* Outbox */
+.message-preview { white-space: pre-wrap; background: var(--surface-2); border-radius: 8px; padding: 12px; font-size: 14px; line-height: 1.5; }
+.message-preview .muted { margin-top: 8px; }

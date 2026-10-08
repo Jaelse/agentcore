@@ -202,7 +202,9 @@ organisation working without a person writing to it; see
 Metrics (`GET /org/metrics?days=`), improvement proposals
 (`/org/proposals`, apply / change / send back / reject, `/org/auto-apply`),
 business data sources (`/org/data-sources`), and prices and budgets
-(`/org/spending`, `/org/prices`, `/org/budgets`, `/org/currency`): see
+(`/org/spending`, `/org/prices`, `/org/budgets`, `/org/currency`), and the
+outbox and channels (`/org/outbox`, `/org/channels`): see
+[Talking to the outside world](MULTI_AGENT.md#talking-to-the-outside-world),
 [Spending and budgets](MULTI_AGENT.md#spending-and-budgets),
 [Business data](MULTI_AGENT.md#business-data) and
 [Metrics, the retrospective and improvements](MULTI_AGENT.md#metrics-the-retrospective-and-improvements).

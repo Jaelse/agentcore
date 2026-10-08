@@ -154,6 +154,8 @@ export interface OrgOverview {
   check_ins: CheckIn[];
   data_sources: DataSource[];
   proposals_pending: number;
+  channels: Channel[];
+  outbox_pending: number;
   nodes: NodeInfo[];
   communicator_policy: string;
 }
@@ -752,4 +754,45 @@ export interface Spending {
   budgets: BudgetStatus[];
   unpriced_calls: number;
   days: number;
+}
+
+export type ChannelKind = "email" | "slack" | "webhook";
+
+export interface Channel {
+  id: string;
+  name: string;
+  kind: ChannelKind;
+  description: string;
+  config: Record<string, unknown>;
+  secret_hint: string | null;
+  departments: string[];
+  requires_approval: boolean;
+  max_per_day: number;
+  disclosure: string;
+  enabled: boolean;
+  updated_at: string;
+  updated_by: string;
+}
+
+export type OutboxStatus = "pending" | "changes_requested" | "sending" | "sent" | "rejected" | "failed";
+
+export interface OutboxItem {
+  id: string;
+  channel_id: string;
+  department_id: string | null;
+  agent_id: string | null;
+  drafted_by: string;
+  recipients: string[];
+  subject: string;
+  body: string;
+  status: OutboxStatus;
+  revision: number;
+  history: Record<string, unknown>[];
+  feedback: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  sent_at: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
 }

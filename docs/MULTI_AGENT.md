@@ -22,6 +22,7 @@ that share one PostgreSQL database.
 - [Business data](#business-data)
 - [Metrics, the retrospective and improvements](#metrics-the-retrospective-and-improvements)
 - [Spending and budgets](#spending-and-budgets)
+- [Talking to the outside world](#talking-to-the-outside-world)
 - [Human oversight](#human-oversight)
 - [Limits](#limits)
 - [Running on several VMs](#running-on-several-vms)
@@ -302,6 +303,7 @@ flowchart LR
 | `team_list_files`, `team_read_file`, `team_write_file` | if the department grants `files` | ❌ | The department's shared files. |
 | `team_list_goals` | ✅ | ❌ | The organisation's goals with their latest progress. |
 | `data_list_sources`, `data_query` | if the department was granted a data source | ❌ | Read-only business data (see [Business data](#business-data)). |
+| `outbox_channels`, `outbox_draft`, `outbox_drafts`, `outbox_revise` | if the department may use a channel | ❌ | Drafts for the outside world that people approve (see [Talking to the outside world](#talking-to-the-outside-world)). |
 | `insights_metrics`, `insights_org`, `insights_messages`, `insights_proposals`, `insights_propose`, `insights_revise` | if the department grants `insights` | ❌ | The retrospective: metrics, structure, messages, and proposals (see [below](#metrics-the-retrospective-and-improvements)). |
 | `team_report_progress` | ✅ | ❌ | `goal` (id or title), `text`: replaces the goal's latest progress note. |
 | `run_command`, `read_file`, `write_file`, `list_files` | if the department grants `sandbox` | ❌ | Commands and files in the agent's own sandbox. |
@@ -563,6 +565,50 @@ too: it can propose a `set_budget` change (admin to apply), and signals warn
 when a budget is nearly or fully used, or when tokens are used without
 prices.
 
+## Talking to the outside world
+
+Agents reach people outside the organisation (customers, leads, partners,
+the team's chat, social media) only through **channels** an admin sets up
+under *Organisation → Outbox*, and only by **drafting**: a person approves
+every message before it is sent.
+
+| Kind | Sends | Configure |
+|---|---|---|
+| **Email** | over SMTP | host, port, security (`starttls`, `tls`, or `none` for a local relay), user and password (secret), `from`, optional `reply_to`, optional allowed recipient domains, at most `max_recipients` (default 10) |
+| **Slack** | to an incoming webhook | the webhook URL (secret) |
+| **Webhook** | a JSON `POST` (`message_id`, `channel`, `recipients`, `subject`, `text`, `body`, `disclosure`, `drafted_by`, `approved_by`, `ai_generated: true`) | URL, optional header and value (secret). Connects Zapier, Make, n8n or your own service, for social media, a CRM, SMS, ... |
+
+Each channel lists the departments that may use it, a **daily limit**
+(default 50 messages, enforced even for approved messages), and a
+**disclosure** appended to every message (default *This message was written
+by an AI agent.*). Secrets are encrypted and never shown to agents; HTTP
+channels never follow redirects. *Send a test* checks the settings.
+
+**Agents** of a granted department get `outbox_channels` (the channels and
+their rules), `outbox_draft` (`channel`, `to`, `subject`, `text`),
+`outbox_drafts` (their drafts with status, feedback and errors) and
+`outbox_revise`; their prompt lists the channels and asks for accurate,
+final text without invented facts, prices or promises. Recipients are
+checked when the draft is made (allowed domains, how many).
+
+**People** see the drafts in the Outbox and, for each one:
+
+* **Approve & send** the revision they read (a draft revised in the
+  meantime is refused with `409`; two people approving at once send it
+  once);
+* **Edit** recipients, subject or text first (a new revision; the history
+  keeps every version);
+* **Send back** with what should change: the agent is told, wakes up and
+  revises it;
+* **Reject** it, with a reason the agent is told;
+* **Retry** a message whose sending failed (the error is shown).
+
+The agent gets a message about every decision. A channel can be set to
+**send without approval** (for example an internal Slack channel): drafts
+then go out at once, up to its daily limit; beyond it they wait for a
+person. Drafts waiting more than a day and failed messages appear among the
+dashboard's signals.
+
 ## Data, tools and guardrails per department
 
 | | Set per department | Enforced by |
@@ -728,6 +774,8 @@ erDiagram
     departments ||--o{ org_goals : "owns (optional)"
     org_proposals }o--o| org_agents : "proposed by"
     departments ||--o{ budgets : "limits (or the whole org)"
+    org_channels ||--o{ org_outbox : "drafts and messages"
+    org_agents ||--o{ org_outbox : "drafted by"
     departments ||--o{ org_schedules : "check-ins"
     org_agents ||--o{ org_schedules : "addressed to (optional)"
 
@@ -800,6 +848,31 @@ erDiagram
         text decided_by
         jsonb result
     }
+    org_channels {
+        uuid id PK
+        text name UK
+        text kind "email | slack | webhook"
+        jsonb config
+        bytea secret_ciphertext "encrypted"
+        uuid_array departments
+        bool requires_approval
+        int max_per_day
+        text disclosure
+    }
+    org_outbox {
+        uuid id PK
+        uuid channel_id FK
+        uuid agent_id FK
+        text_array recipients
+        text subject
+        text body
+        text status "pending | changes_requested | sending | sent | rejected | failed"
+        int revision
+        jsonb history
+        text decided_by
+        timestamptz sent_at
+        text error
+    }
     budgets {
         uuid id PK
         uuid department_id FK "null: whole organisation"
@@ -865,13 +938,19 @@ an admin.
 | Method & path | What |
 |---|---|
 | `GET /org` | Overview: settings, departments with their agents, goals, check-ins, nodes. |
-| `GET /org/stream` | SSE of change notifications (`agents`, `department`, `message`, `files`, `settings`, `goals`, `checkins`, `proposals`, `data_sources`, `budget`, `stop_all`, `resync`); clients refetch what changed. |
+| `GET /org/stream` | SSE of change notifications (`agents`, `department`, `message`, `files`, `settings`, `goals`, `checkins`, `proposals`, `data_sources`, `budget`, `outbox`, `channels`, `stop_all`, `resync`); clients refetch what changed. |
 | `GET`/`POST /org/goals` | Goals; create `{"title", "description", "department_id"?}` (operators). |
 | `PUT`/`DELETE /org/goals/{id}` | Change `title`, `description`, `department_id` (`null` clears it), `status` (`active`\|`achieved`\|`dropped`); delete. |
 | `POST /org/goals/{id}/progress` | A person records progress: `{"text"}`. |
 | `GET`/`POST /org/departments/{id}/checkins` | Check-ins of a department; create `{"name", "message", "every_minutes", "agent_id"?, "first_run_at"?}` (operators; default first run: one interval from now). |
 | `PUT`/`DELETE /org/checkins/{id}` | Change `name`, `message`, `every_minutes`, `enabled`; delete. |
 | `GET /org/metrics?days=` | Metrics of the last `days` (1–365, default 14), budgets, currency and signals. |
+| `GET /org/outbox?status=` | Drafts and sent messages, newest first. |
+| `PUT /org/outbox/{id}` | A person edits `recipients`, `subject`, `body` (`note`): a new revision (operators). |
+| `POST /org/outbox/{id}/send` | Approve and send `{"revision"}` (operators; `409` when revised, decided, or over the channel's daily limit). |
+| `POST /org/outbox/{id}/changes` · `reject` | Send back `{"text"}` (the agent revises) or reject with a reason. |
+| `GET`/`POST /org/channels` · `PUT`/`DELETE /org/channels/{id}` | Channels (no secrets); create `{"name", "kind", "description", "config", "secret"?, "departments", "requires_approval", "max_per_day", "disclosure"?}`; change; delete (admin). |
+| `POST /org/channels/{id}/test` | Send a test message now (admin), `{"to": [...]}` for email. |
 | `GET /org/spending?days=` | Currency, prices, budgets with their usage this period, calls without a price. |
 | `PUT /org/prices` · `DELETE /org/prices?provider=&model=` | Set `{"provider", "model", "input_per_mtok", "output_per_mtok"}`; delete (admin). |
 | `POST /org/prices/backfill` | Price recorded calls that have no price yet (admin). |
