@@ -59,7 +59,94 @@ export interface SessionContext {
   work_branch?: string;
   delivery_branch?: string;
   pull_request_url?: string;
+  department_id?: string;
+  department_name?: string;
+  org_agent_id?: string;
+  org_agent_kind?: AgentKind;
 }
+
+// ---- organisations (crates/agentcore-core/src/org.rs) ----
+
+export type AgentKind = "worker" | "communicator";
+export type Desired = "stopped" | "running" | "paused";
+
+export interface OrgSettings {
+  max_departments: number;
+  max_agents_per_department: number;
+}
+
+export interface OrgAgent {
+  id: string;
+  department_id: string;
+  name: string;
+  kind: AgentKind;
+  agent: string;
+  instructions: string;
+  desired: Desired;
+  node: string | null;
+  session_id: string | null;
+  status: string | null;
+  note: string | null;
+  changed_by: string;
+  created_at: string;
+}
+
+export interface Department {
+  id: string;
+  name: string;
+  description: string;
+  mission: string;
+  policy: string;
+  tools: string[];
+  communicator_agent: string;
+  state: "active" | "paused";
+  created_at: string;
+  updated_by: string;
+  agents: OrgAgent[];
+}
+
+export interface NodeInfo {
+  name: string;
+  internal_url: string;
+  capacity: number;
+  version: string;
+  started_at: string;
+  last_seen: string;
+  agents: number;
+  alive: boolean;
+}
+
+export interface OrgOverview {
+  node: string;
+  settings: OrgSettings;
+  departments: Department[];
+  nodes: NodeInfo[];
+  communicator_policy: string;
+}
+
+export interface OrgMessage {
+  id: string;
+  created_at: string;
+  scope: "internal" | "inter_department" | "human";
+  from_agent: string | null;
+  from_department: string | null;
+  from_name: string;
+  to_kind: "agent" | "department" | "all_departments";
+  to_agent: string | null;
+  to_department: string | null;
+  to_name: string;
+  text: string;
+  recipients: string[];
+}
+
+export interface DepartmentFile {
+  path: string;
+  size: number;
+  updated_at: string;
+  updated_by: string;
+}
+
+export type MessageTo = { agent: string } | { department: string } | "all_departments";
 
 export interface CheckResult {
   name: string;

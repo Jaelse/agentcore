@@ -526,6 +526,15 @@ read/write file, pause, resume, processes, kill, destroy, cleanup of
 orphans). Candidates: Firecracker
 microVMs, Kubernetes pods, remote sandboxes.
 
+## Organisations and clusters
+
+Departments of agents, communicators, message routing and running on
+several VMs are described in [Multi-agent organisations](MULTI_AGENT.md).
+In short: `org.rs` (server) holds the API, the `team_*` tools and message
+routing; `cluster.rs` holds the node heartbeat, the `LISTEN/NOTIFY`
+listener, the reconciler that converges this node's sessions to the desired
+state in PostgreSQL, and request forwarding to the node that owns a session.
+
 ## Roadmap
 
 * **Steering**: interrupt a running turn with a message (not only between

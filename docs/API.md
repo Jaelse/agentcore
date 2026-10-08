@@ -129,7 +129,7 @@ reconnect with `?after=<last seq>`. Event types: `session_created`,
 `workspace_prepared`, `sandbox_started`, `role_applied`, `agent_started`,
 `turn_started`, `output`, `action_requested`, `policy_evaluated`,
 `approval_requested`, `approval_resolved`, `action_completed`, `model_call`,
-`user_message`, `checks_completed`, `pull_request_proposed`, `delivered`,
+`user_message`, `messages_delivered`, `checks_completed`, `pull_request_proposed`, `delivered`,
 `status_changed`, `paused`, `resumed`, `stop_requested`, `turn_ended`,
 `recording_closed`, `session_ended`. The same JSON objects form the audit log.
 Session statuses: `pending`, `running`, `awaiting_approval`, `awaiting_input`,
@@ -162,6 +162,18 @@ data: {"frame":"model_delta","call_id":"…","kind":"thinking","text":"Let me ru
 `event: lagged` means the client fell behind: reconnect. `event: ended` means
 the session is over (also sent at once for finished sessions); use
 `/recording` for the replay.
+
+## Organisations (`/api/v1/org`)
+
+Departments, their agents, messages and department files, plus control at
+every level. The full list is in
+[Multi-agent organisations](MULTI_AGENT.md#api). `GET /org/stream` is an SSE
+stream of change notifications (`event: org`, data `{"kind": ...}`); clients
+refetch what changed.
+
+Session endpoints (`/sessions/{id}/...`) work on any node: a node that does
+not run the session forwards the request (streams included) to the node
+that does, or answers `503` if that node is unreachable.
 
 ## Tool gateway (`/mcp/{session}`)
 

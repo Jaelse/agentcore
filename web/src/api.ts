@@ -10,7 +10,14 @@ import type {
   TeamRole,
   AdminEvent,
   AgentEvent,
+  Department,
+  DepartmentFile,
   LiveFrame,
+  MessageTo,
+  OrgAgent,
+  OrgMessage,
+  OrgOverview,
+  OrgSettings,
   Me,
   ModelCallRecord,
   PendingApproval,
@@ -174,6 +181,40 @@ export const api = {
   ) => request<ProviderInfo>("PATCH", `/providers/${encodeURIComponent(name)}`, update),
   deleteProvider: (name: string) => request<void>("DELETE", `/providers/${encodeURIComponent(name)}`),
   adminEvents: () => request<AdminEvent[]>("GET", "/admin-events"),
+  org: () => request<OrgOverview>("GET", "/org"),
+  saveOrgSettings: (s: OrgSettings) => request<OrgSettings>("PUT", "/org/settings", s),
+  saveDepartment: (
+    id: string | null,
+    body: { name: string; description: string; mission: string; policy: string; tools: string[]; communicator_agent: string },
+  ) =>
+    id ? request<Department>("PUT", `/org/departments/${id}`, body) : request<Department>("POST", "/org/departments", body),
+  deleteDepartment: (id: string) => request<void>("DELETE", `/org/departments/${id}`),
+  controlDepartment: (id: string, control: "start" | "pause" | "resume" | "stop") =>
+    request<{ changed: number; failed: { agent: string; error: string }[] }>("POST", `/org/departments/${id}/${control}`),
+  addAgent: (department: string, body: { name: string; agent: string; instructions: string }) =>
+    request<OrgAgent>("POST", `/org/departments/${department}/agents`, body),
+  updateAgent: (id: string, body: { agent?: string; instructions?: string }) =>
+    request<OrgAgent>("PUT", `/org/agents/${id}`, body),
+  deleteAgent: (id: string) => request<void>("DELETE", `/org/agents/${id}`),
+  controlAgent: (id: string, control: "start" | "pause" | "resume" | "stop") =>
+    request<OrgAgent>("POST", `/org/agents/${id}/${control}`),
+  pauseAll: () => request<void>("POST", "/org/pause-all"),
+  resumeAll: () => request<void>("POST", "/org/resume-all"),
+  messages: (q: { department?: string; agent?: string; limit?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (q.department) params.set("department", q.department);
+    if (q.agent) params.set("agent", q.agent);
+    if (q.limit) params.set("limit", String(q.limit));
+    const query = params.toString();
+    return request<OrgMessage[]>("GET", `/org/messages${query ? `?${query}` : ""}`);
+  },
+  postMessage: (to: MessageTo, text: string) => request<OrgMessage>("POST", "/org/messages", { to, text }),
+  departmentFiles: (id: string) => request<DepartmentFile[]>("GET", `/org/departments/${id}/files`),
+  departmentFile: (id: string, path: string) =>
+    request<{ path: string; content: string }>(
+      "GET",
+      `/org/departments/${id}/files/${path.split("/").map(encodeURIComponent).join("/")}`,
+    ),
   async downloadAudit(id: string) {
     const res = await fetch(`/api/v1/sessions/${id}/audit`, { headers: headers() });
     if (!res.ok) throw new ApiError(res.status, res.statusText);
@@ -206,6 +247,41 @@ async function readSse(res: Response, onMessage: (type: string, data: string) =>
       if (data.length) onMessage(type, data.join("\n"));
     }
   }
+}
+
+/**
+ * Organisation change notifications from every node. Each one only says
+ * what changed; `onChange` refetches. Reconnects automatically.
+ */
+export function streamOrg(onChange: (kind: string) => void): () => void {
+  const controller = new AbortController();
+  const run = async () => {
+    while (!controller.signal.aborted) {
+      try {
+        const res = await fetch("/api/v1/org/stream", {
+          headers: headers({ Accept: "text/event-stream" }),
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new ApiError(res.status, res.statusText);
+        onChange("resync");
+        await readSse(res, (type, data) => {
+          if (type === "lagged") onChange("resync");
+          else if (type === "org") {
+            try {
+              onChange((JSON.parse(data) as { kind?: string }).kind ?? "resync");
+            } catch {
+              onChange("resync");
+            }
+          }
+        });
+      } catch {
+        if (controller.signal.aborted) return;
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  };
+  void run();
+  return () => controller.abort();
 }
 
 /**

@@ -9,8 +9,9 @@ import { SessionView } from "./components/SessionView";
 import { SystemCardDialog } from "./components/SystemCardDialog";
 import { Settings } from "./components/Settings";
 import { Projects } from "./components/Projects";
+import { Organisation } from "./components/Organisation";
 
-type View = "sessions" | "projects" | "settings";
+type View = "sessions" | "org" | "projects" | "settings";
 
 export default function App() {
   const [me, setMe] = useState<Me | null>(null);
@@ -118,6 +119,17 @@ export default function App() {
         <main className="main settings-main">
           <Settings me={me} onError={handleError} />
         </main>
+      ) : view === "org" ? (
+        <Organisation
+          me={me}
+          card={card}
+          onOpenSession={(id) => {
+            setSelected(id);
+            setView("sessions");
+            refresh();
+          }}
+          onError={handleError}
+        />
       ) : view === "projects" ? (
         <Projects
           me={me}

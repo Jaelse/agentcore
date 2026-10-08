@@ -339,3 +339,25 @@ a.kanban-title:hover { text-decoration: underline; }
 .player select { width: auto; }
 .chapters { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; background: var(--surface); border-top: 1px solid var(--border); }
 .chapters .chip { cursor: pointer; border: 1px solid var(--border); }
+
+/* ---- organisation ---- */
+.member-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.member { padding: 10px 12px; display: grid; gap: 6px; align-content: start; }
+.member.communicator { border-style: dashed; }
+.room-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; align-items: start; }
+.room-grid > :only-child { grid-column: 1 / -1; }
+.feed { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; max-height: 70vh; min-height: 260px; }
+.feed-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.feed-list { overflow-y: auto; padding: 10px 12px; display: grid; gap: 8px; align-content: start; }
+.message { border-left: 3px solid var(--border); padding: 4px 0 4px 10px; }
+.message.inter { border-left-color: var(--primary); }
+.message.human { border-left-color: var(--attention); }
+.tag.tone-internal { background: var(--neutral-bg); }
+.tag.tone-inter { background: #dbeafe; color: #1d4ed8; }
+.tag.tone-human { background: var(--attention-bg); color: var(--attention); }
+.composer-inline { display: grid; grid-template-columns: minmax(120px, 220px) minmax(0, 1fr) auto; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); }
+fieldset.card { display: grid; gap: 6px; margin: 0; }
+@media (max-width: 900px) {
+  .room-grid { grid-template-columns: minmax(0, 1fr); }
+  .composer-inline { grid-template-columns: minmax(0, 1fr); }
+}

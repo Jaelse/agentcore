@@ -8,8 +8,8 @@ interface Props {
   onStopAll: () => Promise<void>;
   onShowCard: () => void;
   onSignOut: () => void;
-  view: "sessions" | "projects" | "settings";
-  onView: (v: "sessions" | "projects" | "settings") => void;
+  view: "sessions" | "org" | "projects" | "settings";
+  onView: (v: "sessions" | "org" | "projects" | "settings") => void;
 }
 
 export function TopBar({ me, card, liveSessions, onStopAll, onShowCard, onSignOut, view, onView }: Props) {
@@ -27,6 +27,9 @@ export function TopBar({ me, card, liveSessions, onStopAll, onShowCard, onSignOu
         <nav className="nav">
           <button className={`nav-item ${view === "sessions" ? "active" : ""}`} onClick={() => onView("sessions")}>
             Sessions
+          </button>
+          <button className={`nav-item ${view === "org" ? "active" : ""}`} onClick={() => onView("org")}>
+            Organisation
           </button>
           <button className={`nav-item ${view === "projects" ? "active" : ""}`} onClick={() => onView("projects")}>
             Projects
@@ -46,11 +49,11 @@ export function TopBar({ me, card, liveSessions, onStopAll, onShowCard, onSignOu
         <span className="muted small">
           {me.name} · {me.role}
         </span>
-        {me.role === "operator" && (
+        {me.role !== "viewer" && (
           <button
             className="btn danger"
             disabled={stopping || liveSessions === 0}
-            title="Immediately kill every running agent"
+            title="Immediately kill every running agent, on every node"
             onClick={async () => {
               setStopping(true);
               await onStopAll();
