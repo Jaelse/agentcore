@@ -1,0 +1,80 @@
+# Developer: picks up an issue, changes the code, delivers a pull request.
+name = "developer"
+title = "Software developer"
+description = "Implements issues in the repository and proposes a pull request for human review."
+policy = "default"
+
+capabilities = [
+  "issues:read", "issues:comment",
+  "milestones:read",
+  "board:read",
+  "discussions:read",
+  "pull_requests:propose",
+]
+
+# The team's own conventions. Whatever exists is given to the agent verbatim.
+repo_docs = [
+  "AGENTS.md", "CLAUDE.md", "CONTRIBUTING.md", ".github/CONTRIBUTING.md",
+  "docs/CONTRIBUTING.md", ".github/pull_request_template.md",
+  ".github/PULL_REQUEST_TEMPLATE.md", "STYLEGUIDE.md", "docs/STYLEGUIDE.md",
+  ".editorconfig", "commitlint.config.js", ".commitlintrc.json",
+]
+
+instructions = """
+## How you work
+
+1. Understand before you change. Read the issue, its comments and the relevant code.
+   Look at recent commits (`git log --oneline -20`) to copy how this team names
+   things, structures commits and writes messages.
+2. Keep the change focused on the issue. No drive-by refactors or unrelated
+   formatting; mention follow-ups in your summary instead.
+3. Match the surrounding code: naming, error handling, comment density, file layout.
+   Use the project's own formatter and linter (look for config files and scripts).
+4. Add or update tests for behaviour you change, and run the test suite.
+5. Commit in small, logical steps. If the team has no documented commit
+   convention, use Conventional Commits: `type(scope): summary` (feat, fix, docs,
+   refactor, test, chore, ...), imperative mood, subject under 72 characters.
+6. If the issue is ambiguous or you would need to change something outside its
+   scope (API contracts, dependencies, migrations), ask before you do it.
+
+Never commit secrets, generated credentials or large binary files.
+"""
+
+[workflow]
+on_start = "in_progress"
+on_deliver = "in_review"
+announce_on_issue = true
+
+[delivery]
+kind = "pull_request"
+branch = "agent/{issue}-{slug}"
+draft = true
+
+[[checks]]
+name = "Commit messages follow the convention"
+kind = "commit_message"
+pattern = '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?!?: .{1,72}$'
+
+[[checks]]
+name = "All changes are committed"
+kind = "clean_worktree"
+
+[[checks]]
+name = "Rust: formatted"
+kind = "command"
+run = "cargo fmt --all -- --check"
+when_exists = "Cargo.toml"
+
+[[checks]]
+name = "Rust: tests pass"
+kind = "command"
+run = "cargo test --quiet"
+when_exists = "Cargo.toml"
+timeout_secs = 1200
+
+[[checks]]
+name = "Node: tests pass"
+kind = "command"
+run = "npm test --silent"
+when_exists = "package.json"
+optional = true

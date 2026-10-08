@@ -1,0 +1,570 @@
+//! Docker / OCI backend.
+//!
+//! Each session gets its own container, started idle (`sleep infinity`); the
+//! agent and every tool call are `docker exec`ed into it. The container is
+//! hardened by default: no capabilities, no privilege escalation, read-only
+//! root filesystem, non-root user, pid/memory/cpu limits and no network.
+//!
+//! Set `runtime = "runsc"` to run under gVisor (user-space kernel), which is
+//! strongly recommended when running untrusted agents on shared hosts.
+
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+use agentcore_core::{LaunchPlan, ProcessInfo};
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
+
+use crate::{
+    AgentProcess, ExecOutput, ExecRequest, Result, Sandbox, SandboxError, SandboxProvider,
+    SandboxRequest, WORKSPACE,
+};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DockerConfig {
+    /// `docker` compatible CLI (`docker`, `podman`, `nerdctl`).
+    pub cli: String,
+    /// Default image for agents that do not specify one.
+    pub image: String,
+    /// OCI runtime, e.g. `runsc` (gVisor) or `kata-runtime`.
+    pub runtime: Option<String>,
+    /// Docker network. `none` disables networking entirely; use an
+    /// `--internal` network shared with agentcore to allow only the gateway.
+    pub network: String,
+    pub user: String,
+    pub memory: String,
+    pub cpus: String,
+    pub pids_limit: u32,
+    /// Size of the writable tmpfs mounted at `/tmp` and the agent `HOME`.
+    pub tmpfs_size: String,
+    /// Extra `docker run` arguments, appended verbatim (use with care).
+    pub extra_args: Vec<String>,
+}
+
+impl Default for DockerConfig {
+    fn default() -> Self {
+        Self {
+            cli: "docker".into(),
+            image: "agentcore-sandbox:latest".into(),
+            runtime: None,
+            network: "none".into(),
+            user: "1000:1000".into(),
+            memory: "4g".into(),
+            cpus: "2".into(),
+            pids_limit: 512,
+            tmpfs_size: "1g".into(),
+            extra_args: Vec::new(),
+        }
+    }
+}
+
+pub const AGENT_HOME: &str = "/home/agent";
+
+pub struct DockerProvider {
+    config: DockerConfig,
+}
+
+impl DockerProvider {
+    pub fn new(config: DockerConfig) -> Self {
+        Self { config }
+    }
+
+    /// Arguments for `docker run`, exposed for testing and auditing.
+    pub fn run_args(&self, request: &SandboxRequest, name: &str, workspace: &str) -> Vec<String> {
+        let c = &self.config;
+        let mut args: Vec<String> = vec![
+            "run".into(),
+            "--detach".into(),
+            "--init".into(),
+            format!("--name={name}"),
+            format!("--label=agentcore.session={}", request.session_id),
+            format!("--network={}", c.network),
+            "--cap-drop=ALL".into(),
+            "--security-opt=no-new-privileges".into(),
+            "--read-only".into(),
+            format!("--tmpfs=/tmp:rw,nosuid,nodev,size={}", c.tmpfs_size),
+            format!(
+                "--tmpfs={AGENT_HOME}:rw,nosuid,nodev,size={},uid=1000,gid=1000",
+                c.tmpfs_size
+            ),
+            format!("--env=HOME={AGENT_HOME}"),
+            format!("--user={}", c.user),
+            format!("--memory={}", c.memory),
+            format!("--memory-swap={}", c.memory),
+            format!("--cpus={}", c.cpus),
+            format!("--pids-limit={}", c.pids_limit),
+            format!("--volume={workspace}:{WORKSPACE}:rw"),
+            format!("--workdir={WORKSPACE}"),
+        ];
+        if let Some(runtime) = &c.runtime {
+            args.push(format!("--runtime={runtime}"));
+        }
+        args.extend(c.extra_args.iter().cloned());
+        args.push(request.image.clone().unwrap_or_else(|| c.image.clone()));
+        args.extend(["sleep".into(), "infinity".into()]);
+        args
+    }
+}
+
+#[async_trait]
+impl SandboxProvider for DockerProvider {
+    fn name(&self) -> &'static str {
+        "docker"
+    }
+
+    async fn cleanup_orphans(&self) -> Result<usize> {
+        let ids = self
+            .cli(&[
+                "ps",
+                "--all",
+                "--quiet",
+                "--filter",
+                "label=agentcore.session",
+            ])
+            .await?;
+        let ids: Vec<&str> = ids.split_whitespace().collect();
+        if !ids.is_empty() {
+            let mut args = vec!["rm", "--force", "--volumes"];
+            args.extend(&ids);
+            self.cli(&args).await?;
+        }
+        Ok(ids.len())
+    }
+
+    async fn create(&self, request: &SandboxRequest) -> Result<Arc<dyn Sandbox>> {
+        tokio::fs::create_dir_all(&request.workspace_dir)
+            .await
+            .map_err(SandboxError::io("create workspace"))?;
+        // The workspace may hold a freshly cloned repository: give all of it
+        // to the sandbox user.
+        let dir = request.workspace_dir.clone();
+        let this = self.config.user.clone();
+        tokio::task::spawn_blocking(move || hand_over(&this, &dir))
+            .await
+            .map_err(|e| SandboxError::Command(e.to_string()))?;
+        let workspace: PathBuf = tokio::fs::canonicalize(&request.workspace_dir)
+            .await
+            .map_err(SandboxError::io("resolve workspace"))?;
+        let name = format!("agentcore-{}", request.session_id);
+        let args = self.run_args(request, &name, &workspace.to_string_lossy());
+        let output = Command::new(&self.config.cli)
+            .args(&args)
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .map_err(SandboxError::io(format!("run `{}`", self.config.cli)))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(SandboxError::Command(format!(
+                "failed to start container: {stderr}{}",
+                mount_hint(&stderr, &workspace.to_string_lossy())
+            )));
+        }
+        Ok(Arc::new(DockerSandbox {
+            cli: self.config.cli.clone(),
+            name,
+            details: serde_json::json!({
+                "container": String::from_utf8_lossy(&output.stdout).trim(),
+                "run_args": args,
+            }),
+            killed: AtomicBool::new(false),
+        }))
+    }
+}
+
+impl DockerProvider {
+    async fn cli(&self, args: &[&str]) -> Result<String> {
+        let output = Command::new(&self.config.cli)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .map_err(SandboxError::io(format!("run `{}`", self.config.cli)))?;
+        if !output.status.success() {
+            return Err(SandboxError::Command(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+}
+
+/// Give the workspace (recursively, without following symlinks) to the
+/// non-root sandbox user so the agent can write to it. Only possible when
+/// agentcore runs as root, as in the docker-compose deployment; otherwise the
+/// operator must arrange permissions.
+fn hand_over(user: &str, dir: &std::path::Path) {
+    let mut ids = user.splitn(2, ':').map(|p| p.parse::<u32>().ok());
+    let (Some(Some(uid)), gid) = (ids.next(), ids.next().flatten()) else {
+        return;
+    };
+    #[cfg(unix)]
+    {
+        fn walk(path: &std::path::Path, uid: u32, gid: Option<u32>) -> std::io::Result<()> {
+            std::os::unix::fs::lchown(path, Some(uid), gid)?;
+            let meta = std::fs::symlink_metadata(path)?;
+            if meta.is_dir() {
+                for entry in std::fs::read_dir(path)? {
+                    walk(&entry?.path(), uid, gid)?;
+                }
+            }
+            Ok(())
+        }
+        if let Err(err) = walk(dir, uid, gid) {
+            tracing::warn!(
+                dir = %dir.display(),
+                error = %err,
+                "could not hand the workspace to the sandbox user; the agent may not be able to write to it"
+            );
+        }
+    }
+}
+
+/// Extra guidance when Docker cannot bind-mount the workspace.
+fn mount_hint(stderr: &str, workspace: &str) -> String {
+    let lower = stderr.to_ascii_lowercase();
+    let mount_problem = lower.contains("mounts denied")
+        || lower.contains("not shared from the host")
+        || (lower.contains("bind source path does not exist"));
+    if !mount_problem {
+        return String::new();
+    }
+    format!(
+        "\n\nHint: the Docker daemon could not find {workspace} on the host. Workspaces are \
+         bind-mounted by the daemon, so agentcore's data directory must exist at the same \
+         path on the host and (when agentcore runs in a container) inside agentcore's \
+         container. With docker-compose, set AGENTCORE_DATA to an absolute host path \
+         (on macOS / Docker Desktop one under /Users, e.g. $HOME/agentcore-data) and \
+         recreate the agentcore container."
+    )
+}
+
+pub struct DockerSandbox {
+    cli: String,
+    name: String,
+    details: serde_json::Value,
+    killed: AtomicBool,
+}
+
+impl DockerSandbox {
+    fn check_alive(&self) -> Result<()> {
+        if self.killed.load(Ordering::SeqCst) {
+            Err(SandboxError::Killed)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn exec_cmd(
+        &self,
+        cwd: &str,
+        env: impl IntoIterator<Item = (impl AsRef<str>, impl AsRef<str>)>,
+        interactive: bool,
+    ) -> Command {
+        self.exec_cmd_tty(cwd, env, interactive, false)
+    }
+
+    fn exec_cmd_tty(
+        &self,
+        cwd: &str,
+        env: impl IntoIterator<Item = (impl AsRef<str>, impl AsRef<str>)>,
+        interactive: bool,
+        tty: bool,
+    ) -> Command {
+        let mut cmd = Command::new(&self.cli);
+        cmd.arg("exec");
+        if tty {
+            cmd.arg("--tty");
+        }
+        if interactive {
+            cmd.arg("--interactive");
+        }
+        cmd.arg(format!("--workdir={cwd}"));
+        for (k, v) in env {
+            cmd.arg(format!("--env={}={}", k.as_ref(), v.as_ref()));
+        }
+        cmd.arg(&self.name)
+            .stdin(if interactive {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        cmd
+    }
+
+    fn check_path(path: &str) -> Result<()> {
+        if path == WORKSPACE || path.starts_with(&format!("{WORKSPACE}/")) {
+            Ok(())
+        } else {
+            Err(SandboxError::OutsideWorkspace(path.into()))
+        }
+    }
+
+    /// Run a CLI command against this container, failing on a non-zero exit.
+    async fn container_cli(&self, args: &[&str]) -> Result<String> {
+        let output = Command::new(&self.cli)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .map_err(SandboxError::io(format!("docker {}", args[0])))?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            Err(SandboxError::Command(format!(
+                "docker {} failed: {}",
+                args[0],
+                String::from_utf8_lossy(&output.stderr).trim()
+            )))
+        }
+    }
+
+    async fn remove(&self) -> Result<()> {
+        let output = Command::new(&self.cli)
+            .args(["rm", "--force", "--volumes", &self.name])
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .map_err(SandboxError::io("docker rm"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(SandboxError::Command(format!(
+                "failed to remove container {}: {}",
+                self.name,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )))
+        }
+    }
+}
+
+#[async_trait]
+impl Sandbox for DockerSandbox {
+    fn backend(&self) -> &'static str {
+        "docker"
+    }
+
+    fn describe(&self) -> serde_json::Value {
+        self.details.clone()
+    }
+
+    async fn spawn(&self, plan: &LaunchPlan) -> Result<AgentProcess> {
+        self.check_alive()?;
+        let mut env: Vec<(String, String)> = plan
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let mut cmd = if plan.tty {
+            env.extend(crate::tty_env().map(|(k, v)| (k.to_string(), v)));
+            let mut cmd = self.exec_cmd_tty(WORKSPACE, env, false, true);
+            // `docker exec --tty` without a client terminal leaves the size
+            // at 0x0; set it inside before starting the agent.
+            use agentcore_core::live::{TERMINAL_COLS, TERMINAL_ROWS};
+            cmd.args([
+                "sh".to_string(),
+                "-c".to_string(),
+                format!("stty cols {TERMINAL_COLS} rows {TERMINAL_ROWS} 2>/dev/null; exec \"$@\""),
+                "agentcore".to_string(),
+            ]);
+            cmd
+        } else {
+            self.exec_cmd(WORKSPACE, env, false)
+        };
+        cmd.arg(&plan.program).args(&plan.args);
+        let mut child = cmd.spawn().map_err(SandboxError::io("docker exec agent"))?;
+        Ok(AgentProcess {
+            stdout: child.stdout.take().map(|s| Box::pin(s) as _),
+            stderr: child.stderr.take().map(|s| Box::pin(s) as _),
+            child,
+            tty: plan.tty,
+        })
+    }
+
+    async fn exec(&self, request: ExecRequest) -> Result<ExecOutput> {
+        self.check_alive()?;
+        Self::check_path(&request.cwd)?;
+        // Killing the `docker exec` client does not kill the process inside the
+        // container, so enforce the timeout inside as well.
+        let secs = request.timeout.as_secs().max(1).to_string();
+        let mut cmd = self.exec_cmd(&request.cwd, &request.env, false);
+        cmd.args(["timeout", "-s", "KILL", &secs, &request.command])
+            .args(&request.args);
+        let child = cmd.spawn().map_err(SandboxError::io("docker exec"))?;
+        crate::io::collect_live(
+            child,
+            request.timeout + Duration::from_secs(5),
+            request.max_output_bytes,
+            || {},
+            request.live,
+        )
+        .await
+        .map(|mut out| {
+            // `timeout` exits with 137 (128 + SIGKILL) when it fires.
+            if out.exit_code == Some(137) {
+                out.timed_out = true;
+            }
+            out
+        })
+        .map_err(SandboxError::io("docker exec"))
+    }
+
+    async fn read_file(&self, path: &str, max_bytes: usize) -> Result<(Vec<u8>, bool)> {
+        self.check_alive()?;
+        Self::check_path(path)?;
+        let mut cmd = self.exec_cmd(WORKSPACE, std::iter::empty::<(&str, &str)>(), false);
+        cmd.args(["cat", "--", path]);
+        let child = cmd.spawn().map_err(SandboxError::io("docker exec cat"))?;
+        let out = crate::io::collect_raw(child, Duration::from_secs(120), max_bytes, || {})
+            .await
+            .map_err(SandboxError::io("read file"))?;
+        if out.exit_code != Some(0) && !out.truncated {
+            return Err(SandboxError::Command(format!(
+                "read {path}: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        Ok((out.stdout, out.truncated))
+    }
+
+    async fn write_file(&self, path: &str, contents: &[u8]) -> Result<()> {
+        self.check_alive()?;
+        Self::check_path(path)?;
+        // The path is passed as a positional argument, never interpolated.
+        let mut cmd = self.exec_cmd(WORKSPACE, std::iter::empty::<(&str, &str)>(), true);
+        cmd.args([
+            "sh",
+            "-c",
+            r#"umask 022 && mkdir -p -- "$(dirname -- "$1")" && cat > "$1""#,
+            "sh",
+            path,
+        ]);
+        let mut child = cmd.spawn().map_err(SandboxError::io("docker exec write"))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(contents)
+                .await
+                .map_err(SandboxError::io("write file"))?;
+        }
+        let out = crate::io::collect(child, Duration::from_secs(30), 4096, || {})
+            .await
+            .map_err(SandboxError::io("write file"))?;
+        if out.exit_code == Some(0) {
+            Ok(())
+        } else {
+            Err(SandboxError::Command(format!(
+                "write {path}: {}",
+                out.stderr.trim()
+            )))
+        }
+    }
+
+    async fn kill(&self) -> Result<()> {
+        if self.killed.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+        // `rm --force` sends SIGKILL to every process in the container.
+        self.remove().await
+    }
+
+    async fn destroy(&self) -> Result<()> {
+        self.killed.store(true, Ordering::SeqCst);
+        self.remove().await
+    }
+
+    async fn pause(&self) -> Result<()> {
+        self.check_alive()?;
+        self.container_cli(&["pause", &self.name]).await.map(drop)
+    }
+
+    async fn resume(&self) -> Result<()> {
+        self.check_alive()?;
+        match self.container_cli(&["unpause", &self.name]).await {
+            Err(SandboxError::Command(e)) if e.contains("not paused") => Ok(()),
+            other => other.map(drop),
+        }
+    }
+
+    async fn processes(&self) -> Result<Vec<ProcessInfo>> {
+        self.check_alive()?;
+        let out = self
+            .container_cli(&["top", &self.name, "-eo", "pid,etime,args"])
+            .await?;
+        Ok(parse_top(&out))
+    }
+}
+
+/// Parse `docker top <name> -eo pid,etime,args`, dropping the idle
+/// `sleep infinity` that keeps the container alive.
+fn parse_top(out: &str) -> Vec<ProcessInfo> {
+    out.lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let pid = parts.next()?.parse().ok()?;
+            let elapsed = parts.next()?.to_string();
+            let command = parts.collect::<Vec<_>>().join(" ");
+            (command != "sleep infinity").then_some(ProcessInfo {
+                pid,
+                elapsed,
+                command,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_docker_top() {
+        let out = "PID   ELAPSED  COMMAND\n4242  01:02    sleep infinity\n4300  00:05    opencode run fix it\n";
+        let procs = parse_top(out);
+        assert_eq!(procs.len(), 1);
+        assert_eq!(procs[0].pid, 4300);
+        assert_eq!(procs[0].command, "opencode run fix it");
+    }
+
+    #[test]
+    fn explains_mount_errors() {
+        let mac = "docker: Error response from daemon: Mounts denied: The path /srv/x is not shared from the host and is not known to Docker.";
+        assert!(mount_hint(mac, "/srv/x").contains("AGENTCORE_DATA"));
+        assert!(mount_hint("no such image", "/srv/x").is_empty());
+    }
+
+    #[test]
+    fn run_args_are_hardened() {
+        let provider = DockerProvider::new(DockerConfig {
+            runtime: Some("runsc".into()),
+            ..Default::default()
+        });
+        let request = SandboxRequest {
+            session_id: uuid::Uuid::nil(),
+            workspace_dir: "/data/ws".into(),
+            image: Some("img:1".into()),
+        };
+        let args = provider.run_args(&request, "agentcore-x", "/data/ws");
+        for expected in [
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges",
+            "--read-only",
+            "--network=none",
+            "--runtime=runsc",
+            "--volume=/data/ws:/workspace:rw",
+        ] {
+            assert!(args.iter().any(|a| a == expected), "missing {expected}");
+        }
+        let image_pos = args.iter().position(|a| a == "img:1").unwrap();
+        assert_eq!(&args[image_pos + 1..], ["sleep", "infinity"]);
+    }
+}

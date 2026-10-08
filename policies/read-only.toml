@@ -1,0 +1,29 @@
+# Review-only agent: may look at the code and run read-only commands, nothing else.
+name = "read-only"
+description = "Inspect the workspace; every change is denied."
+default = "deny"
+
+[limits]
+max_session_secs = 1800
+max_actions = 500
+approval_timeout_secs = 600
+max_output_bytes = 65536
+
+[[rules]]
+id = "deny-secrets"
+description = "Credentials and key material must never be read by an agent."
+effect = "deny"
+kinds = ["file_read"]
+paths = ["**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/.ssh/**"]
+
+[[rules]]
+id = "allow-read-workspace"
+effect = "allow"
+kinds = ["file_read"]
+paths = ["/workspace/**"]
+
+[[rules]]
+id = "allow-inspection"
+effect = "allow"
+kinds = ["exec"]
+commands = ["ls*", "cat *", "head *", "tail *", "wc *", "grep *", "rg *", "find *", "git status*", "git diff*", "git log*", "git show*"]

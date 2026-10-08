@@ -1,0 +1,17 @@
+# Strictest HITL mode: a human approves every single side effect.
+name = "supervised"
+description = "Every action requires explicit human approval."
+default = "require_approval"
+
+[limits]
+max_session_secs = 7200
+max_actions = 300
+approval_timeout_secs = 1800
+max_output_bytes = 65536
+
+[[rules]]
+id = "deny-secrets"
+description = "Credentials and key material must never be read or written by an agent."
+effect = "deny"
+kinds = ["file_read", "file_write"]
+paths = ["**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/.ssh/**"]

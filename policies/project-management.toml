@@ -1,0 +1,52 @@
+# Guardrails for the project-manager role: manage GitHub work items, no code changes.
+name = "project-management"
+description = "Read the repository and manage issues, milestones and the board; other commands need approval."
+default = "require_approval"
+
+[limits]
+max_session_secs = 7200
+max_actions = 500
+approval_timeout_secs = 1800
+max_output_bytes = 65536
+max_model_calls = 1000
+
+[[rules]]
+id = "deny-secrets"
+description = "Credentials and key material must never be read by an agent."
+effect = "deny"
+kinds = ["file_read", "file_write"]
+paths = ["**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/.ssh/**"]
+
+[[rules]]
+id = "allow-inspection"
+description = "Look at the repository."
+effect = "allow"
+kinds = ["exec"]
+commands = ["ls*", "cat *", "git log*", "git show*"]
+
+[[rules]]
+id = "allow-read-workspace"
+effect = "allow"
+kinds = ["file_read"]
+paths = ["/workspace/**"]
+
+[[rules]]
+id = "allow-github-reads"
+description = "Reading issues, milestones, the board and discussions is always fine."
+effect = "allow"
+kinds = ["tool_call"]
+tools = ["github_list_*", "github_get_*"]
+
+[[rules]]
+id = "allow-github-updates"
+description = "Managing issues, milestones and the board is this role's job."
+effect = "allow"
+kinds = ["tool_call"]
+tools = ["github_comment_on_issue", "github_update_issue", "github_set_board_status", "github_create_issue"]
+
+[[rules]]
+id = "approve-milestones-and-public-posts"
+description = "Milestone changes and public discussion posts affect the whole team: a human approves."
+effect = "require_approval"
+kinds = ["tool_call"]
+tools = ["github_create_milestone", "github_update_milestone", "github_comment_on_discussion"]

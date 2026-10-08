@@ -1,0 +1,54 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/jaelse/agentcore"
+rust-version = "1.94"
+
+[workspace.dependencies]
+agentcore-core = { path = "crates/agentcore-core" }
+agentcore-policy = { path = "crates/agentcore-policy" }
+agentcore-audit = { path = "crates/agentcore-audit" }
+agentcore-sandbox = { path = "crates/agentcore-sandbox" }
+agentcore-runtime = { path = "crates/agentcore-runtime" }
+agentcore-server = { path = "crates/agentcore-server" }
+agentcore-store = { path = "crates/agentcore-store" }
+agentcore-roles = { path = "crates/agentcore-roles" }
+
+aes-gcm = "0.10"
+anyhow = "1"
+async-trait = "0.1"
+axum = "0.8"
+base64 = "0.22"
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+clap = { version = "4", features = ["derive", "env"] }
+futures = "0.3"
+globset = "0.4"
+hex = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "http2", "json"] }
+nix = { version = "0.31", features = ["signal", "process", "term", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-util = "0.7"
+toml = "1"
+tower-http = { version = "0.7", features = ["trace", "limit"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

@@ -1,0 +1,56 @@
+# Guardrails for the marketing role: read, draft files, ask before posting publicly.
+name = "marketing"
+description = "Read the project, write drafts in the workspace; public posts need approval."
+default = "require_approval"
+
+[limits]
+max_session_secs = 3600
+max_actions = 300
+approval_timeout_secs = 1800
+max_output_bytes = 65536
+max_model_calls = 500
+
+[[rules]]
+id = "deny-secrets"
+effect = "deny"
+kinds = ["file_read", "file_write"]
+paths = ["**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/.ssh/**"]
+
+[[rules]]
+id = "drafts-only"
+description = "Marketing writes drafts, not code."
+effect = "allow"
+kinds = ["file_write"]
+paths = ["/workspace/drafts/**"]
+
+[[rules]]
+id = "no-other-writes"
+description = "Only files under /workspace/drafts may be written."
+effect = "deny"
+kinds = ["file_write"]
+paths = ["/workspace/**"]
+
+[[rules]]
+id = "allow-read-workspace"
+effect = "allow"
+kinds = ["file_read"]
+paths = ["/workspace/**"]
+
+[[rules]]
+id = "allow-inspection"
+effect = "allow"
+kinds = ["exec"]
+commands = ["ls*", "cat *", "git log*", "git show*", "mkdir -p /workspace/drafts*"]
+
+[[rules]]
+id = "allow-github-reads"
+effect = "allow"
+kinds = ["tool_call"]
+tools = ["github_list_*", "github_get_*"]
+
+[[rules]]
+id = "approve-public-posts"
+description = "Anything published under the team's name needs a human."
+effect = "require_approval"
+kinds = ["tool_call"]
+tools = ["github_comment_on_discussion"]

@@ -1,0 +1,46 @@
+# Local development config: runs agents as plain host processes (NO isolation).
+#   cargo run -p agentcore-cli -- serve --config agentcore.dev.toml
+# Never use this config for untrusted agents or on a shared machine.
+
+[server]
+bind = "127.0.0.1:8080"
+ui_dir = "web/dist"
+
+[database]
+# Start one with: docker compose up -d postgres
+url = "postgres://agentcore:agentcore@127.0.0.1:5432/agentcore"
+
+[storage]
+data_dir = "data"
+audit_fsync = false
+
+[policies]
+dir = "policies"
+default = "default"
+
+[roles]
+dir = "roles"
+
+[sandbox]
+backend = "process"
+
+[sandbox.process]
+allow_insecure = true
+
+[transparency]
+provider = "Local development"
+contact = "you@example.com"
+
+[[agents]]
+name = "demo"
+adapter = "command"
+description = "A scripted demo agent that exercises the gateway (needs curl in the image)."
+command = "sh"
+# The task is passed as $0, never interpolated into the script itself.
+args = ["-c", """
+call() { curl -s -X POST "$AGENTCORE_GATEWAY_URL" -H "Authorization: Bearer $AGENTCORE_GATEWAY_TOKEN" -H 'Content-Type: application/json' -d "$1"; echo; }
+echo "Task: $0"
+call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file","arguments":{"path":"NOTES.md","content":"# Notes\\n"}}}'
+call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run_command","arguments":{"command":"git","args":["push"]}}}'
+call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_file","arguments":{"path":".env"}}}'
+""", "{task}"]

@@ -1,0 +1,96 @@
+# Default policy for coding agents working on a repository checkout.
+#
+# Evaluation is deny-overrides: deny > require_approval > allow > default.
+# Paths are normalised to absolute paths inside the sandbox before matching;
+# `*` does not cross `/`, `**` does.
+
+name = "default"
+description = "Work freely inside /workspace, ask before anything that leaves the sandbox."
+default = "require_approval"
+
+[limits]
+max_session_secs = 3600
+max_actions = 1000
+approval_timeout_secs = 900
+max_output_bytes = 65536
+
+# ---- hard denials -----------------------------------------------------------
+
+[[rules]]
+id = "deny-secrets"
+description = "Credentials and key material must never be read or written by an agent."
+effect = "deny"
+kinds = ["file_read", "file_write"]
+paths = ["**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/id_rsa*", "**/id_ed25519*", "**/.aws/**", "**/.ssh/**", "**/.git/config"]
+
+[[rules]]
+id = "deny-outside-workspace-writes"
+description = "Agents may only write inside the workspace."
+effect = "deny"
+kinds = ["file_write"]
+paths = ["/etc/**", "/usr/**", "/bin/**", "/sbin/**", "/lib/**", "/root/**", "/proc/**", "/sys/**", "/dev/**"]
+
+[[rules]]
+id = "deny-destructive-commands"
+description = "Destructive or privilege-escalating commands are blocked."
+effect = "deny"
+kinds = ["exec"]
+commands = ["rm -rf /*", "rm -rf ~*", "sudo *", "su *", "mkfs*", "dd *of=/dev/*", "chmod -R 777 /*", "* | sh", "* | bash", "curl *| *sh*", "wget *| *sh*"]
+
+# ---- human in the loop -------------------------------------------------------
+
+[[rules]]
+id = "approve-publish"
+description = "Publishing code or packages affects people outside the sandbox: a human must approve."
+effect = "require_approval"
+kinds = ["exec"]
+commands = ["git push*", "cargo publish*", "npm publish*", "pnpm publish*", "twine upload*", "docker push*", "gh *"]
+
+[[rules]]
+id = "approve-network"
+description = "Outbound connections to hosts that are not explicitly allowed need approval."
+effect = "require_approval"
+kinds = ["network"]
+
+# ---- allowed ----------------------------------------------------------------
+
+[[rules]]
+id = "allow-workspace-files"
+description = "Read and write anything inside the workspace."
+effect = "allow"
+kinds = ["file_read", "file_write"]
+paths = ["/workspace/**"]
+
+[[rules]]
+id = "allow-dev-tools"
+description = "Common build, test and inspection tooling."
+effect = "allow"
+kinds = ["exec"]
+commands = [
+  "ls*", "cat *", "head *", "tail *", "wc *", "grep *", "rg *", "find *", "pwd", "echo *", "diff *", "tree*",
+  "git status*", "git diff*", "git log*", "git show*", "git add *", "git commit *", "git checkout *", "git switch *", "git branch*", "git restore *",
+  "cargo build*", "cargo check*", "cargo test*", "cargo fmt*", "cargo clippy*", "cargo run*",
+  "npm test*", "npm run *", "npm ci*", "pnpm test*", "pnpm run *", "yarn test*",
+  "python *", "python3 *", "pytest*", "go build*", "go test*", "go vet*", "make*",
+]
+
+[[rules]]
+id = "allow-github-reads"
+description = "Reading issues, milestones, the board and discussions."
+effect = "allow"
+kinds = ["tool_call"]
+tools = ["github_list_*", "github_get_*", "propose_pull_request"]
+
+[[rules]]
+id = "approve-github-writes"
+description = "Comments and changes on GitHub are visible to the whole team: a human approves."
+effect = "require_approval"
+kinds = ["tool_call"]
+tools = ["github_comment_*", "github_create_*", "github_update_*", "github_set_*"]
+
+[[rules]]
+id = "allow-package-registries"
+description = "Dependency downloads from well-known registries."
+effect = "allow"
+kinds = ["network"]
+hosts = ["crates.io", "*.crates.io", "static.rust-lang.org", "registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "proxy.golang.org", "github.com", "*.githubusercontent.com"]
