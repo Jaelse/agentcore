@@ -136,17 +136,20 @@ Published in the UI ("About this system") and at `/api/v1/system-card`
 
 ## `[cluster]`
 
-Only needed when several agentcore nodes (VMs) share one database. See
-[Multi-agent organisations](MULTI_AGENT.md#running-on-several-vms).
+Mostly needed when several agentcore nodes (VMs) share one database. See
+[Multi-agent organisations](MULTI_AGENT.md#running-on-several-vms). On a
+single node the defaults apply; `heartbeat_secs` also sets how often
+budgets are checked and due check-ins are sent, and `reconcile_millis` how
+quickly agents are started, paused, put to sleep and woken.
 
 | Key | Default | Meaning |
 |---|---|---|
 | `node_name` | `$HOSTNAME`, else `local` | Unique name of this node |
 | `internal_url` | the gateway URL | How other nodes reach this node's API (private network); session requests are forwarded here |
 | `max_agents` | `20` | Department agents this node runs at the same time |
-| `heartbeat_secs` | `5` | How often the node reports that it is alive |
+| `heartbeat_secs` | `5` | How often the node reports that it is alive, checks budgets and sends due check-ins |
 | `node_timeout_secs` | `30` | A node silent for longer is considered lost; its agents are marked stopped |
-| `reconcile_millis` | `2000` | Period of the reconcile pass (it also runs on every change notification) |
+| `reconcile_millis` | `2000` | Period of the reconcile pass (it also runs on every change notification): start, pause, stop, deliver messages, sleep, wake, continue |
 
 Every node needs the same `[[server.operators]]`, `[[agents]]`, policies and
 master key.
@@ -158,6 +161,15 @@ master key.
 | `communicator_policy` | `communicator` | Policy every communicator agent runs under |
 | `default_max_departments` | `10` | Initial limit, until an admin changes it in the UI |
 | `default_max_agents_per_department` | `10` | Initial limit (communicators are not counted) |
+
+### Set in the web UI, not in the file
+
+Organisation settings live in PostgreSQL, so every node shares them, and are
+changed in the UI (or the API) by admins: limits and the company profile,
+goals and check-ins, business data sources, model prices, currency and
+budgets, outward channels, and which kinds of improvements are applied
+without asking. See [Multi-agent organisations](MULTI_AGENT.md) and the
+[Guide](GUIDE.md).
 
 ## `[[agents]]`
 

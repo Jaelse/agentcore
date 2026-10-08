@@ -189,6 +189,21 @@ repository, with the same playbook, conventions, checks and delivery as
 described here, and coordinate through their department and its
 communicator. See [Multi-agent organisations](MULTI_AGENT.md#working-on-a-repository).
 
+Working continuously changes three things compared with one agent on one
+issue:
+
+* **Rhythm instead of tickets.** Goals and daily check-ins give the
+  department its next step; agents sleep in between and continue from their
+  notes (`notes/<agent>.md` in the department files), so keep the playbook's
+  "report what you did" step: it is what the next session starts from.
+* **Delivery before the session ends.** Each session gets a fresh checkout
+  on a new branch; work that is not delivered as a pull request before the
+  session's time limit is lost. Keep tasks small enough for one session.
+* **People decide at the edges.** Pull requests are still reviewed on
+  GitHub; messages to customers go through the outbox; changes to how the
+  organisation works come as proposals from the retrospective. The
+  [Guide](GUIDE.md) describes a daily routine.
+
 ## When to change what
 
 | You want the agent to... | Change |

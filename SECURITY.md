@@ -137,6 +137,16 @@ do, and every attempt is recorded.
 * Communicators are language models: they can be persuaded to pass on
   information. The department boundary controls tools and data access, not
   what text crosses it.
+* Business data an agent reads becomes part of its prompt and is sent to the
+  model provider; grant sources with that in mind, and use read-only
+  credentials (the read-only transaction is a second line, not the first).
+  Rows can also flow into department files, messages and drafts.
+* Text agents read (business data, issues and comments, messages from other
+  departments) can contain instructions meant to steer them. People approving
+  outbox messages and proposals are the control for what leaves the
+  organisation or changes it; review drafts as if a stranger wrote them.
+* Budgets act on recorded costs with a few seconds of delay; calls in flight
+  can take spending over a limit. Keep a spending limit at the provider.
 
 ## Reporting vulnerabilities
 

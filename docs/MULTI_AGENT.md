@@ -11,6 +11,21 @@ department or the whole organisation.
 An organisation can run on one VM or be spread over several VMs (**nodes**)
 that share one PostgreSQL database.
 
+**At a glance.** Around the departments:
+
+| | What it gives you | Section |
+|---|---|---|
+| Templates and growth paths | Start with one department or a whole company, grow step by step | [Building an organisation](#building-an-organisation) |
+| A linked repository | Departments work on a GitHub project and deliver pull requests | [Working on a repository](#working-on-a-repository) |
+| Goals and check-ins | Work continues for days: agents sleep when idle, check-ins wake them, sessions continue from notes | [Goals, check-ins and agents that keep going](#goals-check-ins-and-agents-that-keep-going) |
+| Business data | Read-only tables, databases and APIs per department | [Business data](#business-data) |
+| Dashboard and retrospective | Metrics, signals of waste, and improvements people apply | [Metrics, the retrospective and improvements](#metrics-the-retrospective-and-improvements) |
+| Prices and budgets | Spend in money; budgets warn or pause the work | [Spending and budgets](#spending-and-budgets) |
+| The outbox | Email, Slack and webhooks, every message approved by a person | [Talking to the outside world](#talking-to-the-outside-world) |
+
+A step-by-step walkthrough of running an app this way is in the
+[Guide](GUIDE.md).
+
 - [Concepts](#concepts)
 - [Building an organisation](#building-an-organisation)
 - [Writing your own templates](#writing-your-own-templates)
@@ -632,9 +647,13 @@ Everything a person can do, at every level:
 | **Talk** | Message an agent (wakes it) | Post in the department room (every member receives it) | Message any department |
 | **Pause / resume** | ✅ | ✅ every agent in it, and new starts wait | ✅ (`Pause all`) |
 | **Stop** | ✅ | ✅ every agent in it | ✅ **Stop all agents** (on every node) |
+| **Decide** | Approvals of its risky actions | Its drafts in the outbox (approve, edit, send back, reject) | Improvements the retrospective proposes; auto-apply allowances |
+| **Limit** | Policy limits (time, actions, model calls) | Tools, data sources, channels, budget | Department and agent limits, organisation budget, channel daily limits |
+| **Measure** | Model calls and cost | Dashboard row: sessions, cost, waiting, denials, approvals | Dashboard, signals, spending per day |
 
 Pause and stop are recorded with who did it, in the audit log of every
-affected agent and in the admin log.
+affected agent and in the admin log. So are decisions on proposals and
+outbox messages, budget and price changes, data sources and channels.
 
 ## Limits
 
@@ -710,25 +729,47 @@ session.
 ```mermaid
 flowchart TD
     T["every 2 s, or NOTIFY"] --> L["agents placed on this node"]
-    L --> A{"desired ≠ stopped and<br/>no session yet?"}
-    A -- yes --> START["start the session<br/>(prompt with mission, colleagues, rules)"]
+    L --> A{"desired = running,<br/>no session yet?"}
+    A -- yes --> START["start the session<br/>(prompt: mission, colleagues, goals,<br/>notes, data, channels, budget, mail)"]
     L --> B{"session here,<br/>desired = stopped?"}
     B -- yes --> STOP["stop it"]
     L --> C{"desired = paused or<br/>department paused?"}
     C -- "yes, running" --> PAUSE["pause it"]
     C -- "no, paused" --> RESUME["resume it"]
     L --> D{"session waiting for input<br/>and unread inbox?"}
-    D -- yes --> WAKE["deliver: new turn"]
-    L --> E{"session gone<br/>(ended, node restarted)?"}
-    E -- yes --> DONE["desired = stopped,<br/>last status recorded"]
+    D -- yes --> DELIVER["deliver: new turn"]
+    L --> E{"session ended"}
+    E -- "time budget" --> CONT["continue in a fresh session"]
+    E -- "idle / finished" --> SLEEP["asleep (no sandbox)"]
+    E -- "stopped, failed" --> DONE["desired = stopped,<br/>last status recorded"]
+    L --> F{"asleep with mail,<br/>department active?"}
+    F -- yes --> WAKE["start a fresh session<br/>with the messages"]
 ```
+
+Automatic starts (continue, wake) are limited to 6 per agent per hour; past
+that the agent is stopped with a note, to stop loops.
+
+### Heartbeat (per node)
+
+Every `heartbeat_secs` each node, besides reporting that it is alive:
+
+1. marks the agents of nodes that stopped responding as stopped;
+2. checks the **budgets** (warn, pause, resume; see
+   [Spending and budgets](#spending-and-budgets));
+3. sends the **check-ins** that are due.
+
+Each of these is claimed in PostgreSQL by exactly one node, so with several
+nodes nothing happens twice; with one node, the same loop does it all.
 
 ### Failure handling
 
 | What fails | What happens |
 |---|---|
 | A node crashes or loses the database | Its heartbeat goes stale (`node_timeout_secs`). Any other node marks that node's agents `stopped` (status `failed`, "node lost"). Their sandboxes died with the node; agents are not silently restarted elsewhere, because their workspace state is gone. A person starts them again. |
-| A node restarts | Its interrupted sessions are closed in their audit logs (`session_ended`, interrupted) and its leftover sandboxes are removed. Only its *own* sessions: other nodes' live sessions are untouched. |
+| A node restarts | Its interrupted sessions are closed in their audit logs (`session_ended`, interrupted) and its leftover sandboxes are removed. Only its *own* sessions: other nodes' live sessions are untouched. Agents that were **asleep** stay asleep (nothing was running) and wake on their next message; agents that were working are marked stopped ("interrupted: its node restarted"). |
+| A budget runs out | `pause` budgets pause the departments in scope and the model gateway refuses their calls; they resume when the period ends or the limit is raised. |
+| An outward channel fails | The message is marked `failed` with the error; people fix the channel and retry it. Nothing is retried automatically. |
+| Several nodes run the heartbeat | Check-ins, budget steps, proposal and outbox decisions are claimed with conditional updates (`SKIP LOCKED`, revision checks): each happens once. |
 | A NOTIFY is lost | The periodic reconcile pass applies the change within 2 s. |
 | The owning node is unreachable when a session page is opened | `503 node <name> is unreachable`; the organisation views (served from PostgreSQL) keep working. |
 | Stop all agents | Writes `desired = stopped` for every agent and broadcasts `stop_all`; every node also stops sessions that do not belong to an organisation. |

@@ -163,13 +163,15 @@ it only to develop agentcore itself.
 
 | Task | How |
 |---|---|
-| Backups | PostgreSQL (`pg_dump`), `$AGENTCORE_DATA/audit` and `$AGENTCORE_DATA/recordings`, and the master key, stored **separately** from the database backup |
+| Backups | PostgreSQL (`pg_dump`: sessions, organisation, goals, proposals, outbox, prices and budgets, encrypted secrets), `$AGENTCORE_DATA/audit` and `$AGENTCORE_DATA/recordings`, and the master key, stored **separately** from the database backup |
+| Network | Sandboxes need no egress (gateways). The **server** needs outbound access to LLM providers, GitHub, the business data sources you add (databases, APIs) and the outward channels (SMTP, Slack, webhooks). |
 | Upgrades | Pull, rebuild, `docker compose up -d`. Database migrations run automatically at startup. |
-| Restarts | Sessions that were running on the restarted node are marked failed, their audit logs closed, leftover sandbox containers removed. Department agents that were running there are marked stopped ("its node restarted"); start them again from the Organisation page. Other nodes are not affected. |
+| Restarts | Sessions that were running on the restarted node are marked failed, their audit logs closed, leftover sandbox containers removed. Department agents that were working there are marked stopped ("its node restarted"); start them again from the Organisation page. Agents that were asleep stay asleep and wake on their next message. Check-ins that fell due while all nodes were down are sent once when a node is back. Other nodes are not affected. |
 | Upgrades with several nodes | Upgrade one node at a time; migrations run on the first node that starts the new version, so read the release notes for changes that older nodes cannot handle. |
 | Logs | `docker compose logs agentcore` (JSON with `--log-format json`); filter with `AGENTCORE_LOG`. |
 | Audit verification | UI (session → Audit → Verify) or `agentcore audit verify $AGENTCORE_DATA/audit/*.jsonl` |
-| Emergency | **Stop all agents** in the UI, or `POST /api/v1/stop-all`: stops every agent on every node |
+| Emergency | **Stop all agents** in the UI, or `POST /api/v1/stop-all`: stops every agent on every node. To stop only outward messages, turn the channels off (Outbox → Channels); to stop spending, set a `pause` budget. |
+| First week with an organisation | Follow the [Guide](GUIDE.md): budget first, approval on every channel, a daily look at the Outbox and Improvements. |
 
 See [SECURITY.md](../SECURITY.md) for the hardening checklist and
 [Configuration](CONFIGURATION.md) for every setting.

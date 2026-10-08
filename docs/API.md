@@ -228,6 +228,13 @@ MCP over Streamable HTTP (JSON responses, protocol `2025-06-18`). Methods:
 | `write_file {path, content}` | `file_write` | Audit records the SHA-256 of the content |
 | `list_files {path?}` | `exec` (`ls -la`) | |
 | `github_*`, `propose_pull_request` | `tool_call` | Only those the session's role allows; see [Ways of working](WAYS_OF_WORKING.md) |
+| `team_*` | `tool_call` | Department agents: messages, department files, goals ([Agent tools](MULTI_AGENT.md#agent-tools)) |
+| `data_list_sources`, `data_query` | `tool_call` | Workers of departments granted business data ([Business data](MULTI_AGENT.md#business-data)) |
+| `insights_*` | `tool_call` | Workers of departments granted `insights`: metrics and proposals ([The retrospective](MULTI_AGENT.md#the-retrospective)) |
+| `outbox_*` | `tool_call` | Workers of departments that may use a channel: drafts people approve ([Talking to the outside world](MULTI_AGENT.md#talking-to-the-outside-world)) |
+
+A session only sees the tools it may use; a tool that is not listed is also
+refused if called.
 
 Every call is policy-checked; denied calls return an error result starting
 with `DENIED:` and "Do not retry this action".
@@ -237,13 +244,14 @@ with `DENIED:` and "Do not retry this action".
 A transparent reverse proxy: the agent calls `/llm/{session}/{provider}/v1/messages`
 (or `/v1/chat/completions`, …) exactly as it would call the provider. agentcore
 replaces the session token with the provider's real key, streams the response
-back and records the call.
+back and records the call, priced with the model's price if one is set
+([Spending and budgets](MULTI_AGENT.md#spending-and-budgets)).
 
 | Status | Meaning |
 |---|---|
 | 400 | Invalid path (`.` / `..` segments) |
 | 401 | Unknown session or wrong token |
-| 403 | Session stopped, provider disabled, or model not in `allowed_models` |
+| 403 | Session stopped, provider disabled, model not in `allowed_models`, or a `pause` budget covering the session's department (or the organisation) is used up |
 | 404 | No provider with that name |
 | 429 | `max_model_calls` reached |
 | 502 | Provider unreachable |

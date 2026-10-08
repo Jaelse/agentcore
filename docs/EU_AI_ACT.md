@@ -107,3 +107,8 @@ verification at that line.
   retention and access rules as the audit logs.
 * Operator identity is token based; OIDC/SSO is planned to tie interventions to
   corporate identities.
+* Business data read by agents and messages in the outbox can contain
+  personal data (customers, leads): set retention and access rules for
+  `org_outbox`, `org_messages` and `department_files`, and grant data sources
+  only where needed. The AI disclosure on outward messages is configurable
+  per channel; keep it on for people outside the organisation.
