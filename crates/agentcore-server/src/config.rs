@@ -30,7 +30,64 @@ pub struct Config {
     #[serde(default)]
     pub transparency: Transparency,
     #[serde(default)]
+    pub cluster: ClusterConfig,
+    #[serde(default)]
+    pub org: OrgConfig,
+    #[serde(default)]
     pub agents: Vec<AgentSpec>,
+}
+
+/// This node's place in a cluster of agentcore nodes sharing one database.
+/// A single-VM installation needs nothing here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ClusterConfig {
+    /// Unique name of this node. Defaults to `$HOSTNAME`, else `local`.
+    pub node_name: Option<String>,
+    /// URL other nodes use to reach this node's API (private network).
+    /// Defaults to the gateway URL.
+    pub internal_url: Option<String>,
+    /// Department agents this node runs at the same time.
+    pub max_agents: u32,
+    pub heartbeat_secs: u64,
+    /// A node whose heartbeat is older than this is considered lost.
+    pub node_timeout_secs: u64,
+    /// Interval of the reconcile pass (it also runs on every notification).
+    pub reconcile_millis: u64,
+}
+
+impl Default for ClusterConfig {
+    fn default() -> Self {
+        Self {
+            node_name: None,
+            internal_url: None,
+            max_agents: 20,
+            heartbeat_secs: 5,
+            node_timeout_secs: 30,
+            reconcile_millis: 2000,
+        }
+    }
+}
+
+/// Multi-agent organisations (departments). See docs/MULTI_AGENT.md.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OrgConfig {
+    /// Policy every communicator agent runs under.
+    pub communicator_policy: String,
+    /// Initial limits; afterwards an admin sets them in the UI.
+    pub default_max_departments: u32,
+    pub default_max_agents_per_department: u32,
+}
+
+impl Default for OrgConfig {
+    fn default() -> Self {
+        Self {
+            communicator_policy: "communicator".into(),
+            default_max_departments: 10,
+            default_max_agents_per_department: 10,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -249,6 +306,14 @@ impl Config {
                 self.server.bind
             );
         }
+        if self.cluster.heartbeat_secs == 0
+            || self.cluster.node_timeout_secs <= self.cluster.heartbeat_secs
+        {
+            anyhow::bail!("[cluster]: node_timeout_secs must be greater than heartbeat_secs (> 0)");
+        }
+        if self.cluster.reconcile_millis < 100 {
+            anyhow::bail!("[cluster]: reconcile_millis must be at least 100");
+        }
         for op in &self.server.operators {
             if op.token_sha256.len() != 64 || hex::decode(&op.token_sha256).is_err() {
                 anyhow::bail!(
@@ -278,6 +343,25 @@ impl Config {
             .master_key_file
             .clone()
             .unwrap_or_else(|| self.storage.data_dir.join("master.key"))
+    }
+
+    pub fn node_name(&self) -> String {
+        self.cluster
+            .node_name
+            .clone()
+            .or_else(|| std::env::var("HOSTNAME").ok())
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "local".into())
+    }
+
+    pub fn internal_url(&self) -> String {
+        self.cluster
+            .internal_url
+            .clone()
+            .unwrap_or_else(|| self.gateway_url())
+            .trim_end_matches('/')
+            .to_string()
     }
 
     pub fn gateway_url(&self) -> String {

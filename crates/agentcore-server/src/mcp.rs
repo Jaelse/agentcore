@@ -203,7 +203,11 @@ pub async fn handle(
         ),
         "ping" => rpc_result(&id, json!({})),
         "tools/list" => {
-            let mut list = tools().as_array().cloned().unwrap_or_default();
+            let mut list = if session.sandbox_tools_enabled() {
+                tools().as_array().cloned().unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             list.extend(session.external_tools());
             rpc_result(&id, json!({ "tools": list }))
         }
@@ -227,8 +231,11 @@ pub async fn handle(
                     },
                     None,
                 ))
-            } else {
+            } else if session.sandbox_tools_enabled() {
                 to_action(name, &args)
+            } else {
+                // Not offered to this agent, so not callable either.
+                Err(format!("unknown tool `{name}`"))
             };
             match mapped {
                 Err(message) => rpc_result(&id, tool_text(message, true)),

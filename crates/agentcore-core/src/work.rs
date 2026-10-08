@@ -29,6 +29,16 @@ pub struct SessionContext {
     pub delivery_branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pull_request_url: Option<String>,
+    /// Organisation membership (department agents).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub department_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub department_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org_agent_id: Option<Uuid>,
+    /// `worker` or `communicator`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub org_agent_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

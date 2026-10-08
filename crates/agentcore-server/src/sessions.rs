@@ -71,11 +71,12 @@ impl SessionRef {
     }
 }
 
-pub fn record(session: &Session) -> SessionRecord {
+pub fn record(session: &Session, node: &str) -> SessionRecord {
     SessionRecord {
         info: session.info(),
         policy_digest: session.policy_digest().to_string(),
         audit_path: session.audit_path().to_path_buf(),
+        node: Some(node.to_string()),
     }
 }
 
@@ -94,7 +95,11 @@ impl AppState {
     }
 
     pub async fn persist(&self, session: &Session) {
-        if let Err(err) = self.store.upsert_session(&record(session)).await {
+        if let Err(err) = self
+            .store
+            .upsert_session(&record(session, &self.node))
+            .await
+        {
             tracing::error!(session = %session.id(), error = %err, "failed to persist session");
         }
     }
@@ -111,6 +116,9 @@ impl AppState {
                         EventKind::SessionEnded { .. } => break,
                         EventKind::StatusChanged { status } => {
                             state.persist(&session).await;
+                            // Department agents: status shown in the
+                            // organisation, mail delivered when it waits.
+                            state.reconcile.notify_one();
                             // A turn ended: keep the latest change snapshot.
                             if status == agentcore_core::SessionStatus::AwaitingInput {
                                 state.persist_changes(&session).await;
@@ -127,6 +135,7 @@ impl AppState {
             }
             state.persist(&session).await;
             state.persist_changes(&session).await;
+            state.reconcile.notify_one();
         });
     }
 
@@ -139,10 +148,11 @@ impl AppState {
     }
 }
 
-/// After a crash or restart: mark sessions that were live as failed, close
-/// their audit logs with a `session_ended` event, and remove their sandboxes.
-pub async fn recover(store: &Store, sandbox: &dyn agentcore_sandbox::SandboxProvider) {
-    match store.fail_interrupted_sessions().await {
+/// After a crash or restart: mark this node's sessions that were live as
+/// failed, close their audit logs with a `session_ended` event, and remove
+/// their sandboxes. Other nodes' sessions are not touched.
+pub async fn recover(store: &Store, sandbox: &dyn agentcore_sandbox::SandboxProvider, node: &str) {
+    match store.fail_interrupted_sessions(node).await {
         Ok(sessions) => {
             for record in sessions {
                 let path = record.audit_path.clone();

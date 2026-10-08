@@ -19,6 +19,10 @@ impl ApiError {
         }
     }
 
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
     /// An error with a structured JSON body (must contain `error`).
     pub fn with_body(status: StatusCode, body: serde_json::Value) -> Self {
         Self {
@@ -58,7 +62,8 @@ impl From<agentcore_store::StoreError> for ApiError {
         let status = match &err {
             E::Invalid(_) => StatusCode::BAD_REQUEST,
             E::NotFound(_) => StatusCode::NOT_FOUND,
-            E::Conflict(_) => StatusCode::CONFLICT,
+            E::Conflict(_) | E::Limit(_) => StatusCode::CONFLICT,
+            E::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         Self::new(status, err.to_string())

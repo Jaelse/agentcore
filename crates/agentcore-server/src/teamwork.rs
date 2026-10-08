@@ -662,6 +662,7 @@ pub async fn start_session(
             tools: Some(Arc::new(tools)),
             work_item: Some(work_item),
             context,
+            ..Default::default()
         },
     )?;
     let _ = mirror_cell.set(state.mirror_path(session.id()));

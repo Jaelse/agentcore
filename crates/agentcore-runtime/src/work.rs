@@ -45,6 +45,13 @@ pub struct SessionOptions {
     /// The work item (issue, notes) used to compose the role prompt.
     pub work_item: Option<WorkItem>,
     pub context: SessionContext,
+    /// Do not offer the built-in sandbox tools (`run_command`, `read_file`,
+    /// ...): the agent only gets the external tools. Used for communicators
+    /// and departments that do not grant sandbox access.
+    pub hide_sandbox_tools: bool,
+    /// How the agent is named in the audit trail (default: the agent spec
+    /// name), e.g. `Research/analyst`.
+    pub agent_label: Option<String>,
 }
 
 /// Git configuration forced on every git command agentcore runs, so nothing

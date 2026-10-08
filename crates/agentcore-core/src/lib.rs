@@ -10,6 +10,7 @@ pub mod agent;
 pub mod event;
 pub mod live;
 pub mod model;
+pub mod org;
 pub mod principal;
 pub mod session;
 pub mod work;
@@ -19,6 +20,10 @@ pub use agent::{AgentAdapter, AgentSpec, LaunchContext, LaunchPlan};
 pub use event::{Event, EventKind, OutputStream};
 pub use live::{FileChange, FileChangeKind, LiveFrame, ModelDeltaKind, ProcessInfo};
 pub use model::{ModelCallOutcome, ModelEndpoint, ProviderKind};
+pub use org::{
+    AgentKind, DeliveredMessage, Department, DepartmentId, DepartmentState, Desired, MessageScope,
+    NodeInfo, OrgAgent, OrgAgentId, OrgMessage, OrgSettings,
+};
 pub use principal::Principal;
 pub use session::{SessionId, SessionInfo, SessionStatus};
 pub use work::{

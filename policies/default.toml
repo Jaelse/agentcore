@@ -82,6 +82,13 @@ kinds = ["tool_call"]
 tools = ["github_list_*", "github_get_*", "propose_pull_request"]
 
 [[rules]]
+id = "allow-team"
+description = "Organisation messaging and department files (multi-agent departments)."
+effect = "allow"
+kinds = ["tool_call"]
+tools = ["team_list_colleagues", "team_read_messages", "team_send_message", "team_list_files", "team_read_file", "team_write_file"]
+
+[[rules]]
 id = "approve-github-writes"
 description = "Comments and changes on GitHub are visible to the whole team: a human approves."
 effect = "require_approval"

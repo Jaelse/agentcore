@@ -7,6 +7,7 @@
 //! * `admin_events`: who changed configuration.
 
 mod crypto;
+mod org;
 mod teamwork;
 #[doc(hidden)]
 pub mod testing;
@@ -23,6 +24,10 @@ use sqlx::types::Json;
 use uuid::Uuid;
 
 pub use crypto::{Cipher, MASTER_KEY_ENV};
+pub use org::{
+    AgentInput, AgentScope, COMMUNICATOR_NAME, DepartmentInput, FileInfo, MAX_FILE_BYTES,
+    MessageFilter, NewMessage, ORG_CHANNEL, RESERVED_NAMES, valid_agent_name,
+};
 pub use teamwork::{
     BoardColumns, BoardConfig, GitHubConfig, GitHubConnection, GitHubUpdate, Project, ProjectInput,
 };
@@ -43,6 +48,12 @@ pub enum StoreError {
     NotFound(String),
     #[error("{0} already exists")]
     Conflict(String),
+    /// A limit set by an admin would be exceeded.
+    #[error("{0}")]
+    Limit(String),
+    /// No node can take the work right now.
+    #[error("{0}")]
+    Unavailable(String),
 }
 
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;
@@ -80,6 +91,7 @@ struct SessionRow {
     model_calls: i64,
     audit_path: String,
     context: Json<agentcore_core::SessionContext>,
+    node: Option<String>,
 }
 
 /// A session as persisted.
@@ -88,6 +100,8 @@ pub struct SessionRecord {
     pub info: SessionInfo,
     pub policy_digest: String,
     pub audit_path: PathBuf,
+    /// Node that runs (or ran) the session.
+    pub node: Option<String>,
 }
 
 impl From<SessionRow> for SessionRecord {
@@ -109,6 +123,7 @@ impl From<SessionRow> for SessionRecord {
             },
             policy_digest: row.policy_digest,
             audit_path: row.audit_path.into(),
+            node: row.node,
         }
     }
 }
@@ -276,8 +291,8 @@ impl Store {
         let info = &record.info;
         sqlx::query(
             "INSERT INTO sessions (id, agent, task, policy, policy_digest, status, created_by,
-                                   created_at, ended_at, actions, model_calls, audit_path, context)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                                   created_at, ended_at, actions, model_calls, audit_path, context, node)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
              ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status,
                  ended_at = EXCLUDED.ended_at, actions = EXCLUDED.actions,
                  model_calls = EXCLUDED.model_calls, context = EXCLUDED.context",
@@ -295,6 +310,7 @@ impl Store {
         .bind(info.model_calls as i64)
         .bind(record.audit_path.to_string_lossy().as_ref())
         .bind(Json(&info.context))
+        .bind(&record.node)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -303,7 +319,7 @@ impl Store {
     pub async fn list_sessions(&self, limit: i64) -> Result<Vec<SessionRecord>> {
         let rows: Vec<SessionRow> = sqlx::query_as(
             "SELECT id, agent, task, policy, policy_digest, status, created_by, created_at,
-                    ended_at, actions, model_calls, audit_path, context
+                    ended_at, actions, model_calls, audit_path, context, node
              FROM sessions ORDER BY created_at DESC LIMIT $1",
         )
         .bind(limit)
@@ -315,7 +331,7 @@ impl Store {
     pub async fn get_session(&self, id: SessionId) -> Result<Option<SessionRecord>> {
         let row: Option<SessionRow> = sqlx::query_as(
             "SELECT id, agent, task, policy, policy_digest, status, created_by, created_at,
-                    ended_at, actions, model_calls, audit_path, context
+                    ended_at, actions, model_calls, audit_path, context, node
              FROM sessions WHERE id = $1",
         )
         .bind(id)
@@ -324,15 +340,19 @@ impl Store {
         Ok(row.map(Into::into))
     }
 
-    /// Mark sessions that were live when agentcore last stopped as failed and
-    /// return them, so their audit logs can be closed.
-    pub async fn fail_interrupted_sessions(&self) -> Result<Vec<SessionRecord>> {
+    /// Mark sessions of this node that were live when it last stopped as
+    /// failed and return them, so their audit logs can be closed. Sessions
+    /// of other nodes are left alone (sessions without a node predate
+    /// clustering and belong to whichever node starts first).
+    pub async fn fail_interrupted_sessions(&self, node: &str) -> Result<Vec<SessionRecord>> {
         let rows: Vec<SessionRow> = sqlx::query_as(
             "UPDATE sessions SET status = 'failed', ended_at = now()
              WHERE status NOT IN ('stopped', 'completed', 'failed')
+               AND (node = $1 OR node IS NULL)
              RETURNING id, agent, task, policy, policy_digest, status, created_by, created_at,
-                       ended_at, actions, model_calls, audit_path, context",
+                       ended_at, actions, model_calls, audit_path, context, node",
         )
+        .bind(node)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(Into::into).collect())

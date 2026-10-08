@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 use agentcore_audit::AuditLog;
 use agentcore_core::{
     AI_GENERATED_MARKER, Action, ActionOutcome, AgentAdapter, AgentSpec, Changes, CheckResult,
-    Event, EventKind, LaunchContext, LaunchPlan, LiveFrame, ModelEndpoint, OutputStream, Principal,
-    PullRequestProposal, SessionContext, SessionId, SessionInfo, SessionStatus, Verdict,
+    DeliveredMessage, Event, EventKind, LaunchContext, LaunchPlan, LiveFrame, ModelEndpoint,
+    OutputStream, Principal, PullRequestProposal, SessionContext, SessionId, SessionInfo,
+    SessionStatus, Verdict,
 };
 use agentcore_policy::{CompiledPolicy, normalize_action};
 use agentcore_roles::{CheckKind, RepoDoc, Role, compose_prompt};
@@ -79,6 +80,8 @@ pub struct Session {
     workspace: Option<Arc<dyn WorkspaceSetup>>,
     tools: Option<Arc<dyn ToolHandler>>,
     work_item: Option<agentcore_roles::WorkItem>,
+    hide_sandbox_tools: bool,
+    agent_label: String,
     context: Mutex<SessionContext>,
     base_commit: Mutex<Option<String>>,
     last_changes: Mutex<Option<Changes>>,
@@ -114,6 +117,10 @@ impl Session {
         let (events, _) = broadcast::channel(1024);
         let (inbox, inbox_rx) = mpsc::unbounded_channel();
         let options = params.options;
+        let agent_label = options
+            .agent_label
+            .clone()
+            .unwrap_or_else(|| params.spec.name.clone());
         let mut context = options.context;
         if let Some(role) = &options.role {
             context.role.get_or_insert_with(|| role.name.clone());
@@ -144,6 +151,8 @@ impl Session {
             workspace: options.workspace,
             tools: options.tools,
             work_item: options.work_item,
+            hide_sandbox_tools: options.hide_sandbox_tools,
+            agent_label,
             context: Mutex::new(context),
             base_commit: Mutex::new(None),
             last_changes: Mutex::new(None),
@@ -229,6 +238,11 @@ impl Session {
 
     pub fn base_commit(&self) -> Option<String> {
         lock(&self.base_commit).clone()
+    }
+
+    /// Whether the built-in sandbox tools are offered to the agent.
+    pub fn sandbox_tools_enabled(&self) -> bool {
+        !self.hide_sandbox_tools
     }
 
     /// Tool definitions from the external tool handler (e.g. GitHub).
@@ -500,6 +514,38 @@ impl Session {
             by,
             text: text.clone(),
         }) {
+            self.turn_active.store(false, Ordering::SeqCst);
+            return Err(err);
+        }
+        self.inbox
+            .send(Inbox::Message(text))
+            .map_err(|_| RuntimeError::NotRunning)
+    }
+
+    /// Hand messages from the agent's organisation (colleagues, its
+    /// communicator, people) to an agent that is waiting for input; they
+    /// start its next turn. Fails with [`RuntimeError::NotAwaitingInput`]
+    /// while the agent is busy or paused, so the caller keeps them queued.
+    pub fn deliver_messages(&self, messages: Vec<DeliveredMessage>) -> Result<(), RuntimeError> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+        if self.status() != SessionStatus::AwaitingInput
+            || self.is_paused()
+            || self.turn_active.swap(true, Ordering::SeqCst)
+        {
+            return Err(RuntimeError::NotAwaitingInput);
+        }
+        let text = format!(
+            "You have {} new message(s):\n\n{}",
+            messages.len(),
+            messages
+                .iter()
+                .map(DeliveredMessage::render)
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        );
+        if let Err(err) = self.emit(EventKind::MessagesDelivered { messages }) {
             self.turn_active.store(false, Ordering::SeqCst);
             return Err(err);
         }
@@ -1236,7 +1282,7 @@ impl Session {
         self.emit(EventKind::ActionRequested {
             action_id,
             action: action.clone(),
-            requested_by: Principal::Agent(self.spec.name.clone()),
+            requested_by: Principal::Agent(self.agent_label.clone()),
         })?;
 
         let limits = self.policy.limits().clone();
