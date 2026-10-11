@@ -42,6 +42,7 @@ flowchart LR
 | Work that keeps going | **Goals** and scheduled **check-ins** keep the organisation working over days: idle agents sleep (no cost), check-ins and messages wake them, and agents that run out of time continue in a fresh session from their notes. |
 | Facts and improvement | Departments read granted **business data** (tables, PostgreSQL, HTTP APIs; read-only). A **dashboard** shows how the organisation is doing and what looks inefficient; a **Retrospective** agent proposes improvements with evidence that people apply, change, send back or reject. |
 | Spending control | Every model call is **priced**; **budgets** per organisation or department warn, or pause the work and refuse model calls when money runs out, and resume next period. |
+| Shipping what agents build | **Releases**: agents propose a semantic version, notes, artifacts with SHA-256 digests, an SBOM and check results; the server scores the risk from facts (version change, change size from GitHub, checks, the product's rollback history, timing) and adapts the rollout. Distinct people approve after the server downloads and verifies every artifact. Staged rollouts (canary → everyone) with deterministic cohorts; **health gates** on client crash and install reports or any business data roll a release back on their own. Clients get **Ed25519-signed DSSE manifests**; every release carries a signed **in-toto attestation** naming its agent and approvers; webhooks are HMAC-signed. See [docs/RELEASES.md](docs/RELEASES.md). |
 | Talking to the outside world | Agents reach people (email, Slack, webhooks to social media or a CRM) only through an **outbox**: a person approves, edits, sends back or rejects every message, and each one carries an AI disclosure. |
 | Any agent | **Agent catalogue**: add popular open-source agents (opencode, Codex CLI, Qwen Code, goose, fast-agent, Aider, mini-SWE-agent; MIT/Apache-2.0 only) from the web UI with a provider and a model; agentcore wires each one to its model gateway and, where the agent supports it, its policy-checked tools. See [docs/AGENT_CATALOG.md](docs/AGENT_CATALOG.md). Your own agents: the `command` adapter (any CLI) or an `AgentAdapter`. |
 | User policies | TOML policies with allow / deny / require-approval rules over commands, paths, hosts and tools; deny-overrides semantics; limits. |
@@ -151,15 +152,15 @@ agentcore hash-token '<token>'
 | `crates/agentcore-sandbox` | `Sandbox` trait; Docker and (dev-only) process backends |
 | `crates/agentcore-runtime` | Session supervisor, approvals, kill switch, adapters |
 | `crates/agentcore-roles` | Roles (playbooks): instructions, team conventions, tools, workflow, checks |
-| `crates/agentcore-store` | PostgreSQL: sessions, model providers, GitHub connection (encrypted secrets), projects, model calls, changes, admin log, organisations (departments, agents, messages, files, goals, check-ins, data sources, activity, proposals, prices, budgets, channels, outbox), node registry |
-| `crates/agentcore-server` | REST/SSE API, MCP tool gateway, model gateway, auth, config, UI hosting, organisations and templates, cluster (nodes, reconciler, forwarding) |
+| `crates/agentcore-store` | PostgreSQL: sessions, model providers, GitHub connection (encrypted secrets), projects, model calls, changes, admin log, organisations (departments, agents, messages, files, goals, check-ins, data sources, activity, proposals, prices, budgets, channels, outbox), releases (products, releases, client reports, signing keys), node registry |
+| `crates/agentcore-server` | REST/SSE API, MCP tool gateway, model gateway, auth, config, UI hosting, organisations and templates, releases and distribution (signed manifests, rollouts), cluster (nodes, reconciler, forwarding) |
 | `crates/agentcore-cli` | The `agentcore` binary |
 | `web/` | React + TypeScript web UI (Vite) |
 | `policies/` | Guardrail policies: `default`, `read-only`, `supervised`, `project-management`, `marketing`, `department`, `communicator` |
 | `roles/` | Roles: `developer`, `project-manager`, `marketing` |
 | `templates/` | Department templates (`departments/`, including the Retrospective), growth paths (`blueprints/`) and the agent catalogue (`agents/`) |
 | `sandbox-image/` | The image agents run in, and `install-agents.sh` to add catalogue agents |
-| `docs/` | Guide, architecture, multi-agent organisations, agent catalogue, ways of working, deployment, configuration, API, policies, EU AI Act mapping |
+| `docs/` | Guide, architecture, multi-agent organisations, releases and distribution, agent catalogue, ways of working, deployment, configuration, API, policies, EU AI Act mapping |
 
 ## Documentation
 
@@ -172,6 +173,7 @@ agentcore hash-token '<token>'
 - [Configuration](docs/CONFIGURATION.md): every setting and environment variable.
 - [API](docs/API.md): operator API, live event stream, tool and model gateways.
 - [Policies](docs/POLICIES.md): guardrail policy language reference.
+- [Releases and distribution](docs/RELEASES.md): products, proposing releases, risk from facts, approval and artifact verification, staged rollouts, health gates and automatic rollback, update clients, signed manifests and attestations.
 - [EU AI Act](docs/EU_AI_ACT.md): how agentcore supports the obligations for providers and deployers.
 - [Security](SECURITY.md): threat model and hardening.
 

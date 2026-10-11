@@ -21,7 +21,7 @@ fn secret_aad(id: Uuid) -> Vec<u8> {
 }
 
 /// Ciphertext and nonce of a channel's secret (both NULL when none is set).
-type SealedSecret = (Option<Vec<u8>>, Option<Vec<u8>>);
+pub(crate) type SealedSecret = (Option<Vec<u8>>, Option<Vec<u8>>);
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChannelInput {

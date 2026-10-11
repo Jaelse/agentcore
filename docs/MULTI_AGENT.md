@@ -624,6 +624,19 @@ then go out at once, up to its daily limit; beyond it they wait for a
 person. Drafts waiting more than a day and failed messages appear among the
 dashboard's signals.
 
+## Shipping releases
+
+A department that builds software can ship it. An admin creates a
+**product** (Organisation → 🚀 Releases → + Product) and names the
+departments whose agents may propose releases; their workers get the
+`release_*` tools and a "Releasing software" section in their prompt.
+Agents propose a version with notes, artifacts and their SHA-256 digests;
+the server scores the risk from facts and adapts the rollout; people approve
+after the server verified every artifact; the release goes out in stages,
+and health gates on client reports or business data roll it back on their
+own. Agents hear about every step and can halt a rollout, never start or
+advance one. See [Releases and distribution](RELEASES.md).
+
 ## Data, tools and guardrails per department
 
 | | Set per department | Enforced by |

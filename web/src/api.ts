@@ -47,6 +47,11 @@ import type {
   Channel,
   ChannelKind,
   OutboxItem,
+  Product,
+  ProductInput,
+  ProductSummary,
+  Release,
+  ReleaseDetail,
 } from "./types";
 
 const TOKEN_KEY = "agentcore.token";
@@ -346,6 +351,27 @@ export const api = {
     body: Partial<{ description: string; config: Record<string, unknown>; secret: string; departments: string[]; requires_approval: boolean; max_per_day: number; disclosure: string; enabled: boolean }>,
   ) => request<Channel>("PUT", `/org/channels/${id}`, body),
   deleteChannel: (id: string) => request<void>("DELETE", `/org/channels/${id}`),
+  products: () => request<ProductSummary[]>("GET", "/releases/products"),
+  createProduct: (body: ProductInput) =>
+    request<{ product: Product; client_token: string }>("POST", "/releases/products", body),
+  updateProduct: (id: string, body: Partial<ProductInput> & { enabled?: boolean }) =>
+    request<Product>("PUT", `/releases/products/${id}`, body),
+  deleteProduct: (id: string) => request<void>("DELETE", `/releases/products/${id}`),
+  rotateClientToken: (id: string) =>
+    request<{ product: Product; client_token: string }>("POST", `/releases/products/${id}/token`),
+  freezeProduct: (id: string, reason: string) => request<Product>("PUT", `/releases/products/${id}/freeze`, { reason }),
+  unfreezeProduct: (id: string) => request<Product>("DELETE", `/releases/products/${id}/freeze`),
+  releases: (product?: string) => request<Release[]>("GET", `/releases${product ? `?product=${product}` : ""}`),
+  release: (id: string) => request<ReleaseDetail>("GET", `/releases/${id}`),
+  approveRelease: (id: string, revision: number) =>
+    request<{ release: Release; started: boolean; note?: string }>("POST", `/releases/${id}/approve`, { revision }),
+  startRelease: (id: string) => request<Release>("POST", `/releases/${id}/start`),
+  releaseChanges: (id: string, text: string) => request<Release>("POST", `/releases/${id}/changes`, { text }),
+  rejectRelease: (id: string, text: string) => request<Release>("POST", `/releases/${id}/reject`, { text }),
+  pauseRelease: (id: string, text: string) => request<Release>("POST", `/releases/${id}/pause`, { text }),
+  resumeRelease: (id: string) => request<Release>("POST", `/releases/${id}/resume`),
+  promoteRelease: (id: string) => request<Release>("POST", `/releases/${id}/promote`),
+  rollBackRelease: (id: string, text: string) => request<Release>("POST", `/releases/${id}/rollback`, { text }),
   testChannel: (id: string, to: string[]) => request<{ ok: boolean; error?: string }>("POST", `/org/channels/${id}/test`, { to }),
   pauseAll: () => request<void>("POST", "/org/pause-all"),
   resumeAll: () => request<void>("POST", "/org/resume-all"),

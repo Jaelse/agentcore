@@ -492,9 +492,59 @@ pub fn signals(
     budgets: &[agentcore_core::BudgetStatus],
     currency: &str,
     outbox: &agentcore_store::OutboxCounts,
+    releases: &agentcore_store::ReleaseCounts,
 ) -> Vec<Signal> {
     let now = chrono::Utc::now();
     let mut out = Vec::new();
+    if releases.rolled_back > 0 {
+        out.push(Signal {
+            severity: "high",
+            kind: "release_rolled_back",
+            title: format!(
+                "{} release(s) were rolled back in this period",
+                releases.rolled_back
+            ),
+            detail: "A health gate failed or a person took a release back: users met a problem."
+                .into(),
+            suggestion: "Find the cause, add a check that catches it before release, and tighten \
+                         the health gates if they reacted late."
+                .into(),
+            department_id: None,
+            agent_id: None,
+            goal_id: None,
+        });
+    }
+    if let Some(oldest) = releases.oldest_proposed
+        && (now - oldest).num_hours() >= 24
+    {
+        out.push(Signal {
+            severity: "medium",
+            kind: "release_waiting",
+            title: format!(
+                "{} release(s) wait for approval, the oldest for {}",
+                releases.proposed,
+                hours((now - oldest).num_seconds() as f64)
+            ),
+            detail: "Finished work is not reaching users.".into(),
+            suggestion: "Review the releases, or ask for changes so the agents can act.".into(),
+            department_id: None,
+            agent_id: None,
+            goal_id: None,
+        });
+    }
+    if releases.paused > 0 {
+        out.push(Signal {
+            severity: "medium",
+            kind: "release_paused",
+            title: format!("{} rollout(s) are paused", releases.paused),
+            detail: "Some users run the new version, the rest the old one, until someone decides."
+                .into(),
+            suggestion: "Resume the rollout or roll it back.".into(),
+            department_id: None,
+            agent_id: None,
+            goal_id: None,
+        });
+    }
     if let Some(oldest) = outbox.oldest_pending
         && (now - oldest).num_hours() >= 24
     {
@@ -1370,10 +1420,13 @@ impl ToolHandler for InsightsTools {
                 let budgets = store.budget_statuses().await.map_err(e)?;
                 let currency = store.currency().await.map_err(e)?;
                 let outbox = store.outbox_counts(metrics.since).await.map_err(e)?;
-                let signals = signals(&metrics, &check_ins, &budgets, &currency, &outbox);
+                let releases = store.release_counts(metrics.since).await.map_err(e)?;
+                let signals = signals(
+                    &metrics, &check_ins, &budgets, &currency, &outbox, &releases,
+                );
                 Ok(json!({
                     "metrics": metrics, "signals": signals, "budgets": budgets,
-                    "currency": currency, "outbox": outbox,
+                    "currency": currency, "outbox": outbox, "releases": releases,
                 }))
             }
             "insights_org" => {
@@ -1534,10 +1587,13 @@ pub async fn metrics(
     let budgets = state.store.budget_statuses().await?;
     let currency = state.store.currency().await?;
     let outbox = state.store.outbox_counts(metrics.since).await?;
-    let signals = signals(&metrics, &check_ins, &budgets, &currency, &outbox);
+    let releases = state.store.release_counts(metrics.since).await?;
+    let signals = signals(
+        &metrics, &check_ins, &budgets, &currency, &outbox, &releases,
+    );
     Ok(Json(json!({
         "metrics": metrics, "signals": signals, "budgets": budgets, "currency": currency,
-        "outbox": outbox,
+        "outbox": outbox, "releases": releases,
     })))
 }
 
@@ -1972,10 +2028,17 @@ mod tests {
             goals: vec![goal],
             proposals: ProposalCounts::default(),
         };
-        let kinds: Vec<&str> = signals(&m, &[], &[], "USD", &Default::default())
-            .iter()
-            .map(|s| s.kind)
-            .collect();
+        let kinds: Vec<&str> = signals(
+            &m,
+            &[],
+            &[],
+            "USD",
+            &Default::default(),
+            &Default::default(),
+        )
+        .iter()
+        .map(|s| s.kind)
+        .collect();
         for kind in [
             "idle_department",
             "unread_mail",
@@ -1987,7 +2050,15 @@ mod tests {
             assert!(kinds.contains(&kind), "{kind} in {kinds:?}");
         }
         assert_eq!(
-            signals(&m, &[], &[], "USD", &Default::default())[0].severity,
+            signals(
+                &m,
+                &[],
+                &[],
+                "USD",
+                &Default::default(),
+                &Default::default()
+            )[0]
+            .severity,
             "high",
             "most severe first"
         );
@@ -2005,9 +2076,16 @@ mod tests {
             created_by: "a".into(),
         };
         assert!(
-            !signals(&m, &[check_in], &[], "USD", &Default::default())
-                .iter()
-                .any(|s| s.kind == "idle_department")
+            !signals(
+                &m,
+                &[check_in],
+                &[],
+                "USD",
+                &Default::default(),
+                &Default::default()
+            )
+            .iter()
+            .any(|s| s.kind == "idle_department")
         );
     }
 

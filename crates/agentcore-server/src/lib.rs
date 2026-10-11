@@ -11,6 +11,7 @@ pub mod budgets;
 pub mod catalog;
 pub mod cluster;
 pub mod config;
+pub mod distribution;
 mod error;
 pub mod github;
 pub mod insights;
@@ -19,7 +20,9 @@ pub mod llm;
 pub mod mcp;
 pub mod org;
 pub mod outbox;
+pub mod releases;
 pub mod sessions;
+pub mod signing;
 pub mod teamwork;
 pub mod templates;
 
@@ -277,6 +280,35 @@ pub fn router(state: AppState) -> Router {
             put(outbox::update_channel).delete(outbox::delete_channel),
         )
         .route("/org/channels/{id}/test", post(outbox::test_channel))
+        .route("/releases", get(releases::list).post(releases::create))
+        .route(
+            "/releases/products",
+            get(releases::list_products).post(releases::create_product),
+        )
+        .route(
+            "/releases/products/{id}",
+            put(releases::update_product).delete(releases::delete_product),
+        )
+        .route(
+            "/releases/products/{id}/token",
+            post(releases::rotate_token),
+        )
+        .route(
+            "/releases/products/{id}/freeze",
+            put(releases::freeze).delete(releases::unfreeze),
+        )
+        .route("/releases/keys", get(releases::keys))
+        .route("/releases/keys/rotate", post(releases::rotate_key))
+        .route("/releases/{id}", get(releases::get).put(releases::revise))
+        .route("/releases/{id}/approve", post(releases::approve_release))
+        .route("/releases/{id}/start", post(releases::start_release))
+        .route("/releases/{id}/changes", post(releases::request_changes))
+        .route("/releases/{id}/reject", post(releases::reject))
+        .route("/releases/{id}/pause", post(releases::pause_release))
+        .route("/releases/{id}/resume", post(releases::resume_release))
+        .route("/releases/{id}/promote", post(releases::promote))
+        .route("/releases/{id}/rollback", post(releases::roll_back))
+        .route("/releases/{id}/attestation", get(releases::attestation))
         .route(
             "/org/prices",
             put(budgets::put_price).delete(budgets::delete_price),
@@ -363,6 +395,14 @@ pub fn router(state: AppState) -> Router {
             post(mcp::handle).get(mcp::method_not_allowed),
         )
         .route("/llm/{id}/{provider}/{*rest}", any(llm::proxy))
+        // Update clients (product client token, not an operator token).
+        .route("/dist/keys", get(distribution::keys))
+        .route("/dist/{product}/update", get(distribution::update))
+        .route("/dist/{product}/report", post(distribution::report))
+        .route(
+            "/dist/{product}/releases/{version}/attestation",
+            get(distribution::attestation),
+        )
         .fallback_service(ui)
         .layer(RequestBodyLimitLayer::new(32 * 1024 * 1024))
         .layer(TraceLayer::new_for_http())

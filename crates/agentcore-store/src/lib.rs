@@ -11,6 +11,7 @@ mod crypto;
 mod insights;
 mod org;
 mod outbox;
+mod releases;
 mod rhythm;
 mod spending;
 mod teamwork;
@@ -41,6 +42,10 @@ pub use org::{
 pub use outbox::{
     ChannelInput, ChannelUpdate, DEFAULT_DISCLOSURE, MAX_BODY_CHARS, NewOutboxItem, OutboxCounts,
     OutboxRevision,
+};
+pub use releases::{
+    MAX_NOTES_CHARS, NewRelease, ProductInput, ProductUpdate, ReleaseContent, ReleaseCounts,
+    ReportEvent, ReportStats, SigningKey,
 };
 pub use rhythm::{GoalInput, GoalUpdate, ScheduleInput, ScheduleUpdate};
 pub use spending::{BudgetInput, BudgetUpdate, PriceInput};

@@ -670,6 +670,8 @@ pub struct StartContext<'a> {
     pub currency: &'a str,
     /// Outward channels the department may draft for.
     pub channels: &'a [agentcore_core::Channel],
+    /// Products the department ships (it may propose releases).
+    pub products: &'a [agentcore_core::Product],
 }
 
 /// Where an agent keeps its working notes (department files).
@@ -930,6 +932,33 @@ pub fn compose_prompt(
             ));
         }
     }
+    if agent.kind == AgentKind::Worker && !start.products.is_empty() {
+        p.push_str(
+            "\n## Releasing software\n\nYou can propose releases of the products below \
+             (`release_products`, `release_propose`, `release_status`). People approve every \
+             release; the server checks every artifact's SHA-256, scores the risk and rolls the \
+             release out in stages, rolling it back on its own when a health gate fails. Give a \
+             semantic version above every earlier one, notes for the people who use the \
+             product, the digests your build produced, and honest check results and risk. If \
+             you see a problem during a rollout, halt it (`release_halt`).\n\n",
+        );
+        for product in start.products {
+            p.push_str(&format!(
+                "- **{}**{}{}\n",
+                product.name,
+                if product.description.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", product.description.trim())
+                },
+                product
+                    .frozen
+                    .as_deref()
+                    .map(|r| format!(" (frozen: {r})"))
+                    .unwrap_or_default()
+            ));
+        }
+    }
     if agent.kind == AgentKind::Worker && dept.grants(TOOL_INSIGHTS) {
         p.push_str(
             "\n## Improving the organisation\n\nYou can see how the whole organisation works \
@@ -1008,12 +1037,13 @@ pub async fn start_agent_session(
     };
     let mut tools: Vec<Arc<dyn ToolHandler>> =
         vec![Arc::new(TeamTools::new(state.store.clone(), agent, dept))];
-    let (data_sources, channels) = match agent.kind {
+    let (data_sources, channels, products) = match agent.kind {
         AgentKind::Worker => (
             state.store.data_sources_for(dept.id).await?,
             state.store.channels_for(dept.id).await?,
+            state.store.products_for(dept.id).await?,
         ),
-        AgentKind::Communicator => (Vec::new(), Vec::new()),
+        AgentKind::Communicator => (Vec::new(), Vec::new(), Vec::new()),
     };
     if agent.kind == AgentKind::Worker {
         // Business data granted to the department (checked on every call).
@@ -1027,6 +1057,14 @@ pub async fn start_agent_session(
         // Outward channels: drafts that people approve.
         if !channels.is_empty() {
             tools.push(Arc::new(crate::outbox::OutboxTools::new(
+                state.clone(),
+                agent.id,
+                dept.id,
+            )));
+        }
+        // Products the department ships: releases that people approve.
+        if !products.is_empty() {
+            tools.push(Arc::new(crate::releases::ReleaseTools::new(
                 state.clone(),
                 agent.id,
                 dept.id,
@@ -1116,6 +1154,7 @@ pub async fn start_agent_session(
         budgets: &budgets,
         currency: &currency,
         channels: &channels,
+        products: &products,
     };
     let session = state.manager.create(
         CreateSession {
@@ -1194,6 +1233,8 @@ pub async fn overview(State(state): State<AppState>, _caller: Caller) -> ApiResu
         "data_sources": state.store.list_data_sources().await?,
         "channels": state.store.list_channels().await?,
         "outbox_pending": state.store.outbox_counts(chrono::Utc::now()).await?.pending,
+        "products": state.store.list_products().await?,
+        "releases_pending": state.store.release_counts(chrono::Utc::now()).await?.proposed,
         "proposals_pending": state
             .store
             .list_proposals(None)

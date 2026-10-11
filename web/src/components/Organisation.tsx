@@ -21,6 +21,7 @@ import { DataSources } from "./DataSources";
 import { Improvements } from "./Improvements";
 import { Spending } from "./Spending";
 import { Outbox } from "./Outbox";
+import { Releases } from "./Releases";
 
 interface Props {
   me: Me;
@@ -44,6 +45,7 @@ type Selection =
   | { kind: "data" }
   | { kind: "spending" }
   | { kind: "outbox" }
+  | { kind: "releases" }
   | { kind: "build"; mode?: BuildMode; pick?: string[] };
 
 /** Departments (rooms) of agents, how they talk, and control at every level. */
@@ -124,6 +126,13 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
             {org.outbox_pending > 0 && <span className="pill status-awaiting_input">{org.outbox_pending} to approve</span>}
           </div>
           <div className="muted small">messages to the outside world</div>
+        </button>
+        <button className={`session-item ${selection.kind === "releases" ? "active" : ""}`} onClick={() => setSelection({ kind: "releases" })}>
+          <div className="session-item-top">
+            <strong>🚀 Releases</strong>
+            {org.releases_pending > 0 && <span className="pill status-awaiting_input">{org.releases_pending} to approve</span>}
+          </div>
+          <div className="muted small">shipping what agents build</div>
         </button>
         <button className={`session-item ${selection.kind === "spending" ? "active" : ""}`} onClick={() => setSelection({ kind: "spending" })}>
           <div className="session-item-top">
@@ -243,6 +252,8 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
           <Improvements org={org} me={me} tick={tick} onError={onError} />
         ) : selection.kind === "outbox" ? (
           <Outbox org={org} me={me} tick={tick} act={act} onError={onError} />
+        ) : selection.kind === "releases" ? (
+          <Releases org={org} me={me} tick={tick} onError={onError} />
         ) : selection.kind === "spending" ? (
           <Spending org={org} me={me} tick={tick} onError={onError} />
         ) : selection.kind === "data" ? (
@@ -499,6 +510,13 @@ function DepartmentRoom({
               .map((c) => (
                 <span key={c.id} className="chip" title={`May draft for this channel${c.requires_approval ? "; a person approves each message" : ""}`}>
                   📤 {c.name}
+                </span>
+              ))}
+            {org.products
+              .filter((p) => p.enabled && p.departments.includes(dept.id))
+              .map((p) => (
+                <span key={p.id} className="chip" title="May propose releases of this product; people approve each one">
+                  🚀 {p.name}
                 </span>
               ))}
             <span className="chip" title="Agent the communicator runs">

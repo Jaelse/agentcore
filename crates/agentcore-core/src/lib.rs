@@ -13,6 +13,7 @@ pub mod live;
 pub mod model;
 pub mod org;
 pub mod principal;
+pub mod releases;
 pub mod session;
 pub mod work;
 
@@ -32,6 +33,10 @@ pub use org::{
     OrgSettings,
 };
 pub use principal::Principal;
+pub use releases::{
+    Approval, Artifact, CheckOutcome, GateResult, GateStatus, HealthGate, Product, Release,
+    ReleaseStatus, Risk, RiskLevel, Stage, Track, Version,
+};
 pub use session::{SessionId, SessionInfo, SessionStatus};
 pub use work::{
     ChangedFile, Changes, CheckResult, Commit, IssueRef, PullRequestProposal, SessionContext,
