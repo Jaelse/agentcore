@@ -72,7 +72,9 @@ to every agent, and agentcore adds:
   is exposed, and health gates roll a release back on their own. Every
   shipped release carries a signed in-toto attestation stating that an AI
   agent proposed it (`ai_generated`), who approved it, its risk and its
-  checks; every decision is in the admin log.
+  checks; every decision is in the admin log. Public product pages say that
+  AI agents wrote parts of the software and its notes and that people
+  approved every release; announcements carry the outbox's disclosure.
 
 ## Where humans oversee the agent (Art. 14)
 

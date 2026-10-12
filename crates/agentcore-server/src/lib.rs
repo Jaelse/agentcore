@@ -15,6 +15,7 @@ pub mod distribution;
 mod error;
 pub mod github;
 pub mod insights;
+pub mod launch;
 pub mod live;
 pub mod llm;
 pub mod mcp;
@@ -297,6 +298,11 @@ pub fn router(state: AppState) -> Router {
             "/releases/products/{id}/freeze",
             put(releases::freeze).delete(releases::unfreeze),
         )
+        .route("/releases/products/{id}/launch", get(launch::stats))
+        .route(
+            "/releases/products/{id}/subscribers.csv",
+            get(launch::subscribers_csv),
+        )
         .route("/releases/keys", get(releases::keys))
         .route("/releases/keys/rotate", post(releases::rotate_key))
         .route("/releases/{id}", get(releases::get).put(releases::revise))
@@ -395,6 +401,15 @@ pub fn router(state: AppState) -> Router {
             post(mcp::handle).get(mcp::method_not_allowed),
         )
         .route("/llm/{id}/{provider}/{*rest}", any(llm::proxy))
+        // Public product pages (products that turned them on).
+        .route("/p/{product}", get(launch::page))
+        .route("/p/{product}/feed.xml", get(launch::feed))
+        .route("/p/{product}/download/{artifact}", get(launch::download))
+        .route("/p/{product}/subscribe", post(launch::subscribe))
+        .route(
+            "/p/{product}/unsubscribe",
+            get(launch::unsubscribe_page).post(launch::unsubscribe),
+        )
         // Update clients (product client token, not an operator token).
         .route("/dist/keys", get(distribution::keys))
         .route("/dist/{product}/update", get(distribution::update))

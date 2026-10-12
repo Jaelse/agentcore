@@ -840,6 +840,47 @@ export interface Product {
   enabled: boolean;
   updated_at: string;
   updated_by: string;
+  public: boolean;
+  tagline: string;
+  audience: Audience;
+  pitch: string;
+  website: string | null;
+  announce_departments: string[];
+  announce_patches: boolean;
+}
+
+export type Audience = "developers" | "business" | "both";
+
+export interface LaunchSettings {
+  public: boolean;
+  tagline: string;
+  audience: Audience;
+  pitch: string;
+  website: string;
+  announce_departments: string[];
+  announce_patches: boolean;
+}
+
+export interface SourceStats {
+  source: string;
+  visits: number;
+  downloads: number;
+  signups: number;
+}
+
+export interface LaunchStats {
+  page: string | null;
+  stats: {
+    days: number;
+    sources: SourceStats[];
+    visits: number;
+    downloads: number;
+    signups: number;
+    subscribers: number;
+    developers: number;
+    business: number;
+    daily: [string, number, number, number][];
+  };
 }
 
 export type ReleaseStatus = "proposed" | "changes_requested" | "rolling_out" | "paused" | "released" | "rolled_back" | "rejected";
@@ -934,4 +975,11 @@ export interface ProductInput {
   artifact_hosts: string[];
   webhook_url?: string;
   webhook_secret?: string;
+  public?: boolean;
+  tagline?: string;
+  audience?: Audience;
+  pitch?: string;
+  website?: string;
+  announce_departments?: string[];
+  announce_patches?: boolean;
 }

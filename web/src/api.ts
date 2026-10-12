@@ -52,6 +52,7 @@ import type {
   ProductSummary,
   Release,
   ReleaseDetail,
+  LaunchStats,
 } from "./types";
 
 const TOKEN_KEY = "agentcore.token";
@@ -361,6 +362,18 @@ export const api = {
     request<{ product: Product; client_token: string }>("POST", `/releases/products/${id}/token`),
   freezeProduct: (id: string, reason: string) => request<Product>("PUT", `/releases/products/${id}/freeze`, { reason }),
   unfreezeProduct: (id: string) => request<Product>("DELETE", `/releases/products/${id}/freeze`),
+  launchStats: (id: string, days = 30) => request<LaunchStats>("GET", `/releases/products/${id}/launch?days=${days}`),
+  /** Download the product's subscribers as CSV (admin). */
+  downloadSubscribers: async (id: string, name: string) => {
+    const res = await fetch(`/api/v1/releases/products/${id}/subscribers.csv`, { headers: headers() });
+    if (!res.ok) throw new ApiError(res.status, res.statusText);
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${name}-subscribers.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
   releases: (product?: string) => request<Release[]>("GET", `/releases${product ? `?product=${product}` : ""}`),
   release: (id: string) => request<ReleaseDetail>("GET", `/releases/${id}`),
   approveRelease: (id: string, revision: number) =>

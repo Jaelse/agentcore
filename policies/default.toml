@@ -90,10 +90,10 @@ tools = ["data_list_sources", "data_query", "insights_*"]
 
 [[rules]]
 id = "allow-release-proposals"
-description = "Proposing releases and halting rollouts: people approve every release before it ships, and halting only stops a rollout."
+description = "Proposing releases and halting rollouts (people approve every release before it ships, and halting only stops a rollout); reading launch results and making tracked links."
 effect = "allow"
 kinds = ["tool_call"]
-tools = ["release_*"]
+tools = ["release_*", "launch_*"]
 
 [[rules]]
 id = "allow-outbox-drafts"

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { HealthGate, Me, OrgOverview, Product, ProductSummary, Release, ReleaseDetail, ReleaseStatus, Stage } from "../types";
+import type { Audience, HealthGate, LaunchSettings, LaunchStats, Me, OrgOverview, Product, ProductSummary, Release, ReleaseDetail, ReleaseStatus, Stage } from "../types";
 
 const STATUS: Record<ReleaseStatus, { label: string; cls: string }> = {
   proposed: { label: "waiting for you", cls: "status-awaiting_input" },
@@ -552,6 +552,7 @@ function ProductRow({
         <strong>Departments:</strong>{" "}
         {product.departments.map((d) => org.departments.find((x) => x.id === d)?.name ?? "?").join(", ") || "none"}
       </div>
+      <LaunchPanel product={product} org={org} me={me} onChanged={onChanged} onError={onError} />
       {product.frozen && (
         <div className="callout small">
           <strong>Change freeze</strong> by {product.frozen_by}: {product.frozen}
@@ -601,6 +602,226 @@ function ProductRow({
         </div>
       )}
     </li>
+  );
+}
+
+const AUDIENCE: Record<Audience, string> = { developers: "developers", business: "businesses", both: "developers and businesses" };
+
+/** How the product reaches people: its page, announcements and what worked. */
+function LaunchPanel({
+  product,
+  org,
+  me,
+  onChanged,
+  onError,
+}: {
+  product: Product;
+  org: OrgOverview;
+  me: Me;
+  onChanged: () => void;
+  onError: (e: unknown) => void;
+}) {
+  const [launch, setLaunch] = useState<LaunchStats | null>(null);
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    api.launchStats(product.id).then(setLaunch).catch(onError);
+  }, [product.id, product.updated_at, onError]);
+  const s = launch?.stats;
+  const announcers = product.announce_departments.map((d) => org.departments.find((x) => x.id === d)?.name ?? "?");
+  return (
+    <div className="callout small" style={{ display: "grid", gap: 6 }}>
+      <div className="session-item-top">
+        <strong>Reaching people</strong>
+        {launch?.page ? (
+          <a href={launch.page} target="_blank" rel="noopener noreferrer">
+            🌐 public page
+          </a>
+        ) : (
+          <span className="muted">no public page</span>
+        )}
+      </div>
+      <div>
+        For {AUDIENCE[product.audience]}
+        {product.tagline && <> · “{product.tagline}”</>}
+        {" · "}
+        {announcers.length > 0 ? (
+          <>announced by {announcers.join(", ")}</>
+        ) : (
+          <span className="danger-text">no department announces its releases</span>
+        )}
+      </div>
+      {s && (
+        <>
+          <div className="stat-row">
+            <div className="stat-tile">
+              <span className="stat-label">Visits ({s.days} d)</span>
+              <span className="stat-value">{s.visits}</span>
+            </div>
+            <div className="stat-tile">
+              <span className="stat-label">Downloads</span>
+              <span className="stat-value">{s.downloads}</span>
+            </div>
+            <div className="stat-tile">
+              <span className="stat-label">Sign-ups</span>
+              <span className="stat-value">{s.signups}</span>
+            </div>
+            <div className="stat-tile">
+              <span className="stat-label">Subscribers</span>
+              <span className="stat-value">{s.subscribers}</span>
+              <span className="muted">
+                {s.developers} dev · {s.business} business
+              </span>
+            </div>
+          </div>
+          {s.sources.length > 0 && (
+            <table className="small" style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr className="muted" style={{ textAlign: "left" }}>
+                  <th>Source</th>
+                  <th style={{ textAlign: "right" }}>Visits</th>
+                  <th style={{ textAlign: "right" }}>Downloads</th>
+                  <th style={{ textAlign: "right" }}>Sign-ups</th>
+                </tr>
+              </thead>
+              <tbody>
+                {s.sources.slice(0, 8).map((x) => (
+                  <tr key={x.source}>
+                    <td className="mono">{x.source}</td>
+                    <td style={{ textAlign: "right" }}>{x.visits}</td>
+                    <td style={{ textAlign: "right" }}>{x.downloads}</td>
+                    <td style={{ textAlign: "right" }}>{x.signups}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </>
+      )}
+      {me.role === "admin" && !editing && (
+        <div className="row">
+          <button className="btn small-btn" onClick={() => setEditing(true)}>
+            Launch settings…
+          </button>
+          {s && s.subscribers > 0 && (
+            <button className="btn small-btn" onClick={() => void api.downloadSubscribers(product.id, product.name).catch(onError)}>
+              ⬇ Subscribers (CSV)
+            </button>
+          )}
+        </div>
+      )}
+      {editing && (
+        <LaunchForm
+          product={product}
+          org={org}
+          onDone={(saved) => {
+            setEditing(false);
+            if (saved) onChanged();
+          }}
+          onError={onError}
+        />
+      )}
+    </div>
+  );
+}
+
+function LaunchForm({
+  product,
+  org,
+  onDone,
+  onError,
+}: {
+  product: Product;
+  org: OrgOverview;
+  onDone: (saved: boolean) => void;
+  onError: (e: unknown) => void;
+}) {
+  const [f, setF] = useState<LaunchSettings>({
+    public: product.public,
+    tagline: product.tagline,
+    audience: product.audience,
+    pitch: product.pitch,
+    website: product.website ?? "",
+    announce_departments: product.announce_departments,
+    announce_patches: product.announce_patches,
+  });
+  const [busy, setBusy] = useState(false);
+  const set = <K extends keyof LaunchSettings>(k: K, v: LaunchSettings[K]) => setF({ ...f, [k]: v });
+  return (
+    <form
+      className="provider-edit"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        setBusy(true);
+        try {
+          await api.updateProduct(product.id, f);
+          onDone(true);
+        } catch (err) {
+          onError(err);
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <label>
+        <input type="checkbox" checked={f.public} onChange={(e) => set("public", e.target.checked)} /> Public page with downloads,
+        changelog and a sign-up form (<span className="mono">/p/{product.name}</span>)
+      </label>
+      <div className="grid-2">
+        <label>
+          Tagline (one line)
+          <input value={f.tagline} maxLength={140} onChange={(e) => set("tagline", e.target.value)} placeholder="Ship in minutes" />
+        </label>
+        <label>
+          Who it is for
+          <select value={f.audience} onChange={(e) => set("audience", e.target.value as Audience)}>
+            <option value="developers">Developers</option>
+            <option value="business">Businesses</option>
+            <option value="both">Developers and businesses</option>
+          </select>
+        </label>
+        <label>
+          Website (optional)
+          <input value={f.website} onChange={(e) => set("website", e.target.value)} placeholder="https://example.com" />
+        </label>
+      </div>
+      <label>
+        Positioning for the people and agents who announce it: the problem, for whom, why it is different (not shown publicly)
+        <textarea rows={3} value={f.pitch} maxLength={5000} onChange={(e) => set("pitch", e.target.value)} />
+      </label>
+      <fieldset className="card">
+        <legend className="small">Departments that announce its releases (they get a launch brief and the launch tools)</legend>
+        {org.departments.map((d) => (
+          <label key={d.id} className="small">
+            <input
+              type="checkbox"
+              checked={f.announce_departments.includes(d.id)}
+              onChange={(e) =>
+                set(
+                  "announce_departments",
+                  e.target.checked ? [...f.announce_departments, d.id] : f.announce_departments.filter((x) => x !== d.id),
+                )
+              }
+            />{" "}
+            {d.name}
+          </label>
+        ))}
+        <label className="small">
+          <input type="checkbox" checked={f.announce_patches} onChange={(e) => set("announce_patches", e.target.checked)} /> Also
+          brief them on patch releases
+        </label>
+      </fieldset>
+      <p className="muted small">
+        Running agents get the launch tools in their next session (when a message wakes them, or after a restart).
+      </p>
+      <div className="row">
+        <button className="btn primary" disabled={busy}>
+          Save
+        </button>
+        <button type="button" className="btn ghost" onClick={() => onDone(false)}>
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }
 

@@ -812,6 +812,74 @@ pub struct Product {
     pub enabled: bool,
     pub updated_at: DateTime<Utc>,
     pub updated_by: String,
+    /// The product has a public page (`/p/<name>`) with its changelog,
+    /// downloads and a sign-up form.
+    pub public: bool,
+    /// One line for the page and announcements.
+    pub tagline: String,
+    pub audience: Audience,
+    /// Positioning for the people (and agents) who tell others about it:
+    /// the problem it solves, for whom, why it is different.
+    pub pitch: String,
+    pub website: Option<String>,
+    /// Departments that announce its releases (marketing, content,
+    /// developer relations).
+    pub announce_departments: Vec<DepartmentId>,
+    /// Also brief them on patch releases (otherwise only first, major and
+    /// minor releases).
+    pub announce_patches: bool,
+}
+
+/// Who a product is for; it shapes what the announcements say and where.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Audience {
+    Developers,
+    Business,
+    #[default]
+    Both,
+}
+
+impl Audience {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Developers => "developers",
+            Self::Business => "business",
+            Self::Both => "both",
+        }
+    }
+}
+
+impl std::str::FromStr for Audience {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "developers" => Ok(Self::Developers),
+            "business" => Ok(Self::Business),
+            "both" => Ok(Self::Both),
+            other => Err(format!("unknown audience `{other}`")),
+        }
+    }
+}
+
+/// Where a visit, download or sign-up came from: `?src=` of a tracked link,
+/// lowercased; anything else counts as `other`, no `src` as `direct`.
+pub fn clean_source(src: Option<&str>) -> String {
+    match src.map(str::trim) {
+        None | Some("") => "direct".into(),
+        Some(s) => {
+            let s = s.to_ascii_lowercase();
+            if s.len() <= 40
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+            {
+                s
+            } else {
+                "other".into()
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1269,6 +1337,16 @@ mod tests {
         assert!(extract_number(&rows, "missing").is_err());
         let http = serde_json::json!({ "status": 200, "body": { "p99": 120 } });
         assert_eq!(extract_number(&http, "p99").unwrap(), 120.0);
+    }
+
+    #[test]
+    fn sources_are_tidy() {
+        assert_eq!(clean_source(None), "direct");
+        assert_eq!(clean_source(Some(" ")), "direct");
+        assert_eq!(clean_source(Some("Newsletter")), "newsletter");
+        assert_eq!(clean_source(Some("linkedin-2026.10")), "linkedin-2026.10");
+        assert_eq!(clean_source(Some("<script>")), "other");
+        assert_eq!(clean_source(Some(&"x".repeat(41))), "other");
     }
 
     #[test]

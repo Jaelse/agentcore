@@ -129,12 +129,12 @@ flowchart LR
 
 ### The catalogue
 
-29 department templates in five groups (`templates/departments/*.toml`):
+30 department templates in five groups (`templates/departments/*.toml`):
 
 | Group | Departments |
 |---|---|
 | Product & engineering | Engineering, Quality Assurance, Platform & DevOps, Security, Product, Design, Data & Analytics, AI & Machine Learning, Technical Writing, Internal IT |
-| Growth | Marketing, Content, Sales, Partnerships, Communications & PR, Community |
+| Growth | Marketing, Content, Developer Relations, Sales, Partnerships, Communications & PR, Community |
 | Customers | Customer Support, Customer Success |
 | Operations | Operations, Finance, Legal & Compliance, People & HR, Recruiting, Procurement, Supply Chain & Logistics |
 | Leadership | Strategy & Leadership, Project Management, Market Research, Retrospective |
@@ -636,6 +636,12 @@ after the server verified every artifact; the release goes out in stages,
 and health gates on client reports or business data roll it back on their
 own. Agents hear about every step and can halt a rollout, never start or
 advance one. See [Releases and distribution](RELEASES.md).
+
+Departments that **announce** a product (marketing, content, developer
+relations) get a launch brief when a release reaches everyone, `launch_*`
+tools for the facts, tracked links and results, and draft the
+announcements into the outbox. See
+[Telling people about it](RELEASES.md#telling-people-about-it).
 
 ## Data, tools and guardrails per department
 

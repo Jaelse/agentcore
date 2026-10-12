@@ -34,8 +34,8 @@ pub use org::{
 };
 pub use principal::Principal;
 pub use releases::{
-    Approval, Artifact, CheckOutcome, GateResult, GateStatus, HealthGate, Product, Release,
-    ReleaseStatus, Risk, RiskLevel, Stage, Track, Version,
+    Approval, Artifact, Audience, CheckOutcome, GateResult, GateStatus, HealthGate, Product,
+    Release, ReleaseStatus, Risk, RiskLevel, Stage, Track, Version,
 };
 pub use session::{SessionId, SessionInfo, SessionStatus};
 pub use work::{

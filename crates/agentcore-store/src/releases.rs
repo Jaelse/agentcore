@@ -5,7 +5,7 @@ use agentcore_core::releases::{
     default_plan,
 };
 use agentcore_core::{
-    Approval, Artifact, DepartmentId, OrgAgentId, Product, Release, ReleaseStatus,
+    Approval, Artifact, Audience, DepartmentId, OrgAgentId, Product, Release, ReleaseStatus,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -55,6 +55,30 @@ pub struct ProductInput {
     /// Key for the webhook's HMAC-SHA256 signature.
     #[serde(default)]
     pub webhook_secret: Option<String>,
+    /// Public page, audience and announcements (see [`LaunchFields`]).
+    #[serde(flatten)]
+    pub launch: LaunchFields,
+}
+
+/// How a product is presented to people and who announces its releases.
+/// Every field is optional: on an update, what is left out stays.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct LaunchFields {
+    #[serde(default)]
+    pub public: Option<bool>,
+    #[serde(default)]
+    pub tagline: Option<String>,
+    #[serde(default)]
+    pub audience: Option<Audience>,
+    #[serde(default)]
+    pub pitch: Option<String>,
+    /// An empty string removes it.
+    #[serde(default)]
+    pub website: Option<String>,
+    #[serde(default)]
+    pub announce_departments: Option<Vec<DepartmentId>>,
+    #[serde(default)]
+    pub announce_patches: Option<bool>,
 }
 
 fn one() -> u32 {
@@ -76,6 +100,9 @@ pub struct ProductUpdate {
     /// A new key; an empty string removes it.
     pub webhook_secret: Option<String>,
     pub enabled: Option<bool>,
+    /// Public page, audience and announcements (see [`LaunchFields`]).
+    #[serde(flatten)]
+    pub launch: LaunchFields,
 }
 
 #[derive(sqlx::FromRow)]
@@ -97,6 +124,13 @@ struct ProductRow {
     enabled: bool,
     updated_at: DateTime<Utc>,
     updated_by: String,
+    public: bool,
+    tagline: String,
+    audience: String,
+    pitch: String,
+    website: Option<String>,
+    announce_departments: Vec<Uuid>,
+    announce_patches: bool,
 }
 
 impl From<ProductRow> for Product {
@@ -119,13 +153,21 @@ impl From<ProductRow> for Product {
             enabled: r.enabled,
             updated_at: r.updated_at,
             updated_by: r.updated_by,
+            public: r.public,
+            tagline: r.tagline,
+            audience: r.audience.parse().unwrap_or_default(),
+            pitch: r.pitch,
+            website: r.website,
+            announce_departments: r.announce_departments,
+            announce_patches: r.announce_patches,
         }
     }
 }
 
 const PRODUCT_COLUMNS: &str = "id, name, description, departments, repository, plan, gates, \
     approvals_required, artifact_hosts, webhook_url, webhook_secret_hint, client_token_hint, \
-    frozen, frozen_by, enabled, updated_at, updated_by";
+    frozen, frozen_by, enabled, updated_at, updated_by, public, tagline, audience, pitch, website, \
+    announce_departments, announce_patches";
 
 fn check_name(name: &str) -> Result<()> {
     if name.is_empty()
@@ -183,6 +225,75 @@ fn clean_hosts(hosts: &[String]) -> Result<Vec<String>> {
             }
         })
         .collect()
+}
+
+/// Write the launch fields (the current values for what `fields` leaves out).
+async fn write_launch(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: Uuid,
+    current: Option<&Product>,
+    fields: &LaunchFields,
+) -> Result<()> {
+    let tagline = fields
+        .tagline
+        .as_deref()
+        .or(current.map(|c| c.tagline.as_str()))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if tagline.chars().count() > 140 || tagline.contains(['\r', '\n']) {
+        return Err(invalid("the tagline is one line of up to 140 characters"));
+    }
+    let pitch = fields
+        .pitch
+        .as_deref()
+        .or(current.map(|c| c.pitch.as_str()))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if pitch.chars().count() > 5000 {
+        return Err(invalid("the pitch is limited to 5000 characters"));
+    }
+    let website = match fields.website.as_deref().map(str::trim) {
+        Some("") => None,
+        Some(w) => {
+            if !w.starts_with("https://") && !w.starts_with("http://") {
+                return Err(invalid("the website starts with http:// or https://"));
+            }
+            Some(w.to_string())
+        }
+        None => current.and_then(|c| c.website.clone()),
+    };
+    let audience = fields
+        .audience
+        .or(current.map(|c| c.audience))
+        .unwrap_or_default();
+    let announce = fields
+        .announce_departments
+        .clone()
+        .or(current.map(|c| c.announce_departments.clone()))
+        .unwrap_or_default();
+    sqlx::query(
+        "UPDATE release_products SET public = $2, tagline = $3, audience = $4, pitch = $5,
+             website = $6, announce_departments = $7, announce_patches = $8
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(fields.public.or(current.map(|c| c.public)).unwrap_or(false))
+    .bind(&tagline)
+    .bind(audience.as_str())
+    .bind(&pitch)
+    .bind(&website)
+    .bind(&announce)
+    .bind(
+        fields
+            .announce_patches
+            .or(current.map(|c| c.announce_patches))
+            .unwrap_or(false),
+    )
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 fn check_webhook(url: &str) -> Result<()> {
@@ -507,6 +618,7 @@ impl Store {
             }
             _ => StoreError::Db(e),
         })?;
+        write_launch(&mut tx, id, None, &input.launch).await?;
         admin_event(
             &mut tx,
             actor,
@@ -584,6 +696,7 @@ impl Store {
         .bind(actor)
         .execute(&mut *tx)
         .await?;
+        write_launch(&mut tx, id, Some(&current), &update.launch).await?;
         match update.webhook_secret.as_deref().map(str::trim) {
             Some("") => {
                 sqlx::query(
@@ -621,6 +734,8 @@ impl Store {
                 "artifact_hosts": update.artifact_hosts, "departments": update.departments,
                 "webhook_secret_changed": update.webhook_secret.is_some(),
                 "enabled": update.enabled,
+                "public": update.launch.public,
+                "announce_departments": update.launch.announce_departments,
             }),
         )
         .await?;

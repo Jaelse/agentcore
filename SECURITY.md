@@ -116,6 +116,12 @@ do, and every attempt is recorded.
       what one client could fake, pin the `/dist/keys` signing keys in your
       update clients, give each product a webhook key, and rotate a client
       token that leaked. See [docs/RELEASES.md](docs/RELEASES.md#security-notes).
+- [ ] Public product pages: sign-ups are personal data. Say in your
+      privacy notice who receives them (the webhook's newsletter service),
+      let your newsletter service confirm addresses (double opt-in), and
+      export subscribers (admin only, logged) only to where you may keep
+      them. Pages store no cookies and no IP addresses; put the server
+      behind your reverse proxy's rate limit for `/p/`.
 - [ ] Outward channels: use a dedicated mailbox or bot for agent mail, set
       allowed recipient domains where you can, keep "a person approves every
       message" on for anything customers or the public see, and keep daily

@@ -23,7 +23,9 @@ flowchart LR
     G --> S1 & S2
 ```
 
-In the web UI: **Organisation → 🚀 Releases**.
+In the web UI: **Organisation → 🚀 Releases**. Once a release is out, the
+[launch loop](#telling-people-about-it) gets it in front of developers and
+businesses.
 
 ## Products
 
@@ -281,6 +283,123 @@ Use it to drive what agentcore does not do itself: deploying a server
 release to a percentage of your fleet, publishing to an app store, posting
 to a channel.
 
+## Telling people about it
+
+A release nobody hears of reaches nobody. agentcore closes the loop from
+"released" to "people know, try it and sign up", with people approving
+everything that goes out:
+
+```mermaid
+flowchart LR
+    R["Release reaches<br/>everyone"] --> B["Launch brief to<br/>marketing / content / devrel"]
+    B --> D["Drafts with tracked links<br/>(outbox, people approve)"]
+    D --> C["Newsletter, LinkedIn,<br/>blog, communities"]
+    C --> P["Public product page<br/>/p/&lt;product&gt;?src=…"]
+    P --> S["Downloads, sign-ups"]
+    S --> M["launch_stats, dashboard,<br/>retrospective"]
+    M -. "do more of what works" .-> D
+```
+
+### Launch settings
+
+Per product (**Launch settings…** under the product, admin):
+
+| Setting | What it does |
+|---|---|
+| `public` | Turns on the product page at `/p/<name>`. |
+| `tagline` | One line on the page and in the brief. |
+| `audience` | `developers`, `business` or `both`: shapes what the brief asks for and where. |
+| `pitch` | Positioning for the people and agents who announce it (the problem, for whom, why it is different). Not shown publicly. |
+| `website` | Linked from the page. |
+| `announce_departments` | Departments that announce its releases; their workers get the `launch_*` tools and a "Telling people about the products" section in their prompt. |
+| `announce_patches` | Also brief them on patch releases (by default only first, major and minor releases). |
+
+Agents get new tools when their next session starts (a message wakes a
+sleeping agent into a new session; restart one that is running).
+
+### The public page
+
+`/p/<product>` shows the tagline and description, the current version with a
+download button per platform and each file's SHA-256, the changelog of
+released versions (never a canary), an Atom feed (`/p/<product>/feed.xml`),
+and a sign-up form for news. Everything on it is escaped text (release
+notes cannot inject HTML), the page sends a strict Content-Security-Policy,
+and its footer says that AI agents wrote parts of the software and its notes
+and that people approved every release. Products without `public` answer
+404.
+
+Downloads go through `/p/<product>/download/<file>`, which counts the
+download and redirects to the artifact.
+
+### Sign-ups
+
+People give their email, say whether they are a developer or here for a
+business, optionally their company, and tick a consent box ("Send me news
+about … I can unsubscribe at any time."); the exact words are stored with
+the address. A hidden field catches most bots; signing up twice changes
+nothing and gives the same answer, so nobody learns who is on the list.
+Every sign-up gets an unsubscribe link (`/p/<product>/unsubscribe?token=…`);
+it shows a button, because mail scanners open links.
+
+agentcore does not send newsletters itself. Sign-ups and unsubscribes are
+posted to the product's webhook (`subscribed` with email, segment, company,
+source, consent and the unsubscribe link; `unsubscribed` with the email),
+signed like every other event, so Zapier, Make or n8n can add them to
+Buttondown, Mailchimp, Resend or your CRM, which confirm the address
+(double opt-in) and handle sending. Admins can also download the list as
+CSV (`GET /api/v1/releases/products/{id}/subscribers.csv`; every export is
+in the admin log; cells are escaped so spreadsheets never run them as
+formulas).
+
+### Tracked links
+
+Add `?src=<channel>` to links to the page: `newsletter`, `linkedin`, `hn`,
+`devto`, `partner-acme`. Visits, downloads and sign-ups are counted per
+product, day and source: no cookies, no IP addresses, nothing per person.
+Sources are lowercased `a-z 0-9 - _ .` up to 40 characters; anything else
+counts as `other`, no `src` as `direct`, and after 200 sources per product
+new ones count as `other`.
+
+### The launch brief
+
+When a release reaches everyone (and it is the first, a major or a minor
+release, or `announce_patches` is on), each announcing department gets a
+message:
+
+> Launch brief: kit 2.1.0 is released to everyone. It is a minor version
+> with new features. Tagline, positioning, audience, the release notes, the
+> product page and example tracked links, and what works for the audience:
+> for developers what they can do now, a short example, precise and modest
+> words, the changelog and developer communities; for businesses the
+> problem, the outcome and a next step on the newsletter and LinkedIn;
+> separate drafts for both.
+
+The agents draft into the [outbox](MULTI_AGENT.md#talking-to-the-outside-world),
+where a person approves, edits, sends back or rejects every message.
+Communities such as Hacker News, Reddit, Discord and forums do not want
+automated or AI-written posts: agents prepare those drafts, and a person
+posts them in their own name. Agents are told never to invent customers,
+numbers or quotes and to claim only what the release notes say.
+
+The tools:
+
+| Tool | What |
+|---|---|
+| `launch_products` | The products the department announces: tagline, description, positioning, audience, website, page, current version and its notes, subscribers. |
+| `launch_link` | A tracked link for one `source`. |
+| `launch_stats` | Visits, downloads and sign-ups per source over `days` (default 30), per day, and subscribers by segment. |
+
+The **Developer Relations** department template (an advocate and an
+educator) is made for this; Marketing, Content and Communications work too.
+
+### Results
+
+Each product in the Releases view shows its page, visits, downloads,
+sign-ups and subscribers (developers and businesses) over 30 days, and the
+sources that brought them. `GET /api/v1/org/metrics` and the
+retrospective's `insights_metrics` include the same per public product
+(`launch`), and the dashboard flags a product whose release nobody visited.
+
 ## Signals and the retrospective
 
 The dashboard flags releases rolled back in the period (high), releases
@@ -306,6 +425,12 @@ Operator API (`/api/v1`, operator token; changing products needs admin):
 | `POST /releases/{id}/pause`, `/resume`, `/promote`, `/rollback` | Control the rollout (`pause`, `rollback`: `{"text"}`). |
 | `GET /releases/{id}/attestation` | The signed attestation. |
 | `GET /releases/keys`, `POST /releases/keys/rotate` (admin) | Signing keys. |
+| `GET /releases/products/{id}/launch?days=` | Visits, downloads and sign-ups per source, subscribers. |
+| `GET /releases/products/{id}/subscribers.csv` (admin) | Subscribers as CSV (logged). |
+
+Public pages (no token; only products with `public`): `GET /p/{product}`,
+`GET /p/{product}/feed.xml`, `GET /p/{product}/download/{file}`,
+`POST /p/{product}/subscribe`, `GET`/`POST /p/{product}/unsubscribe`.
 
 Clients (`/dist`, product client token): `GET /dist/keys` (no token),
 `GET /dist/{product}/update`, `POST /dist/{product}/report`,

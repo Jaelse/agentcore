@@ -17,8 +17,8 @@ description = "Usability, quality, reliability, security and metrics."
 
 [[stages]]
 title = "Go to market"
-departments = ["marketing", "content", "sales", "support", "success"]
-description = "Find, win, help and keep customers."
+departments = ["marketing", "content", "devrel", "sales", "support", "success"]
+description = "Find, win, help and keep customers; reach developers."
 
 [[stages]]
 title = "Run the company"

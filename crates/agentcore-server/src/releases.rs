@@ -620,6 +620,7 @@ async fn move_on(
             ),
         )
         .await;
+        crate::launch::brief(state, product, &done).await;
     } else {
         if !store.advance_release(release.id, release.stage, by).await? {
             return Ok(false);

@@ -1421,12 +1421,15 @@ impl ToolHandler for InsightsTools {
                 let currency = store.currency().await.map_err(e)?;
                 let outbox = store.outbox_counts(metrics.since).await.map_err(e)?;
                 let releases = store.release_counts(metrics.since).await.map_err(e)?;
-                let signals = signals(
+                let launch = crate::launch::overview(store, days).await.map_err(e)?;
+                let mut signals = signals(
                     &metrics, &check_ins, &budgets, &currency, &outbox, &releases,
                 );
+                with_launch(&mut signals, &launch);
                 Ok(json!({
                     "metrics": metrics, "signals": signals, "budgets": budgets,
                     "currency": currency, "outbox": outbox, "releases": releases,
+                    "launch": launch,
                 }))
             }
             "insights_org" => {
@@ -1588,13 +1591,26 @@ pub async fn metrics(
     let currency = state.store.currency().await?;
     let outbox = state.store.outbox_counts(metrics.since).await?;
     let releases = state.store.release_counts(metrics.since).await?;
-    let signals = signals(
+    let launch = crate::launch::overview(&state.store, q.days.unwrap_or(14)).await?;
+    let mut signals = signals(
         &metrics, &check_ins, &budgets, &currency, &outbox, &releases,
     );
+    with_launch(&mut signals, &launch);
     Ok(Json(json!({
         "metrics": metrics, "signals": signals, "budgets": budgets, "currency": currency,
-        "outbox": outbox, "releases": releases,
+        "outbox": outbox, "releases": releases, "launch": launch,
     })))
+}
+
+/// Add the launch signals, keeping the most severe first.
+fn with_launch(signals: &mut Vec<Signal>, launch: &[Value]) {
+    signals.extend(crate::launch::signals(launch));
+    let rank = |s: &Signal| match s.severity {
+        "high" => 0,
+        "medium" => 1,
+        _ => 2,
+    };
+    signals.sort_by_key(rank);
 }
 
 #[derive(Debug, Deserialize)]
