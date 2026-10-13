@@ -228,17 +228,36 @@ impl tokio::io::AsyncRead for PtyReader {
 }
 
 /// A pseudo-terminal of the live view's size: (master, slave).
+///
+/// Both ends are opened close-on-exec, so a process spawned at the same time
+/// for another session cannot inherit them: a stray copy of the slave would
+/// keep the terminal open after the agent exits, and its last output would
+/// never be read.
 fn open_pty() -> Result<(std::fs::File, std::os::fd::OwnedFd)> {
     use agentcore_core::live::{TERMINAL_COLS, TERMINAL_ROWS};
-    let size = nix::pty::Winsize {
+    use rustix::fs::{Mode, OFlags};
+    use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
+    let err =
+        |e: rustix::io::Errno| SandboxError::Command(format!("cannot open a pseudo-terminal: {e}"));
+    let master =
+        openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC).map_err(err)?;
+    grantpt(&master).map_err(err)?;
+    unlockpt(&master).map_err(err)?;
+    let name = ptsname(&master, Vec::new()).map_err(err)?;
+    let slave = rustix::fs::open(
+        name.as_c_str(),
+        OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(err)?;
+    let size = rustix::termios::Winsize {
         ws_row: TERMINAL_ROWS,
         ws_col: TERMINAL_COLS,
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    let pty = nix::pty::openpty(Some(&size), None)
-        .map_err(|e| SandboxError::Command(format!("cannot open a pseudo-terminal: {e}")))?;
-    Ok((std::fs::File::from(pty.master), pty.slave))
+    rustix::termios::tcsetwinsize(&slave, size).map_err(err)?;
+    Ok((std::fs::File::from(master), slave))
 }
 
 #[async_trait]

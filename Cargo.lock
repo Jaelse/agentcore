@@ -139,6 +139,7 @@ dependencies = [
  "agentcore-core",
  "async-trait",
  "nix",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",
