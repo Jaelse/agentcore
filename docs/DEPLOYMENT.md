@@ -159,6 +159,35 @@ cargo run -p agentcore-cli -- serve --config agentcore.dev.toml
 The `process` backend runs agents on your machine **without isolation**; use
 it only to develop agentcore itself.
 
+## Releases
+
+Each release on GitHub publishes:
+
+* the multi-arch (amd64, arm64) images `ghcr.io/jaelse/agentcore` and
+  `ghcr.io/jaelse/agentcore-sandbox` (the default sandbox, with opencode),
+  tagged `X.Y.Z`, `X.Y` and `latest`;
+* `agentcore-X.Y.Z-<target>.tar.gz` for `x86_64-unknown-linux-gnu` and
+  `aarch64-unknown-linux-gnu`: the binary, the built web UI, the bundled
+  policies, roles and templates, and `agentcore.example.toml`, with
+  `SHA256SUMS`.
+
+To use the released images instead of building them, set `image:` of the
+`agentcore` service in `docker-compose.yml` to `ghcr.io/jaelse/agentcore:X.Y.Z`
+and remove `build:`, and set `[sandbox].image` to
+`ghcr.io/jaelse/agentcore-sandbox:X.Y.Z`.
+
+To cut a release, raise `version` in `[workspace.package]` of `Cargo.toml`,
+merge it, then tag that commit:
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+The [release workflow](../.github/workflows/release.yml) refuses a tag that
+does not match `Cargo.toml`, runs the full CI on the tagged commit, builds
+everything and creates the release with generated notes. Tags with a suffix
+(`v0.2.0-rc.1`) become pre-releases and do not move `latest`.
+
 ## Operations
 
 | Task | How |
