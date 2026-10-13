@@ -129,12 +129,12 @@ flowchart LR
 
 ### The catalogue
 
-29 department templates in five groups (`templates/departments/*.toml`):
+30 department templates in five groups (`templates/departments/*.toml`):
 
 | Group | Departments |
 |---|---|
 | Product & engineering | Engineering, Quality Assurance, Platform & DevOps, Security, Product, Design, Data & Analytics, AI & Machine Learning, Technical Writing, Internal IT |
-| Growth | Marketing, Content, Sales, Partnerships, Communications & PR, Community |
+| Growth | Marketing, Content, Developer Relations, Sales, Partnerships, Communications & PR, Community |
 | Customers | Customer Support, Customer Success |
 | Operations | Operations, Finance, Legal & Compliance, People & HR, Recruiting, Procurement, Supply Chain & Logistics |
 | Leadership | Strategy & Leadership, Project Management, Market Research, Retrospective |
@@ -623,6 +623,25 @@ The agent gets a message about every decision. A channel can be set to
 then go out at once, up to its daily limit; beyond it they wait for a
 person. Drafts waiting more than a day and failed messages appear among the
 dashboard's signals.
+
+## Shipping releases
+
+A department that builds software can ship it. An admin creates a
+**product** (Organisation → 🚀 Releases → + Product) and names the
+departments whose agents may propose releases; their workers get the
+`release_*` tools and a "Releasing software" section in their prompt.
+Agents propose a version with notes, artifacts and their SHA-256 digests;
+the server scores the risk from facts and adapts the rollout; people approve
+after the server verified every artifact; the release goes out in stages,
+and health gates on client reports or business data roll it back on their
+own. Agents hear about every step and can halt a rollout, never start or
+advance one. See [Releases and distribution](RELEASES.md).
+
+Departments that **announce** a product (marketing, content, developer
+relations) get a launch brief when a release reaches everyone, `launch_*`
+tools for the facts, tracked links and results, and draft the
+announcements into the outbox. See
+[Telling people about it](RELEASES.md#telling-people-about-it).
 
 ## Data, tools and guardrails per department
 

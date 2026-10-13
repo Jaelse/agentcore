@@ -205,6 +205,37 @@ impl GitHub {
         Ok(value["data"].clone())
     }
 
+    /// How much changed between two commits (files, lines, commits).
+    pub async fn compare(
+        &self,
+        owner: &str,
+        repo: &str,
+        base: &str,
+        head: &str,
+    ) -> Result<agentcore_core::releases::ChangeSize, GhError> {
+        let v = self
+            .rest(
+                Method::GET,
+                &format!(
+                    "/repos/{}/{}/compare/{}...{}",
+                    urlencode(owner),
+                    urlencode(repo),
+                    urlencode(base),
+                    urlencode(head)
+                ),
+                None,
+            )
+            .await?;
+        let files = v["files"].as_array().cloned().unwrap_or_default();
+        let sum = |key: &str| files.iter().filter_map(|f| f[key].as_u64()).sum::<u64>();
+        Ok(agentcore_core::releases::ChangeSize {
+            files_changed: Some(files.len() as u64),
+            lines_added: Some(sum("additions")),
+            lines_removed: Some(sum("deletions")),
+            commits: v["total_commits"].as_u64(),
+        })
+    }
+
     /// Login of the token's user (connection test).
     pub async fn viewer(&self) -> Result<String, GhError> {
         Ok(s(&self.rest(Method::GET, "/user", None).await?, "login"))

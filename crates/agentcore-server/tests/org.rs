@@ -1966,3 +1966,988 @@ async fn outward_messages_wait_for_people() {
         .await;
     node.cluster.cancel();
 }
+
+// ---- releases ----------------------------------------------------------------------
+
+/// What the fake download host serves, and what the webhook received.
+type Hooked = std::sync::Arc<std::sync::Mutex<Vec<(axum::http::HeaderMap, axum::body::Bytes)>>>;
+
+/// Artifacts at `/app-*.tar.gz` and a webhook receiver at `/hook`.
+async fn fake_downloads() -> (String, Hooked) {
+    let hooked: Hooked = Default::default();
+    let keep = hooked.clone();
+    let app = axum::Router::new()
+        .route(
+            "/app-1.0.0.tar.gz",
+            axum::routing::get(|| async { "agentcore app 1.0.0" }),
+        )
+        .route(
+            "/app-1.1.0.tar.gz",
+            axum::routing::get(|| async { "agentcore app 1.1.0" }),
+        )
+        .route(
+            "/app-1.2.0.tar.gz",
+            axum::routing::get(|| async { "agentcore app 1.2.0" }),
+        )
+        .route(
+            "/hook",
+            axum::routing::post(
+                move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+                    let keep = keep.clone();
+                    async move {
+                        keep.lock().unwrap().push((headers, body));
+                        "ok"
+                    }
+                },
+            ),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{addr}"), hooked)
+}
+
+fn sha256(text: &str) -> String {
+    use sha2::Digest;
+    hex::encode(sha2::Sha256::digest(text.as_bytes()))
+}
+
+fn artifact(base: &str, version: &str, content: &str) -> Value {
+    json!({
+        "name": format!("app-{version}.tar.gz"), "platform": "linux-x86_64",
+        "url": format!("{base}/app-{version}.tar.gz"), "sha256": sha256(content),
+        "size": content.len(),
+    })
+}
+
+/// Proposes 1.0.0 on its first turn; revises when asked; halts on request.
+fn shipper(base: &str) -> String {
+    let good = json!({
+        "product": "app", "version": "1.0.0", "commit": "0123abcd",
+        "notes": "First release DRAFT", "risk": "low",
+        "assessment": "Small, well tested first version.",
+        "artifacts": [artifact(base, "1.0.0", "agentcore app 1.0.0")],
+        "checks": [{ "name": "unit tests", "passed": true }],
+        "changes": { "files_changed": 3, "lines_added": 30, "lines_removed": 2 },
+        "sbom": { "bomFormat": "CycloneDX", "specVersion": "1.5", "components": [] },
+    });
+    let evil = json!({
+        "product": "app", "version": "1.0.1", "notes": "x",
+        "artifacts": [{ "name": "a", "url": "https://evil.example/a", "sha256": sha256("a") }],
+    });
+    format!(
+        r###"
+case "$0" in
+  *"asked for changes"*)
+    id=$(printf %s "$0" | grep "asked for changes" | sed -n 's/.*(id \([0-9a-f-]*\)).*/\1/p' | head -n 1)
+    call release_revise "{{\"release\":\"$id\",\"notes\":\"First release FINAL\",\"note\":\"as asked\"}}" ;;
+  *HALT*)
+    id=$(printf %s "$0" | sed -n 's/.*HALT \([0-9a-f-]*\).*/\1/p' | head -n 1)
+    call release_halt "{{\"release\":\"$id\",\"reason\":\"users report errors\"}}" ;;
+  "You have "*) ;;
+  *)
+    call release_products '{{}}'
+    call release_propose '{evil}'
+    call release_propose '{good}' ;;
+esac
+"###
+    )
+}
+
+#[tokio::test]
+async fn releases_roll_out_in_stages_and_roll_back_on_their_own() {
+    let Some((_, db_url)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (base, hooked) = fake_downloads().await;
+    let script = shipper(&base);
+    let node = start_with(dir.path(), &db_url, "n1", 10, |c| {
+        c.agents.push(agent("shipper", &script));
+    })
+    .await;
+
+    let ship = node
+        .ok("POST", "/org/departments", Some(department("Ship", &[])))
+        .await;
+    let sid = ship["id"].as_str().unwrap().to_string();
+    let product = json!({
+        "name": "app", "description": "The desktop app", "departments": [sid],
+        "plan": [
+            { "name": "canary", "percent": 10, "soak_minutes": 0 },
+            { "name": "everyone", "percent": 100, "soak_minutes": 0 },
+        ],
+        "gates": [{
+            "name": "crash-free", "metric": { "kind": "crash_free" },
+            "comparator": ">=", "threshold": 0.9, "min_samples": 3,
+        }],
+        "approvals_required": 2,
+        "artifact_hosts": ["127.0.0.1"],
+        "webhook_url": format!("{base}/hook"),
+        "webhook_secret": "whsec",
+    });
+    let (code, _) = node
+        .call(
+            "POST",
+            "/releases/products",
+            "alice-token",
+            Some(product.clone()),
+        )
+        .await;
+    assert_eq!(code, 403, "admins add products");
+    let created = node.ok("POST", "/releases/products", Some(product)).await;
+    let pid = created["product"]["id"].as_str().unwrap().to_string();
+    let token = created["client_token"].as_str().unwrap().to_string();
+    assert!(created["product"].get("client_token_sha256").is_none());
+    assert_eq!(created["product"]["webhook_secret_hint"], "…hsec");
+
+    // The agent proposes; a download host that is not allowed is refused.
+    let bot = node
+        .ok(
+            "POST",
+            &format!("/org/departments/{sid}/agents"),
+            Some(json!({ "name": "release-manager", "agent": "shipper" })),
+        )
+        .await;
+    let aid = bot["id"].as_str().unwrap().to_string();
+    node.ok("POST", &format!("/org/agents/{aid}/start"), None)
+        .await;
+    let session = node
+        .wait_agent(&aid, "shipper waiting", |a| a["status"] == "awaiting_input")
+        .await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let out = output(&node.events(&session).await);
+    assert!(out.contains("not an allowed artifact host"), "{out}");
+    let list = node
+        .ok("GET", &format!("/releases?product={pid}"), None)
+        .await;
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+    let release = list[0].clone();
+    let rid = release["id"].as_str().unwrap().to_string();
+    assert_eq!(release["version"], "1.0.0");
+    assert_eq!(release["status"], "proposed");
+    assert_eq!(release["proposed_by"], "release-manager (Ship)");
+    assert!(release["risk"]["score"].as_u64().unwrap() < 60, "{release}");
+    assert!(
+        release["risk"]["factors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["name"] == "version"),
+        "{release}"
+    );
+    assert_eq!(release["approvals_required"], 2);
+
+    // People send it back; the agent revises.
+    node.ok(
+        "POST",
+        &format!("/releases/{rid}/changes"),
+        Some(json!({ "text": "Make the notes final" })),
+    )
+    .await;
+    let mut revised = Value::Null;
+    for _ in 0..200 {
+        revised = node.ok("GET", &format!("/releases/{rid}"), None).await["release"].clone();
+        if revised["revision"] == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(revised["notes"], "First release FINAL", "{revised}");
+    assert_eq!(revised["status"], "proposed");
+
+    // Distinct people approve the revision they read; the digest is checked.
+    let approve = |token: &'static str, revision: u32| {
+        let node = &node;
+        let rid = rid.clone();
+        async move {
+            node.call(
+                "POST",
+                &format!("/releases/{rid}/approve"),
+                token,
+                Some(json!({ "revision": revision })),
+            )
+            .await
+        }
+    };
+    assert_eq!(approve("viewer-token", 2).await.0, 403);
+    assert_eq!(
+        approve("alice-token", 1).await.0,
+        409,
+        "not what alice read"
+    );
+    let (code, first) = approve("alice-token", 2).await;
+    assert_eq!(code, 200, "{first}");
+    assert_eq!(first["started"], false);
+    assert!(
+        first["release"]["artifacts"][0]["verified_at"].is_string(),
+        "{first}"
+    );
+    assert_eq!(approve("alice-token", 2).await.0, 409, "one approval each");
+    let (code, second) = approve("admin-token", 2).await;
+    assert_eq!(code, 200, "{second}");
+    assert_eq!(second["started"], true, "{second}");
+    assert_eq!(second["release"]["status"], "rolling_out");
+
+    // Update clients: a client token, a signed manifest, 10% of units.
+    let dist = |path: String, token: Option<&str>| {
+        let url = format!("{}{path}", node.base);
+        let token = token.unwrap_or("").to_string();
+        async move { http("GET", &url, &token, None).await }
+    };
+    assert_eq!(dist("/dist/app/update?unit=u1".into(), None).await.0, 401);
+    assert_eq!(
+        dist("/dist/app/update?unit=u1".into(), Some("admin-token"))
+            .await
+            .0,
+        401,
+        "operator tokens are not client tokens"
+    );
+    let (_, keys) = dist("/dist/keys".into(), None).await;
+    let keys: Vec<(String, Vec<u8>)> = keys["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| {
+            use base64::Engine;
+            (
+                k["key_id"].as_str().unwrap().to_string(),
+                base64::engine::general_purpose::STANDARD
+                    .decode(k["public_key"].as_str().unwrap())
+                    .unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(keys.len(), 1);
+    let mut offered = Vec::new();
+    for i in 0..100 {
+        let (code, answer) = dist(
+            format!("/dist/app/update?unit=unit-{i}&platform=linux-x86_64"),
+            Some(&token),
+        )
+        .await;
+        assert_eq!(code, 200, "{answer}");
+        let verified = agentcore_server::signing::verify(&answer["envelope"], &keys).unwrap();
+        assert_eq!(
+            verified, answer["manifest"],
+            "the signed payload is the manifest"
+        );
+        if answer["manifest"]["version"] == "1.0.0" {
+            assert_eq!(answer["manifest"]["update"], true);
+            assert_eq!(answer["manifest"]["stage"], "canary");
+            assert_eq!(
+                answer["manifest"]["artifacts"][0]["sha256"],
+                sha256("agentcore app 1.0.0")
+            );
+            offered.push(format!("unit-{i}"));
+        }
+    }
+    assert!(
+        (2..=25).contains(&offered.len()),
+        "{} of 100",
+        offered.len()
+    );
+
+    // Healthy reports from three units open the gate: everyone gets it.
+    let report = |unit: String, version: &'static str, event: &'static str| {
+        let url = format!("{}/dist/app/report", node.base);
+        let token = token.clone();
+        async move {
+            http(
+                "POST",
+                &url,
+                &token,
+                Some(json!({ "unit": unit, "version": version, "event": event })),
+            )
+            .await
+            .0
+        }
+    };
+    for unit in offered.iter().take(3) {
+        assert_eq!(report(unit.clone(), "1.0.0", "installed").await, 202);
+    }
+    let wait_status = |status: &'static str| {
+        let node = &node;
+        async move {
+            let mut last = Value::Null;
+            for _ in 0..200 {
+                let all = node.ok("GET", "/releases", None).await;
+                if let Some(r) = all
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|r| r["status"] == status)
+                {
+                    return r.clone();
+                }
+                last = all;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            panic!("no release became {status}: {last}");
+        }
+    };
+    let released = wait_status("released").await;
+    assert_eq!(released["version"], "1.0.0");
+    let (_, everyone) = dist("/dist/app/update?unit=someone-else".into(), Some(&token)).await;
+    assert_eq!(everyone["manifest"]["version"], "1.0.0");
+    assert_eq!(everyone["manifest"]["percent"], 100.0);
+
+    // The attestation names the digests, the agent and the approvers.
+    let (_, envelope) = dist("/dist/app/releases/1.0.0/attestation".into(), Some(&token)).await;
+    let statement = agentcore_server::signing::verify(&envelope, &keys).unwrap();
+    assert_eq!(statement["_type"], "https://in-toto.io/Statement/v1");
+    assert_eq!(
+        statement["subject"][0]["digest"]["sha256"],
+        sha256("agentcore app 1.0.0")
+    );
+    assert_eq!(statement["predicate"]["ai_generated"], true);
+    assert_eq!(
+        statement["predicate"]["approved_by"],
+        json!(["alice", "root"])
+    );
+    assert_eq!(statement["predicate"]["artifacts_verified"], true);
+
+    // Versions only go up; a wrong digest is caught before anything ships.
+    node.ok(
+        "PUT",
+        &format!("/releases/products/{pid}"),
+        Some(json!({ "approvals_required": 1 })),
+    )
+    .await;
+    let propose = |version: &'static str, content: &'static str| {
+        let node = &node;
+        let body = json!({
+            "product": pid, "version": version, "notes": format!("Version {version}"),
+            "artifacts": [{
+                "name": format!("app-{version}.tar.gz"), "platform": "linux-x86_64",
+                "url": format!("{base}/app-{version}.tar.gz"), "sha256": sha256(content),
+            }],
+        });
+        async move {
+            node.call("POST", "/releases", "alice-token", Some(body))
+                .await
+        }
+    };
+    let (code, err) = propose("0.9.0", "x").await;
+    assert_eq!(code, 400, "{err}");
+    assert!(err.to_string().contains("not above 1.0.0"), "{err}");
+    let (code, bad) = propose("1.1.0", "tampered").await;
+    assert_eq!(code, 201, "{bad}");
+    let bad_id = bad["id"].as_str().unwrap();
+    let (code, err) = node
+        .call(
+            "POST",
+            &format!("/releases/{bad_id}/approve"),
+            "admin-token",
+            Some(json!({ "revision": 1 })),
+        )
+        .await;
+    assert_eq!(code, 409, "{err}");
+    assert!(err.to_string().contains("SHA-256"), "{err}");
+    let (code, _) = node
+        .call(
+            "POST",
+            &format!("/releases/{bad_id}/approve"),
+            "alice-token",
+            Some(json!({ "revision": 1 })),
+        )
+        .await;
+    assert_eq!(code, 400, "nobody approves their own release");
+    node.ok(
+        "POST",
+        &format!("/releases/{bad_id}/reject"),
+        Some(json!({ "text": "wrong file" })),
+    )
+    .await;
+
+    // 1.1.0 (the rejected version is free again) rolls out, is halted by
+    // the agent, resumed, and rolled back by crash reports.
+    let (code, good) = propose("1.1.0", "agentcore app 1.1.0").await;
+    assert_eq!(code, 201, "{good}");
+    let gid = good["id"].as_str().unwrap().to_string();
+    let started = node
+        .ok(
+            "POST",
+            &format!("/releases/{gid}/approve"),
+            Some(json!({ "revision": 1 })),
+        )
+        .await;
+    assert_eq!(started["started"], true, "{started}");
+    let (code, err) = node
+        .call(
+            "POST",
+            &format!("/releases/{gid}/promote"),
+            "alice-token",
+            None,
+        )
+        .await;
+    assert_eq!(code, 409, "no promotion past a gate without data: {err}");
+    node.ok(
+        "POST",
+        "/org/messages",
+        Some(json!({ "to": { "agent": aid }, "text": format!("HALT {gid}") })),
+    )
+    .await;
+    let paused = wait_status("paused").await;
+    assert_eq!(paused["reason"], "users report errors");
+    let (code, _) = node
+        .call(
+            "POST",
+            &format!("/releases/{gid}/resume"),
+            "viewer-token",
+            None,
+        )
+        .await;
+    assert_eq!(code, 403);
+    node.call(
+        "POST",
+        &format!("/releases/{gid}/resume"),
+        "alice-token",
+        None,
+    )
+    .await;
+    let rolling = wait_status("rolling_out").await;
+    let canary: Vec<String> = (0..400)
+        .map(|i| format!("unit-{i}"))
+        .filter(|u| {
+            agentcore_core::releases::in_rollout(
+                rolling["id"].as_str().unwrap().parse().unwrap(),
+                u,
+                10.0,
+            )
+        })
+        .take(3)
+        .collect();
+    for unit in &canary {
+        let (_, m) = dist(format!("/dist/app/update?unit={unit}"), Some(&token)).await;
+        assert_eq!(m["manifest"]["version"], "1.1.0", "{unit} is in the canary");
+        assert_eq!(report(unit.clone(), "1.1.0", "crash").await, 202);
+    }
+    let rolled_back = wait_status("rolled_back").await;
+    assert_eq!(rolled_back["version"], "1.1.0");
+    assert_eq!(rolled_back["decided_by"], "rollout");
+    assert!(
+        rolled_back["reason"]
+            .as_str()
+            .unwrap()
+            .contains("crash-free"),
+        "{rolled_back}"
+    );
+    let (_, back) = dist(
+        format!("/dist/app/update?unit={}&current=1.1.0", canary[0]),
+        Some(&token),
+    )
+    .await;
+    assert_eq!(back["manifest"]["version"], "1.0.0");
+    assert_eq!(back["manifest"]["rollback"], true);
+    let (code, _) = propose("1.1.0", "agentcore app 1.1.0").await;
+    assert_eq!(code, 400, "a rolled-back version is never reused");
+
+    // A change freeze holds the start; lifting it lets it go.
+    node.ok(
+        "PUT",
+        &format!("/releases/products/{pid}/freeze"),
+        Some(json!({ "reason": "launch week" })),
+    )
+    .await;
+    let (_, frozen) = propose("1.2.0", "agentcore app 1.2.0").await;
+    let fid = frozen["id"].as_str().unwrap().to_string();
+    let held = node
+        .ok(
+            "POST",
+            &format!("/releases/{fid}/approve"),
+            Some(json!({ "revision": 1 })),
+        )
+        .await;
+    assert_eq!(held["started"], false, "{held}");
+    assert!(
+        held["note"].as_str().unwrap().contains("launch week"),
+        "{held}"
+    );
+    node.ok("DELETE", &format!("/releases/products/{pid}/freeze"), None)
+        .await;
+    let go = node
+        .ok("POST", &format!("/releases/{fid}/start"), None)
+        .await;
+    assert_eq!(go["status"], "rolling_out");
+    node.ok(
+        "POST",
+        &format!("/releases/{fid}/rollback"),
+        Some(json!({ "text": "not needed after all" })),
+    )
+    .await;
+
+    // Webhooks were signed; the agent heard; people see the signal.
+    {
+        let hooked = hooked.lock().unwrap();
+        let events: Vec<&str> = hooked
+            .iter()
+            .map(|(h, _)| h["x-agentcore-event"].to_str().unwrap())
+            .collect();
+        for e in ["started", "advanced", "released", "paused", "rolled_back"] {
+            assert!(events.contains(&e), "{e} in {events:?}");
+        }
+        for (headers, body) in hooked.iter() {
+            assert_eq!(
+                headers["x-agentcore-signature"].to_str().unwrap(),
+                agentcore_server::signing::hmac_signature("whsec", body)
+            );
+        }
+    }
+    let mut heard = String::new();
+    for _ in 0..100 {
+        heard = output(&node.events(&session).await);
+        if heard.contains("is released") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        heard.contains("approved app 1.0.0 (1 of 2 approvals)"),
+        "{heard}"
+    );
+    assert!(heard.contains("rollout of app 1.0.0 started"), "{heard}");
+    assert!(heard.contains("app 1.0.0 is released"), "{heard}");
+    let metrics = node.ok("GET", "/org/metrics", None).await;
+    assert!(
+        metrics["signals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["kind"] == "release_rolled_back"),
+        "{metrics}"
+    );
+    let overview = node.ok("GET", "/org", None).await;
+    assert_eq!(overview["products"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        report("unit-1".into(), "1.3.0", "crash").await,
+        404,
+        "reports only count for versions that were offered"
+    );
+
+    node.ok("POST", &format!("/org/agents/{aid}/stop"), None)
+        .await;
+    node.cluster.cancel();
+}
+
+// ---- telling people about it -------------------------------------------------------
+
+/// Answers a launch brief: facts, a tracked link, a draft, the results.
+const MARKETER: &str = r###"
+case "$0" in
+  *"Launch brief"*)
+    link=$(printf %s "$0" | grep -o 'http[^ ]*src=newsletter' | head -n 1)
+    call launch_products '{}'
+    call launch_link '{"product":"kit","source":"newsletter"}'
+    call launch_link '{"product":"kit","source":"<bad>"}'
+    call outbox_draft "{\"channel\":\"news\",\"subject\":\"kit is out\",\"text\":\"kit 1.0.0 is here: $link\"}"
+    call launch_stats '{"product":"kit"}' ;;
+esac
+"###;
+
+/// GET or POST without following redirects; status, headers and body.
+async fn raw(
+    method: &str,
+    url: &str,
+    form: Option<&[(&str, &str)]>,
+) -> (u16, reqwest::header::HeaderMap, String) {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let mut req = client.request(method.parse().unwrap(), url);
+    if let Some(form) = form {
+        req = req.form(form);
+    }
+    let res = req.send().await.unwrap();
+    let code = res.status().as_u16();
+    let headers = res.headers().clone();
+    (code, headers, res.text().await.unwrap())
+}
+
+#[tokio::test]
+async fn releases_reach_people_through_a_page_briefs_and_tracked_links() {
+    let Some((_, db_url)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (base, hooked) = fake_downloads().await;
+    let node = start_with(dir.path(), &db_url, "n1", 10, |c| {
+        c.agents.push(agent("marketer", MARKETER));
+    })
+    .await;
+
+    // A growth department with an agent and a channel for announcements.
+    let growth = node
+        .ok("POST", "/org/departments", Some(department("Growth", &[])))
+        .await;
+    let gid = growth["id"].as_str().unwrap().to_string();
+    node.ok(
+        "POST",
+        "/org/channels",
+        Some(json!({
+            "name": "news", "kind": "webhook",
+            "config": { "url": format!("{base}/hook") }, "departments": [gid],
+        })),
+    )
+    .await;
+    // A public product the growth department announces; another one private.
+    let created = node
+        .ok(
+            "POST",
+            "/releases/products",
+            Some(json!({
+                "name": "kit", "description": "A toolkit for shipping faster.",
+                "tagline": "Ship in minutes", "audience": "both", "public": true,
+                "pitch": "For teams that ship every day.",
+                "announce_departments": [gid], "approvals_required": 1,
+                "plan": [{ "name": "everyone", "percent": 100, "soak_minutes": 0 }],
+                "artifact_hosts": ["127.0.0.1"],
+                "webhook_url": format!("{base}/hook"), "webhook_secret": "whsec",
+            })),
+        )
+        .await;
+    let pid = created["product"]["id"].as_str().unwrap().to_string();
+    assert_eq!(created["product"]["public"], true);
+    assert_eq!(created["product"]["audience"], "both");
+    node.ok(
+        "POST",
+        "/releases/products",
+        Some(json!({ "name": "hidden", "artifact_hosts": ["127.0.0.1"] })),
+    )
+    .await;
+    assert_eq!(
+        raw("GET", &format!("{}/p/hidden", node.base), None).await.0,
+        404
+    );
+    assert_eq!(
+        raw("GET", &format!("{}/p/nope", node.base), None).await.0,
+        404
+    );
+
+    // The marketer starts after the product names its department (a session
+    // gets its tools when it starts).
+    let bot = node
+        .ok(
+            "POST",
+            &format!("/org/departments/{gid}/agents"),
+            Some(json!({ "name": "marketer", "agent": "marketer" })),
+        )
+        .await;
+    let aid = bot["id"].as_str().unwrap().to_string();
+    node.ok("POST", &format!("/org/agents/{aid}/start"), None)
+        .await;
+    let session = node
+        .wait_agent(&aid, "marketer waiting", |a| {
+            a["status"] == "awaiting_input"
+        })
+        .await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Release 1.0.0 (its notes try to inject a script).
+    let ship = |version: &'static str| {
+        let node = &node;
+        let pid = pid.clone();
+        let base = base.clone();
+        async move {
+            let (code, r) = node
+                .call(
+                    "POST",
+                    "/releases",
+                    "alice-token",
+                    Some(json!({
+                        "product": pid, "version": version,
+                        "notes": format!("Version {version} <script>alert(1)</script>"),
+                        "artifacts": [artifact(&base, "1.0.0", "agentcore app 1.0.0")],
+                        "checks": [{ "name": "tests", "passed": true }],
+                        "changes": { "lines_added": 10 },
+                        "sbom": { "bomFormat": "CycloneDX" },
+                    })),
+                )
+                .await;
+            assert_eq!(code, 201, "{r}");
+            let rid = r["id"].as_str().unwrap().to_string();
+            node.ok(
+                "POST",
+                &format!("/releases/{rid}/approve"),
+                Some(json!({ "revision": 1 })),
+            )
+            .await;
+            for _ in 0..200 {
+                let r = node.ok("GET", &format!("/releases/{rid}"), None).await;
+                if r["release"]["status"] == "released" {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            panic!("{version} was not released");
+        }
+    };
+    ship("1.0.0").await;
+
+    // The brief reached the marketer, who drafted with a tracked link.
+    let mut draft = Value::Null;
+    for _ in 0..200 {
+        let outbox = node.ok("GET", "/org/outbox", None).await;
+        if let Some(d) = outbox.as_array().unwrap().first() {
+            draft = d.clone();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let text = draft["body"].as_str().unwrap_or_default();
+    assert!(
+        text.contains(&format!("{}/p/kit?src=newsletter", node.base)),
+        "{draft}"
+    );
+    assert_eq!(
+        draft["status"], "pending",
+        "a person approves announcements"
+    );
+    let mut out = String::new();
+    for _ in 0..200 {
+        out = output(&node.events(&session).await);
+        if out.contains("marketer got") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(out.contains("Launch brief: kit 1.0.0 is released"), "{out}");
+    assert!(out.contains("Ship in minutes"), "{out}");
+    assert!(out.contains("For teams that ship every day."), "{out}");
+    assert!(out.contains("write separate drafts"), "{out}");
+    assert!(out.contains("`source` is a short name"), "{out}");
+    assert!(out.contains(r#"\"subscribers\":0"#), "{out}");
+
+    // The public page: escaped, locked down, counted per source.
+    let (code, headers, page) =
+        raw("GET", &format!("{}/p/kit?src=newsletter", node.base), None).await;
+    assert_eq!(code, 200);
+    assert!(
+        page.contains("Ship in minutes") && page.contains("1.0.0"),
+        "{page}"
+    );
+    assert!(
+        page.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+        "{page}"
+    );
+    assert!(!page.contains("<script>"), "{page}");
+    assert!(page.contains(&sha256("agentcore app 1.0.0")));
+    assert!(
+        headers["content-security-policy"]
+            .to_str()
+            .unwrap()
+            .contains("default-src 'none'")
+    );
+    raw("GET", &format!("{}/p/kit", node.base), None).await;
+    let (code, headers, _) = raw(
+        "GET",
+        &format!(
+            "{}/p/kit/download/app-1.0.0.tar.gz?src=newsletter",
+            node.base
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(code, 303);
+    assert_eq!(
+        headers["location"],
+        format!("{base}/app-1.0.0.tar.gz").as_str()
+    );
+    let (_, _, feed) = raw("GET", &format!("{}/p/kit/feed.xml", node.base), None).await;
+    assert!(feed.contains("<entry><title>kit 1.0.0</title>"), "{feed}");
+
+    // Sign-ups: consent required, duplicates and bots change nothing.
+    let subscribe = |fields: Vec<(&'static str, &'static str)>| {
+        let url = format!("{}/p/kit/subscribe", node.base);
+        async move { raw("POST", &url, Some(&fields)).await }
+    };
+    let (code, _, thanks) = subscribe(vec![
+        ("email", "ana@dev.io"),
+        ("segment", "developer"),
+        ("consent", "yes"),
+        ("src", "newsletter"),
+    ])
+    .await;
+    assert_eq!(code, 200, "{thanks}");
+    assert!(thanks.contains("Thank you"));
+    assert_eq!(
+        subscribe(vec![("email", "ANA@dev.io"), ("consent", "yes")])
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        subscribe(vec![("email", "bob@corp.com"), ("segment", "business")])
+            .await
+            .0,
+        400,
+        "no consent, no subscription"
+    );
+    assert_eq!(
+        subscribe(vec![("email", "not-an-email"), ("consent", "yes")])
+            .await
+            .0,
+        400
+    );
+    assert_eq!(
+        subscribe(vec![
+            ("email", "bot@spam.io"),
+            ("consent", "yes"),
+            ("website", "http://spam")
+        ])
+        .await
+        .0,
+        200
+    );
+    subscribe(vec![
+        ("email", "bob@corp.com"),
+        ("segment", "business"),
+        ("company", "=cmd"),
+        ("consent", "yes"),
+        ("src", "linkedin"),
+    ])
+    .await;
+
+    let stats = node
+        .ok("GET", &format!("/releases/products/{pid}/launch"), None)
+        .await;
+    let s = &stats["stats"];
+    assert_eq!(s["subscribers"], 2, "{stats}");
+    assert_eq!(s["developers"], 1);
+    assert_eq!(s["business"], 1);
+    assert_eq!(s["signups"], 2);
+    assert_eq!(s["downloads"], 1);
+    let newsletter = s["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["source"] == "newsletter")
+        .unwrap()
+        .clone();
+    assert_eq!(newsletter["signups"], 1, "{stats}");
+    assert_eq!(newsletter["downloads"], 1);
+    assert!(newsletter["visits"].as_i64().unwrap() >= 1);
+    assert_eq!(stats["page"], format!("{}/p/kit", node.base));
+
+    // The export is for admins, logged, and safe to open in a spreadsheet.
+    let (code, _) = node
+        .call(
+            "GET",
+            &format!("/releases/products/{pid}/subscribers.csv"),
+            "alice-token",
+            None,
+        )
+        .await;
+    assert_eq!(code, 403);
+    let csv = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .get(format!(
+            "{}/api/v1/releases/products/{pid}/subscribers.csv",
+            node.base
+        ))
+        .bearer_auth("admin-token")
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(csv.contains("\"ana@dev.io\",\"developer\""), "{csv}");
+    assert!(csv.contains("\"'=cmd\""), "{csv}");
+    assert!(!csv.contains("bot@spam.io"), "{csv}");
+
+    // Sign-ups go on to the newsletter service; unsubscribing works and
+    // goes on too.
+    let unsubscribe_url = {
+        let hooked = hooked.lock().unwrap();
+        let (headers, body) = hooked
+            .iter()
+            .find(|(h, _)| h["x-agentcore-event"] == "subscribed")
+            .expect("a subscribed event");
+        assert_eq!(
+            headers["x-agentcore-signature"].to_str().unwrap(),
+            agentcore_server::signing::hmac_signature("whsec", body)
+        );
+        let v: Value = serde_json::from_slice(body).unwrap();
+        assert_eq!(v["email"], "ana@dev.io");
+        assert!(v["consent"].as_str().unwrap().contains("unsubscribe"));
+        v["unsubscribe_url"].as_str().unwrap().to_string()
+    };
+    let (code, _, confirm) = raw("GET", &unsubscribe_url, None).await;
+    assert_eq!(code, 200);
+    assert!(
+        confirm.contains("<form method=\"post\""),
+        "a scanner opening the link changes nothing"
+    );
+    let token = unsubscribe_url.split("token=").nth(1).unwrap().to_string();
+    let (code, _, done) = raw(
+        "POST",
+        &format!("{}/p/kit/unsubscribe", node.base),
+        Some(&[("token", token.as_str())]),
+    )
+    .await;
+    assert_eq!(code, 200);
+    assert!(done.contains("Unsubscribed"));
+    let stats = node
+        .ok("GET", &format!("/releases/products/{pid}/launch"), None)
+        .await;
+    assert_eq!(stats["stats"]["subscribers"], 1);
+    for _ in 0..100 {
+        if hooked
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(h, _)| h["x-agentcore-event"] == "unsubscribed")
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        hooked
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(h, _)| h["x-agentcore-event"] == "unsubscribed")
+    );
+
+    // A patch is not announced (unless the product asks for it).
+    ship("1.0.1").await;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let briefs = node
+        .messages("")
+        .await
+        .iter()
+        .filter(|m| {
+            m["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Launch brief")
+        })
+        .count();
+    assert_eq!(briefs, 1, "only 1.0.0 was briefed");
+
+    // The dashboard and the retrospective see the results.
+    let metrics = node.ok("GET", "/org/metrics", None).await;
+    let kit = metrics["launch"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["product"] == "kit")
+        .unwrap()
+        .clone();
+    assert_eq!(kit["signups"], 2, "{metrics}");
+    assert_eq!(kit["released"], 2);
+
+    node.ok("POST", &format!("/org/agents/{aid}/stop"), None)
+        .await;
+    node.cluster.cancel();
+}

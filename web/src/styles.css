@@ -106,7 +106,7 @@ label { display: grid; gap: 4px; font-weight: 600; font-size: 12px; color: var(-
   .layout { grid-template-columns: minmax(0, 1fr); }
   .brand { flex-wrap: wrap; min-width: 0; }
   .nav { margin-left: 0; flex-wrap: wrap; }
-  .session-header-main { flex-basis: 100%; }
+  .session-header .session-header-main { flex-basis: 100%; }
   .sidebar { border-right: none; border-bottom: 1px solid var(--border); }
   /* Keep the open session (and its stop button) above the fold. */
   .layout.has-session .main { order: -1; border-bottom: 1px solid var(--border); }

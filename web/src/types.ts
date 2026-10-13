@@ -156,6 +156,8 @@ export interface OrgOverview {
   proposals_pending: number;
   channels: Channel[];
   outbox_pending: number;
+  products: Product[];
+  releases_pending: number;
   nodes: NodeInfo[];
   communicator_policy: string;
 }
@@ -795,4 +797,189 @@ export interface OutboxItem {
   error: string | null;
   created_at: string;
   updated_at: string;
+}
+
+// ---- releases ---------------------------------------------------------------
+
+export interface Stage {
+  name: string;
+  percent: number;
+  soak_minutes: number;
+}
+
+export type Comparator = "lt" | "lte" | "gt" | "gte";
+
+export type GateSource =
+  | { kind: "crash_free" }
+  | { kind: "install_success" }
+  | { kind: "data"; source: string; sql?: string | null; path?: string | null; field: string };
+
+export interface HealthGate {
+  name: string;
+  metric: GateSource;
+  comparator: Comparator;
+  threshold: number;
+  min_samples: number;
+}
+
+export interface Product {
+  id: string;
+  name: string;
+  description: string;
+  departments: string[];
+  repository: string | null;
+  plan: Stage[];
+  gates: HealthGate[];
+  approvals_required: number;
+  artifact_hosts: string[];
+  webhook_url: string | null;
+  webhook_secret_hint: string | null;
+  client_token_hint: string | null;
+  frozen: string | null;
+  frozen_by: string | null;
+  enabled: boolean;
+  updated_at: string;
+  updated_by: string;
+  public: boolean;
+  tagline: string;
+  audience: Audience;
+  pitch: string;
+  website: string | null;
+  announce_departments: string[];
+  announce_patches: boolean;
+}
+
+export type Audience = "developers" | "business" | "both";
+
+export interface LaunchSettings {
+  public: boolean;
+  tagline: string;
+  audience: Audience;
+  pitch: string;
+  website: string;
+  announce_departments: string[];
+  announce_patches: boolean;
+}
+
+export interface SourceStats {
+  source: string;
+  visits: number;
+  downloads: number;
+  signups: number;
+}
+
+export interface LaunchStats {
+  page: string | null;
+  stats: {
+    days: number;
+    sources: SourceStats[];
+    visits: number;
+    downloads: number;
+    signups: number;
+    subscribers: number;
+    developers: number;
+    business: number;
+    daily: [string, number, number, number][];
+  };
+}
+
+export type ReleaseStatus = "proposed" | "changes_requested" | "rolling_out" | "paused" | "released" | "rolled_back" | "rejected";
+
+export interface Artifact {
+  name: string;
+  platform: string;
+  url: string;
+  sha256: string;
+  size: number | null;
+  media_type: string | null;
+  verified_at: string | null;
+}
+
+export interface RiskFactor {
+  name: string;
+  points: number;
+  detail: string;
+}
+
+export interface Risk {
+  score: number;
+  level: "low" | "medium" | "high";
+  factors: RiskFactor[];
+  assessment: string;
+}
+
+export interface GateResult {
+  name: string;
+  status: "pass" | "fail" | "waiting" | "error";
+  value: number | null;
+  samples: number | null;
+  detail: string;
+}
+
+export interface Release {
+  id: string;
+  product_id: string;
+  version: string;
+  commit: string | null;
+  notes: string;
+  artifacts: Artifact[];
+  sbom: Record<string, unknown> | null;
+  checks: { name: string; passed: boolean; detail: string }[];
+  changes: { files_changed?: number | null; lines_added?: number | null; lines_removed?: number | null; commits?: number | null };
+  risk: Risk;
+  plan: Stage[];
+  approvals_required: number;
+  approvals: { by: string; at: string; revision: number }[];
+  status: ReleaseStatus;
+  stage: number;
+  stage_started_at: string | null;
+  gates: GateResult[];
+  gates_checked_at: string | null;
+  department_id: string | null;
+  agent_id: string | null;
+  proposed_by: string;
+  revision: number;
+  history: { action?: string; by?: string; note?: string; at?: string }[];
+  feedback: string | null;
+  reason: string | null;
+  decided_by: string | null;
+  started_at: string | null;
+  released_at: string | null;
+  attestation: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReleaseDetail {
+  release: Release;
+  percent: number;
+  reports: { units: number; installed: number; install_failed: number; crashed: number };
+  crash_free: number | null;
+  install_success: number | null;
+}
+
+export interface ProductSummary {
+  product: Product;
+  current_version: string | null;
+  rollout: { id: string; version: string; status: ReleaseStatus; stage: string | null; percent: number } | null;
+}
+
+export interface ProductInput {
+  name: string;
+  description: string;
+  departments: string[];
+  repository?: string;
+  plan: Stage[];
+  gates: HealthGate[];
+  approvals_required: number;
+  artifact_hosts: string[];
+  webhook_url?: string;
+  webhook_secret?: string;
+  public?: boolean;
+  tagline?: string;
+  audience?: Audience;
+  pitch?: string;
+  website?: string;
+  announce_departments?: string[];
+  announce_patches?: boolean;
 }

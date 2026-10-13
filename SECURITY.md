@@ -110,6 +110,18 @@ do, and every attempt is recorded.
       transaction with a time limit, but a read-only role is the real
       guarantee); give HTTP sources a read-only API key and allowed path
       prefixes; grant each source only to the departments that need it.
+- [ ] Releases: allow only the artifact hosts your builds publish to, ask
+      for two approvals on products many people use, add health gates (a
+      product without them rolls out blind), set `min_samples` well above
+      what one client could fake, pin the `/dist/keys` signing keys in your
+      update clients, give each product a webhook key, and rotate a client
+      token that leaked. See [docs/RELEASES.md](docs/RELEASES.md#security-notes).
+- [ ] Public product pages: sign-ups are personal data. Say in your
+      privacy notice who receives them (the webhook's newsletter service),
+      let your newsletter service confirm addresses (double opt-in), and
+      export subscribers (admin only, logged) only to where you may keep
+      them. Pages store no cookies and no IP addresses; put the server
+      behind your reverse proxy's rate limit for `/p/`.
 - [ ] Outward channels: use a dedicated mailbox or bot for agent mail, set
       allowed recipient domains where you can, keep "a person approves every
       message" on for anything customers or the public see, and keep daily

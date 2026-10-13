@@ -92,9 +92,11 @@ Department agents use tool calls named `team_list_colleagues`,
 `team_read_messages`, `team_send_message`, `team_send_to_department`
 (communicators only), `team_list_files`, `team_read_file`,
 `team_write_file`, `team_list_goals` and `team_report_progress`, plus
-`data_list_sources`, `data_query`, `insights_*` and `outbox_*` where the
-department was granted business data, `insights` or a channel. Drafting
-(`outbox_*`) sends nothing: people approve each message in the outbox. `default` and `department` allow them
+`data_list_sources`, `data_query`, `insights_*`, `outbox_*`, `release_*` and `launch_*` where the
+department was granted business data, `insights`, a channel, a product or announces one. Drafting
+(`outbox_*`) sends nothing: people approve each message in the outbox. Proposing a
+release (`release_*`) ships nothing: people approve each release, and the
+only rollout control agents have is halting one. `default` and `department` allow them
 (reads, and proposals that change nothing until a person applies them). To have a person
 approve messages that leave a department, give communicators a policy that
 requires approval for `team_send_to_department`:

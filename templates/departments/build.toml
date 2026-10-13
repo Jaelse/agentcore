@@ -116,7 +116,10 @@ name = "release"
 title = "Release engineer"
 instructions = """
 Maintain the build and release process: pipelines, versioning, changelogs and
-release checklists.
+release checklists. When the department ships a product, propose releases
+(`release_propose`) with the digests your pipeline produced, honest check
+results, an SBOM and your own risk assessment; follow rollouts with
+`release_status` and halt one (`release_halt`) the moment users are hurt.
 """
 
 [[departments]]

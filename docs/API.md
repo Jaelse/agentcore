@@ -204,6 +204,8 @@ Metrics (`GET /org/metrics?days=`), improvement proposals
 business data sources (`/org/data-sources`), and prices and budgets
 (`/org/spending`, `/org/prices`, `/org/budgets`, `/org/currency`), and the
 outbox and channels (`/org/outbox`, `/org/channels`): see
+[Releases and distribution](RELEASES.md#api) for `/releases` and the
+update-client endpoints under `/dist`;
 [Talking to the outside world](MULTI_AGENT.md#talking-to-the-outside-world),
 [Spending and budgets](MULTI_AGENT.md#spending-and-budgets),
 [Business data](MULTI_AGENT.md#business-data) and

@@ -89,6 +89,13 @@ kinds = ["tool_call"]
 tools = ["data_list_sources", "data_query", "insights_*"]
 
 [[rules]]
+id = "allow-release-proposals"
+description = "Proposing releases and halting rollouts (people approve every release before it ships, and halting only stops a rollout); reading launch results and making tracked links."
+effect = "allow"
+kinds = ["tool_call"]
+tools = ["release_*", "launch_*"]
+
+[[rules]]
 id = "allow-outbox-drafts"
 description = "Drafting messages for outward channels: a person approves each one before it is sent (unless the channel was set to send without approval)."
 effect = "allow"

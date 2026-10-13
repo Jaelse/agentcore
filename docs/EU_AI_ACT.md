@@ -66,6 +66,16 @@ to every agent, and agentcore adds:
   webhooks also receive `"ai_generated": true`. Who drafted, who approved
   and every revision are kept with the message and in the admin log.
 
+* **Software that agents build and ship (Art. 12, 14, 50).** Agents only
+  propose [releases](RELEASES.md); distinct people approve each one after
+  the server verified every artifact's digest, a staged rollout limits who
+  is exposed, and health gates roll a release back on their own. Every
+  shipped release carries a signed in-toto attestation stating that an AI
+  agent proposed it (`ai_generated`), who approved it, its risk and its
+  checks; every decision is in the admin log. Public product pages say that
+  AI agents wrote parts of the software and its notes and that people
+  approved every release; announcements carry the outbox's disclosure.
+
 ## Where humans oversee the agent (Art. 14)
 
 ```mermaid

@@ -9,8 +9,10 @@
 mod agents;
 mod crypto;
 mod insights;
+mod launch;
 mod org;
 mod outbox;
+mod releases;
 mod rhythm;
 mod spending;
 mod teamwork;
@@ -34,6 +36,9 @@ pub use insights::{
     Activity, AgentMetrics, DataSourceInput, DataSourceUpdate, DayMetrics, DepartmentMetrics,
     GoalMetrics, MAX_TABLE_BYTES, Metrics, NewProposal, ProposalCounts, ProposalRevision,
 };
+pub use launch::{
+    LaunchEvent, LaunchStats, MAX_SOURCES, NewSubscriber, Segment, SourceStats, Subscriber,
+};
 pub use org::{
     AgentInput, AgentScope, COMMUNICATOR_NAME, DepartmentInput, FileInfo, MAX_FILE_BYTES,
     MessageFilter, NewMessage, ORG_CHANNEL, RESERVED_NAMES, valid_agent_name,
@@ -41,6 +46,10 @@ pub use org::{
 pub use outbox::{
     ChannelInput, ChannelUpdate, DEFAULT_DISCLOSURE, MAX_BODY_CHARS, NewOutboxItem, OutboxCounts,
     OutboxRevision,
+};
+pub use releases::{
+    LaunchFields, MAX_NOTES_CHARS, NewRelease, ProductInput, ProductUpdate, ReleaseContent,
+    ReleaseCounts, ReportEvent, ReportStats, SigningKey,
 };
 pub use rhythm::{GoalInput, GoalUpdate, ScheduleInput, ScheduleUpdate};
 pub use spending::{BudgetInput, BudgetUpdate, PriceInput};
