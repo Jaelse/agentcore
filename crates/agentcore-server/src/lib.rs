@@ -37,6 +37,7 @@ use agentcore_store::{Cipher, Store};
 use anyhow::Context;
 use axum::Router;
 use axum::routing::{any, get, patch, post, put};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
@@ -170,7 +171,7 @@ impl AppState {
 }
 
 pub fn router(state: AppState) -> Router {
-    let api = Router::new()
+    let api: Router<AppState> = Router::new()
         .route("/health", get(api::health))
         .route("/whoami", get(api::whoami))
         .route("/system-card", get(api::system_card))
@@ -388,6 +389,11 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             cluster::forward_sessions,
         ));
+    let api = if state.config.server.cors_origins.is_empty() {
+        api
+    } else {
+        api.layer(cors(&state.config.server.cors_origins))
+    };
 
     let ui_dir = &state.config.server.ui_dir;
     let ui = ServeDir::new(ui_dir).fallback(ServeFile::new(ui_dir.join("index.html")));
@@ -422,6 +428,27 @@ pub fn router(state: AppState) -> Router {
         .layer(RequestBodyLimitLayer::new(32 * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// Cross-origin access to the operator API for the configured origins only.
+/// Tokens travel in the `Authorization` header, never in cookies.
+fn cors(origins: &[String]) -> CorsLayer {
+    use axum::http::{HeaderValue, Method, header};
+    let origins: Vec<HeaderValue> = origins
+        .iter()
+        .filter_map(|o| HeaderValue::from_str(o).ok())
+        .collect();
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+        ])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT])
+        .max_age(Duration::from_secs(3600))
 }
 
 /// Run the server until Ctrl-C / SIGTERM, then stop every live session.

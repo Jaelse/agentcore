@@ -71,6 +71,13 @@ your machine without isolation**. Use it only to develop agentcore itself.
 For UI development with hot reload, run the server as above and `npm run dev`
 in `web/` (Vite proxies `/api` to `127.0.0.1:8080`).
 
+### Mobile and desktop app
+
+[`app/`](app/README.md) is a Flutter front end for phones, desktops and the
+browser: watch sessions live, approve or reject actions, answer outbox and
+release approvals, and pause or stop agents and departments. The server stays
+the backend; the app signs in with an operator token like the web UI.
+
 ## Self-hosting
 
 ```sh
