@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -17,7 +17,7 @@ use agentcore_sandbox::{
 };
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -106,6 +106,12 @@ pub struct Session {
     proposal: Mutex<Option<PullRequestProposal>>,
     /// True while the agent process runs (between TurnStarted and TurnEnded).
     turn_active: AtomicBool,
+    /// The running turn's terminal keyboard (agents in a TTY only).
+    keyboard: Mutex<Option<mpsc::UnboundedSender<Vec<u8>>>>,
+    /// Number of the running (or last) turn.
+    turn: AtomicU32,
+    /// People who have typed into the terminal during the running turn.
+    typists: Mutex<std::collections::HashSet<String>>,
     /// True while agentcore itself runs git/checks in the sandbox.
     busy: tokio::sync::Mutex<()>,
     inbox: mpsc::UnboundedSender<Inbox>,
@@ -176,6 +182,9 @@ impl Session {
             last_changes: Mutex::new(None),
             proposal: Mutex::new(None),
             turn_active: AtomicBool::new(false),
+            keyboard: Mutex::new(None),
+            turn: AtomicU32::new(0),
+            typists: Mutex::new(Default::default()),
             busy: tokio::sync::Mutex::new(()),
             inbox,
             inbox_rx: Mutex::new(Some(inbox_rx)),
@@ -195,6 +204,11 @@ impl Session {
 
     pub fn id(&self) -> SessionId {
         self.id
+    }
+
+    /// Adapter the agent was launched with, e.g. `claude-code`.
+    pub fn adapter(&self) -> &str {
+        &self.spec.adapter
     }
 
     pub fn policy(&self) -> &CompiledPolicy {
@@ -559,6 +573,37 @@ impl Session {
             .map_err(|_| RuntimeError::NotRunning)
     }
 
+    /// Type into the agent's terminal (keystrokes as the terminal sends them,
+    /// e.g. `\r` for Enter), for people helping an agent along: answering
+    /// its questions, logging it in. The audit log records who typed in
+    /// which turn; the keystrokes are only seen as far as the program echoes
+    /// them on its screen (which is recorded like all output).
+    pub fn type_input(&self, by: Principal, data: &[u8]) -> Result<(), RuntimeError> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        if self.is_paused() {
+            return Err(RuntimeError::NoTerminal);
+        }
+        let keyboard = lock(&self.keyboard)
+            .clone()
+            .ok_or(RuntimeError::NoTerminal)?;
+        if lock(&self.typists).insert(who(&by)) {
+            self.emit(EventKind::TerminalInput {
+                by,
+                turn: self.turn.load(Ordering::SeqCst),
+            })?;
+        }
+        keyboard
+            .send(data.to_vec())
+            .map_err(|_| RuntimeError::NoTerminal)
+    }
+
+    /// Whether people can type into the agent's terminal right now.
+    pub fn accepts_input(&self) -> bool {
+        lock(&self.keyboard).is_some()
+    }
+
     /// Hand messages from the agent's organisation (colleagues, its
     /// communicator, people) to an agent that is waiting for input; they
     /// start its next turn. Fails with [`RuntimeError::NotAwaitingInput`]
@@ -714,6 +759,7 @@ impl Session {
             session_id: self.id,
             workspace_dir: workspace_dir.clone(),
             image: self.spec.image.clone(),
+            egress: adapter.direct_model_access(&self.spec),
         };
         let sandbox = tokio::select! {
             sandbox = provider.create(&request) => sandbox?,
@@ -775,6 +821,7 @@ impl Session {
             session_id: self.id,
             task,
             workspace: WORKSPACE.into(),
+            workdir: sandbox.workdir(),
             home: sandbox.home(),
             gateway_url: format!(
                 "{}/mcp/{}",
@@ -815,8 +862,11 @@ impl Session {
                 self.emit(EventKind::AgentStarted {
                     program: plan.program.clone(),
                     args: plan.args.iter().map(|a| truncate(a, 2048)).collect(),
+                    direct_model_access: plan.direct_model_access,
                 })?;
             }
+            self.turn.store(turn, Ordering::SeqCst);
+            lock(&self.typists).clear();
             self.turn_active.store(true, Ordering::SeqCst);
             self.emit(EventKind::TurnStarted { turn })?;
             self.set_status(SessionStatus::Running);
@@ -885,8 +935,11 @@ impl Session {
 
     fn decorate(&self, plan: &mut LaunchPlan, ctx: &LaunchContext) {
         // Gateway variables win over anything the agent spec sets, so real
-        // provider keys configured the old way can never leak in.
-        plan.env.extend(ctx.model_env());
+        // provider keys configured the old way can never leak in. An agent
+        // with direct model access brings its own credentials instead.
+        if !plan.direct_model_access {
+            plan.env.extend(ctx.model_env_for(Some(&self.spec)));
+        }
         plan.env.extend([
             ("AGENTCORE_SESSION_ID".into(), self.id.to_string()),
             ("AGENTCORE_GATEWAY_URL".into(), ctx.gateway_url.clone()),
@@ -945,8 +998,10 @@ impl Session {
             mut child,
             stdout,
             stderr,
+            stdin,
             tty,
         } = sandbox.spawn(plan).await?;
+        let _keyboard = stdin.map(|stdin| self.attach_keyboard(stdin));
         let pumps = async {
             tokio::join!(
                 async {
@@ -994,6 +1049,28 @@ impl Session {
             let _ = tokio::time::timeout(Duration::from_secs(2), &mut pumps).await;
         }
         Ok(result)
+    }
+
+    /// Forward what people type to the agent's terminal until the turn ends
+    /// (when the returned guard is dropped).
+    fn attach_keyboard(
+        &self,
+        mut stdin: std::pin::Pin<Box<dyn tokio::io::AsyncWrite + Send>>,
+    ) -> KeyboardGuard<'_> {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        *lock(&self.keyboard) = Some(tx);
+        self.live.keyboard(true);
+        let writer = tokio::spawn(async move {
+            while let Some(bytes) = rx.recv().await {
+                if stdin.write_all(&bytes).await.is_err() || stdin.flush().await.is_err() {
+                    break;
+                }
+            }
+        });
+        KeyboardGuard {
+            session: self,
+            writer,
+        }
     }
 
     /// Copy agent output to the live terminal (as is) and to the audit log
@@ -1494,6 +1571,20 @@ impl Session {
 }
 
 /// How a principal is named in terminal banners.
+/// Detaches the terminal keyboard when a turn ends.
+struct KeyboardGuard<'a> {
+    session: &'a Session,
+    writer: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for KeyboardGuard<'_> {
+    fn drop(&mut self) {
+        *lock(&self.session.keyboard) = None;
+        self.session.live.keyboard(false);
+        self.writer.abort();
+    }
+}
+
 fn who(p: &Principal) -> String {
     match p {
         Principal::Human(name) => name.clone(),

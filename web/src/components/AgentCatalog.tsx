@@ -139,9 +139,21 @@ export function AgentCatalog({ me, card, providers, onChanged, onError }: Props)
                 {a.spec.description}
                 {a.spec.model && (
                   <>
-                    {" · "}model <code>{a.spec.model}</code> via <code>{a.spec.provider}</code>
+                    {" · "}model <code>{a.spec.model}</code>
+                    {a.spec.provider && (
+                      <>
+                        {" "}via <code>{a.spec.provider}</code>
+                      </>
+                    )}
                   </>
                 )}
+                {a.spec.options &&
+                  Object.entries(a.spec.options).map(([k, v]) => (
+                    <span key={k}>
+                      {" · "}
+                      {k} <code>{v}</code>
+                    </span>
+                  ))}
                 {a.spec.policy && (
                   <>
                     {" · "}policy <code>{a.spec.policy}</code>
@@ -164,7 +176,7 @@ export function AgentCatalog({ me, card, providers, onChanged, onError }: Props)
       </ul>
 
       <div className="row" style={{ justifyContent: "space-between", marginTop: 16 }}>
-        <h3 className="section-title">Open-source catalogue</h3>
+        <h3 className="section-title">Agent catalogue</h3>
         <div className="row small">
           {["all", ...domains].map((d) => (
             <button key={d} className={`chip ${domain === d ? "ok" : ""}`} onClick={() => setDomain(d)}>
@@ -174,8 +186,9 @@ export function AgentCatalog({ me, card, providers, onChanged, onError }: Props)
         </div>
       </div>
       <p className="muted small">
-        Only agents under permissive open-source licenses (MIT, Apache-2.0, BSD) are listed. agentcore does not include
-        or modify them: the sandbox image installs them from their official packages. See{" "}
+        Agents under permissive open-source licenses (MIT, Apache-2.0, BSD), which the sandbox image installs from their
+        official packages, unmodified. Agents marked “bring your own” are not open source: agentcore does not ship them,
+        and you install them into your own image under the vendor's terms. See{" "}
         <code>docs/AGENT_CATALOG.md</code>.
       </p>
       {catalog === null ? (
@@ -190,9 +203,15 @@ export function AgentCatalog({ me, card, providers, onChanged, onError }: Props)
                 <div key={a.id} className="card template catalog-agent">
                   <div className="session-item-top">
                     <strong>{a.name}</strong>
-                    <a className="tag" href={a.license_url} target="_blank" rel="noreferrer" title="License">
-                      {a.license}
-                    </a>
+                    {a.bring_your_own ? (
+                      <a className="tag tone-attention" href={a.terms_url ?? a.license_url} target="_blank" rel="noreferrer" title="Not open source: install it yourself under the vendor's terms">
+                        bring your own
+                      </a>
+                    ) : (
+                      <a className="tag" href={a.license_url} target="_blank" rel="noreferrer" title="License">
+                        {a.license}
+                      </a>
+                    )}
                   </div>
                   <span className="muted small">{a.vendor}</span>
                   <span className="small">{a.summary}</span>
@@ -329,6 +348,11 @@ function AddAgentDialog({
   const usable = providers.filter((p) => p.enabled && entry.protocols.includes(p.kind));
   const firstName = taken.includes(entry.id) ? `${entry.id}-2` : entry.id;
   const [name, setName] = useState(firstName);
+  const [options, setOptions] = useState<Record<string, string>>(() =>
+    Object.fromEntries((entry.options ?? []).map((o) => [o.key, o.default])),
+  );
+  // A sign-in that reaches the model provider directly needs none of agentcore's.
+  const direct = (entry.options ?? []).some((o) => o.values.some((v) => v.direct && options[o.key] === v.value));
   const [provider, setProvider] = useState(usable[0]?.name ?? "");
   const [model, setModel] = useState(entry.suggested_models[0] ?? "");
   const [policy, setPolicy] = useState("");
@@ -350,10 +374,40 @@ function AddAgentDialog({
           Close
         </button>
       </header>
-      {usable.length === 0 ? (
+      {entry.bring_your_own && (
+        <div className="banner small">
+          {entry.name} is not open source, so agentcore does not ship it. Install it into your sandbox image yourself (
+          <code>--build-arg AGENTS="opencode {entry.id}"</code>), which means accepting the{" "}
+          <a href={entry.terms_url ?? entry.license_url} target="_blank" rel="noreferrer">
+            vendor's terms
+          </a>
+          .
+        </div>
+      )}
+      {(entry.options ?? []).length > 0 && (
+        <div className="grid-2 catalog-options">
+          {(entry.options ?? []).map((o) => {
+            const current = o.values.find((v) => v.value === options[o.key]);
+            return (
+              <label key={o.key}>
+                {o.label}
+                <select value={options[o.key]} onChange={(e) => setOptions({ ...options, [o.key]: e.target.value })}>
+                  {o.values.map((v) => (
+                    <option key={v.value} value={v.value}>
+                      {v.label}
+                    </option>
+                  ))}
+                </select>
+                {current?.description && <span className="muted small">{current.description}</span>}
+              </label>
+            );
+          })}
+        </div>
+      )}
+      {usable.length === 0 && !direct ? (
         <div className="banner warn-banner">
           {entry.name} needs a model provider of type {entry.protocols.join(" or ")}. Add one under Model providers
-          above first.
+          above first{(entry.options ?? []).some((o) => o.values.some((v) => v.direct)) && ", or choose another way to sign in"}.
         </div>
       ) : (
         <form
@@ -365,10 +419,11 @@ function AddAgentDialog({
               await api.installAgent({
                 catalog: entry.id,
                 name: name.trim(),
-                provider,
+                provider: direct ? "" : provider,
                 model: model.trim(),
                 policy: policy || undefined,
                 image: image.trim() || undefined,
+                options: (entry.options ?? []).length ? options : undefined,
               });
               onAdded(name.trim());
             } catch (err) {
@@ -383,19 +438,26 @@ function AddAgentDialog({
               Name (shown when starting agents)
               <input value={name} onChange={(e) => setName(e.target.value)} pattern="[a-z0-9][a-z0-9_\-]{0,62}" required />
             </label>
+            {!direct && (
+              <label>
+                Model provider
+                <select value={provider} onChange={(e) => setProvider(e.target.value)}>
+                  {usable.map((p) => (
+                    <option key={p.name} value={p.name}>
+                      {p.name} ({p.kind})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label>
-              Model provider
-              <select value={provider} onChange={(e) => setProvider(e.target.value)}>
-                {usable.map((p) => (
-                  <option key={p.name} value={p.name}>
-                    {p.name} ({p.kind})
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Model
-              <input value={model} onChange={(e) => setModel(e.target.value)} list={`models-${entry.id}`} required />
+              Model{direct && " (optional)"}
+              <input
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                list={`models-${entry.id}`}
+                required={!direct}
+              />
               <datalist id={`models-${entry.id}`}>
                 {entry.suggested_models.map((m) => (
                   <option key={m} value={m} />
@@ -414,7 +476,7 @@ function AddAgentDialog({
               </select>
             </label>
           </div>
-          {chosen && chosen.allowed_models.length > 0 && (
+          {!direct && chosen && chosen.allowed_models.length > 0 && (
             <p className="muted small">This provider allows: {chosen.allowed_models.join(", ")}</p>
           )}
           <details className="small">
@@ -426,10 +488,16 @@ function AddAgentDialog({
           </details>
           <p className="muted small">
             {GUARDRAILS[entry.guardrails].help} The sandbox image must include {entry.name}: build it with{" "}
-            <code>--build-arg AGENTS="{entry.id}"</code> (or <code>AGENTS=all</code>). Use “Check installation” after
-            adding.
+            <code>--build-arg AGENTS="{entry.id}"</code>
+            {!entry.bring_your_own && (
+              <>
+                {" "}
+                (or <code>AGENTS=all</code>)
+              </>
+            )}
+            . Use “Check installation” after adding.
           </p>
-          <button className="btn primary" disabled={busy || !name.trim() || !model.trim()}>
+          <button className="btn primary" disabled={busy || !name.trim() || (!direct && !model.trim())}>
             {busy ? "Adding…" : `Add ${entry.name}`}
           </button>
         </form>

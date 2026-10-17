@@ -40,6 +40,7 @@ async fn docker_sandbox_lifecycle() {
             session_id: uuid::Uuid::new_v4(),
             workspace_dir: dir.path().to_path_buf(),
             image: None,
+            egress: false,
         })
         .await
         .expect("create container");
@@ -102,6 +103,7 @@ async fn docker_sandbox_lifecycle() {
             args: vec!["-c".into(), "[ -t 1 ] && echo tty; stty size".into()],
             env: Default::default(),
             tty: true,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -119,12 +121,52 @@ async fn docker_sandbox_lifecycle() {
         "{screen}"
     );
 
+    // People can type into an agent's terminal (`docker exec -it` runs in
+    // a host pseudo-terminal, whose master carries the keystrokes).
+    let mut asker = sandbox
+        .spawn(&LaunchPlan {
+            program: "sh".into(),
+            args: vec![
+                "-c".into(),
+                "printf 'code? '; read code; echo \"got:$code\"".into(),
+            ],
+            tty: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut reader = asker.stdout.take().unwrap();
+        let mut keyboard = asker.stdin.take().expect("a terminal has a keyboard");
+        let mut screen = Vec::new();
+        let mut buf = [0u8; 4096];
+        // Wait for the question, then answer it.
+        while !String::from_utf8_lossy(&screen).contains("code?") {
+            let n = tokio::time::timeout(Duration::from_secs(10), reader.read(&mut buf))
+                .await
+                .expect("the question appears")
+                .unwrap();
+            assert!(n > 0, "{}", String::from_utf8_lossy(&screen));
+            screen.extend_from_slice(&buf[..n]);
+        }
+        keyboard.write_all(b"42\r").await.unwrap();
+        let _ =
+            tokio::time::timeout(Duration::from_secs(10), reader.read_to_end(&mut screen)).await;
+        let screen = String::from_utf8_lossy(&screen);
+        assert!(screen.contains("got:42"), "{screen}");
+    }
+    tokio::time::timeout(Duration::from_secs(10), asker.child.wait())
+        .await
+        .unwrap()
+        .unwrap();
+
     let mut agent = sandbox
         .spawn(&LaunchPlan {
             program: "sleep".into(),
             args: vec!["300".into()],
             env: Default::default(),
-            tty: false,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -148,12 +190,29 @@ async fn docker_sandbox_lifecycle() {
         Err(SandboxError::Killed)
     ));
 
+    // Agents that reach their model provider themselves need an egress
+    // network; without one they do not start.
+    let refused = provider
+        .create(&SandboxRequest {
+            session_id: uuid::Uuid::new_v4(),
+            workspace_dir: dir.path().to_path_buf(),
+            image: None,
+            egress: true,
+        })
+        .await;
+    assert!(
+        matches!(&refused, Err(SandboxError::Config(m)) if m.contains("egress_network")),
+        "{:?}",
+        refused.err()
+    );
+
     // A sandbox left behind by a crashed agentcore is removed on startup.
     let orphan = provider
         .create(&SandboxRequest {
             session_id: uuid::Uuid::new_v4(),
             workspace_dir: dir.path().to_path_buf(),
             image: None,
+            egress: false,
         })
         .await
         .unwrap();

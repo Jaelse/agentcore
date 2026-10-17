@@ -79,6 +79,7 @@ before).
 | `GET /sessions/{id}/live` | V | Live view frames (SSE), see below |
 | `POST /sessions/{id}/pause` | O | Freeze the agent and everything it runs → session info |
 | `POST /sessions/{id}/resume` | O | Continue after a pause → session info |
+| `POST /sessions/{id}/input` | O | Type into the agent's terminal: `{"data": "yes\r"}` (keystrokes as a terminal sends them, at most 64 KiB). Only while the live view says `keyboard: open`; 409 otherwise. Audited as `terminal_input` (who, which turn; not the keystrokes) |
 | `GET /sessions/{id}/recording` | V | Terminal recording (asciicast v2; the recording so far while running), 404 if none |
 | `GET /sessions/{id}/model-calls/{call_id}` | V | Full request/response of one LLM call |
 | `GET /sessions/{id}/audit` | V | Download the audit log (JSON Lines) |
@@ -108,7 +109,7 @@ before).
 | Method & path | Role | Description |
 |---|---|---|
 | `GET /providers` | O | Providers (key hint only) |
-| `POST /providers` | A | `{name, kind: anthropic \| openai \| opencode_zen, base_url?, api_key, allowed_models?, enabled?}` |
+| `POST /providers` | A | `{name, kind: anthropic \| openai \| opencode_zen \| claude_subscription, base_url?, api_key, allowed_models?, enabled?}`. For `claude_subscription` the key is a token from `claude setup-token`; only Claude Code sessions may use it |
 | `PATCH /providers/{name}` | A | Any of `{base_url, api_key, allowed_models, enabled}` |
 | `DELETE /providers/{name}` | A | Remove |
 | `GET /admin-events` | A | Configuration change history |
@@ -158,6 +159,7 @@ data: {"frame":"model_delta","call_id":"…","kind":"thinking","text":"Let me ru
 | `model_end` | `call_id` | The call finished |
 | `files` | `changes: [{path, kind, at}]` | Files `created`, `modified` or `removed` in the workspace (`.git` ignored) |
 | `processes` | `processes: [{pid, elapsed, command}]` | Processes in the sandbox (while someone watches) |
+| `keyboard` | `open` | Whether people can type into the agent's terminal (`POST /sessions/{id}/input`) |
 
 `event: lagged` means the client fell behind: reconnect. `event: ended` means
 the session is over (also sent at once for finished sessions); use
@@ -169,8 +171,8 @@ the session is over (also sent at once for finished sessions); use
 |---|---|---|
 | `GET /agents/catalog` | viewer | The [agent catalogue](AGENT_CATALOG.md): each entry with license, protocols, guardrail level, verified version, and the names it was added as |
 | `GET /agents` | viewer | Every agent: from the configuration file (`source: config`) and added from the catalogue (`source: catalog`) |
-| `POST /agents` | admin | Add a catalogue agent: `{"catalog": "codex", "name": "codex", "provider": "openai", "model": "gpt-5.1", "policy"?, "image"?, "description"?}`. The provider must be of a kind the agent speaks; the model must pass the provider's allow-list. |
-| `PUT /agents/{name}` | admin | Change `provider`, `model`, `policy`, `image`, `description`, `enabled` (re-created from the current catalogue entry) |
+| `POST /agents` | admin | Add a catalogue agent: `{"catalog": "codex", "name": "codex", "provider": "openai", "model": "gpt-5.1", "policy"?, "image"?, "description"?, "options"?}`. The provider must be of a kind the agent speaks; the model must pass the provider's allow-list. `options` holds the entry's choices by key, e.g. `{"auth": "login", "mode": "interactive"}` for Claude Code; with a direct sign-in (`login`, `bedrock`, `vertex`, `foundry`) no provider is needed and the model is optional. |
+| `PUT /agents/{name}` | admin | Change `provider`, `model`, `policy`, `image`, `description`, `options`, `enabled` (re-created from the current catalogue entry) |
 | `DELETE /agents/{name}` | admin | Remove an added agent (running sessions continue) |
 | `POST /agents/{name}/check` | operator | Start a throwaway sandbox and look for the agent's program: `{"available", "path", "version", "hint"}` |
 

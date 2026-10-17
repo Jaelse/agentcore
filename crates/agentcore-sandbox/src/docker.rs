@@ -37,6 +37,11 @@ pub struct DockerConfig {
     /// Docker network. `none` disables networking entirely; use an
     /// `--internal` network shared with agentcore to allow only the gateway.
     pub network: String,
+    /// Network for agents that reach their model provider themselves (Claude
+    /// Code logged in from the live terminal, or on Bedrock / Vertex AI /
+    /// Foundry). Unset: such agents cannot start. Ideally a network whose
+    /// egress is limited to the provider and to agentcore.
+    pub egress_network: Option<String>,
     pub user: String,
     pub memory: String,
     pub cpus: String,
@@ -54,6 +59,7 @@ impl Default for DockerConfig {
             image: "agentcore-sandbox:latest".into(),
             runtime: None,
             network: "none".into(),
+            egress_network: None,
             user: "1000:1000".into(),
             memory: "4g".into(),
             cpus: "2".into(),
@@ -78,13 +84,17 @@ impl DockerProvider {
     /// Arguments for `docker run`, exposed for testing and auditing.
     pub fn run_args(&self, request: &SandboxRequest, name: &str, workspace: &str) -> Vec<String> {
         let c = &self.config;
+        let network = match (&c.egress_network, request.egress) {
+            (Some(egress), true) => egress,
+            _ => &c.network,
+        };
         let mut args: Vec<String> = vec![
             "run".into(),
             "--detach".into(),
             "--init".into(),
             format!("--name={name}"),
             format!("--label=agentcore.session={}", request.session_id),
-            format!("--network={}", c.network),
+            format!("--network={network}"),
             "--cap-drop=ALL".into(),
             "--security-opt=no-new-privileges".into(),
             "--read-only".into(),
@@ -138,6 +148,15 @@ impl SandboxProvider for DockerProvider {
     }
 
     async fn create(&self, request: &SandboxRequest) -> Result<Arc<dyn Sandbox>> {
+        if request.egress && self.config.egress_network.is_none() {
+            return Err(SandboxError::Config(
+                "this agent reaches its model provider itself (it is logged in from the \
+                 terminal, or uses Bedrock / Vertex AI / Foundry) and needs internet access: \
+                 set sandbox.docker.egress_network to a Docker network that can reach the \
+                 provider and agentcore"
+                    .into(),
+            ));
+        }
         tokio::fs::create_dir_all(&request.workspace_dir)
             .await
             .map_err(SandboxError::io("create workspace"))?;
@@ -364,29 +383,49 @@ impl Sandbox for DockerSandbox {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        let mut cmd = if plan.tty {
-            env.extend(crate::tty_env().map(|(k, v)| (k.to_string(), v)));
-            let mut cmd = self.exec_cmd_tty(WORKSPACE, env, false, true);
-            // `docker exec --tty` without a client terminal leaves the size
-            // at 0x0; set it inside before starting the agent.
-            use agentcore_core::live::{TERMINAL_COLS, TERMINAL_ROWS};
-            cmd.args([
-                "sh".to_string(),
-                "-c".to_string(),
-                format!("stty cols {TERMINAL_COLS} rows {TERMINAL_ROWS} 2>/dev/null; exec \"$@\""),
-                "agentcore".to_string(),
-            ]);
-            cmd
-        } else {
-            self.exec_cmd(WORKSPACE, env, false)
-        };
+        if !plan.tty {
+            let mut cmd = self.exec_cmd(WORKSPACE, env, false);
+            cmd.arg(&plan.program).args(&plan.args);
+            let mut child = cmd.spawn().map_err(SandboxError::io("docker exec agent"))?;
+            return Ok(AgentProcess {
+                stdout: child.stdout.take().map(|s| Box::pin(s) as _),
+                stderr: child.stderr.take().map(|s| Box::pin(s) as _),
+                stdin: None,
+                child,
+                tty: false,
+            });
+        }
+        env.extend(crate::tty_env().map(|(k, v)| (k.to_string(), v)));
+        // `docker exec --interactive --tty` insists on a terminal on its own
+        // side, so the client runs in a host pseudo-terminal of the live
+        // view's size: its master carries the screen out and the keyboard in.
+        let mut cmd = self.exec_cmd_tty(WORKSPACE, env, true, true);
+        use agentcore_core::live::{TERMINAL_COLS, TERMINAL_ROWS};
+        cmd.args([
+            "sh".to_string(),
+            "-c".to_string(),
+            format!("stty cols {TERMINAL_COLS} rows {TERMINAL_ROWS} 2>/dev/null; exec \"$@\""),
+            "agentcore".to_string(),
+        ]);
         cmd.arg(&plan.program).args(&plan.args);
-        let mut child = cmd.spawn().map_err(SandboxError::io("docker exec agent"))?;
+        let (master, slave) = crate::pty::open_pty()?;
+        let clone = |fd: &std::os::fd::OwnedFd| {
+            fd.try_clone()
+                .map_err(SandboxError::io("duplicate pseudo-terminal"))
+        };
+        cmd.stdin(Stdio::from(clone(&slave)?))
+            .stdout(Stdio::from(clone(&slave)?))
+            .stderr(Stdio::from(slave));
+        let child = cmd.spawn().map_err(SandboxError::io("docker exec agent"))?;
+        // Close our copies of the slave so reading the master ends with the agent.
+        drop(cmd);
+        let keyboard = crate::pty::PtyWriter::new(&master)?;
         Ok(AgentProcess {
-            stdout: child.stdout.take().map(|s| Box::pin(s) as _),
-            stderr: child.stderr.take().map(|s| Box::pin(s) as _),
             child,
-            tty: plan.tty,
+            stdout: Some(Box::pin(crate::pty::PtyReader::new(master)?)),
+            stderr: None,
+            stdin: Some(Box::pin(keyboard)),
+            tty: true,
         })
     }
 
@@ -552,6 +591,7 @@ mod tests {
             session_id: uuid::Uuid::nil(),
             workspace_dir: "/data/ws".into(),
             image: Some("img:1".into()),
+            egress: false,
         };
         let args = provider.run_args(&request, "agentcore-x", "/data/ws");
         for expected in [
@@ -566,5 +606,29 @@ mod tests {
         }
         let image_pos = args.iter().position(|a| a == "img:1").unwrap();
         assert_eq!(&args[image_pos + 1..], ["sleep", "infinity"]);
+    }
+
+    #[test]
+    fn only_agents_that_need_it_get_the_egress_network() {
+        let provider = DockerProvider::new(DockerConfig {
+            egress_network: Some("claude-egress".into()),
+            ..Default::default()
+        });
+        let mut request = SandboxRequest {
+            session_id: uuid::Uuid::nil(),
+            workspace_dir: "/data/ws".into(),
+            image: None,
+            egress: false,
+        };
+        let network = |r: &SandboxRequest| {
+            provider
+                .run_args(r, "x", "/data/ws")
+                .into_iter()
+                .find(|a| a.starts_with("--network="))
+                .unwrap()
+        };
+        assert_eq!(network(&request), "--network=none");
+        request.egress = true;
+        assert_eq!(network(&request), "--network=claude-egress");
     }
 }

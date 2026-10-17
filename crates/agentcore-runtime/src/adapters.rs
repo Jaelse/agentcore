@@ -5,6 +5,10 @@
 //! * `opencode`: runs [opencode](https://opencode.ai) headless with its native
 //!   side-effecting tools disabled and the agentcore MCP gateway registered,
 //!   so every edit and command goes through policy and approval.
+//! * `claude-code`: runs [Claude Code](https://code.claude.com) headless or
+//!   interactively, signed in with an API key or a Claude subscription
+//!   through the model gateway, or logged in by a person in the live
+//!   terminal, or on Amazon Bedrock / Google Vertex AI / Microsoft Foundry.
 //!
 //! Environment values may reference variables of the agentcore process with
 //! `{env:NAME}`; nothing from the host environment is passed implicitly.
@@ -26,6 +30,7 @@ impl Default for AdapterRegistry {
         };
         registry.register(Arc::new(CommandAdapter));
         registry.register(Arc::new(OpenCodeAdapter));
+        registry.register(Arc::new(ClaudeCodeAdapter));
         registry
     }
 }
@@ -66,14 +71,16 @@ fn expand_env(spec: &AgentSpec, ctx: &LaunchContext) -> BTreeMap<String, String>
 /// Writes the files handed over in `AGENTCORE_FILE_<n>_PATH/_CONTENT`
 /// (relative paths below `$HOME`), then runs the agent. Contents travel in
 /// the environment, which is not audited, so they may hold the session token.
+/// With `AGENTCORE_FILE_<n>_KEEP` set, an existing file is left as it is
+/// (state the agent keeps between turns, such as a login).
 const WRITE_FILES: &str = r#"set -e
 i=0
 while [ "$i" -lt "${AGENTCORE_FILE_COUNT:-0}" ]; do
-  eval "p=\${AGENTCORE_FILE_${i}_PATH}; c=\${AGENTCORE_FILE_${i}_CONTENT}"
-  unset "AGENTCORE_FILE_${i}_PATH" "AGENTCORE_FILE_${i}_CONTENT"
+  eval "p=\${AGENTCORE_FILE_${i}_PATH}; c=\${AGENTCORE_FILE_${i}_CONTENT}; k=\${AGENTCORE_FILE_${i}_KEEP:-}"
+  unset "AGENTCORE_FILE_${i}_PATH" "AGENTCORE_FILE_${i}_CONTENT" "AGENTCORE_FILE_${i}_KEEP"
   case "$p" in /*) ;; *) p="$HOME/$p" ;; esac
   mkdir -p "$(dirname "$p")"
-  printf '%s' "$c" > "$p"
+  if [ -z "$k" ] || [ ! -e "$p" ]; then printf '%s' "$c" > "$p"; fi
   i=$((i + 1))
 done
 unset AGENTCORE_FILE_COUNT
@@ -98,6 +105,7 @@ fn command_plan(
             args,
             env,
             tty: spec.tty.unwrap_or(true),
+            direct_model_access: false,
         });
     }
     for (i, (path, content)) in spec.files.iter().enumerate() {
@@ -123,6 +131,7 @@ fn command_plan(
         args: wrapped,
         env,
         tty: spec.tty.unwrap_or(true),
+        direct_model_access: false,
     })
 }
 
@@ -272,7 +281,302 @@ impl AgentAdapter for OpenCodeAdapter {
             args,
             env,
             tty: spec.tty.unwrap_or(true),
+            direct_model_access: false,
         })
+    }
+}
+
+/// How Claude Code signs in (`options.auth`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaudeAuth {
+    /// Through the model gateway, with the agent's provider: an Anthropic
+    /// API key (`anthropic`) or a Claude subscription token from
+    /// `claude setup-token` (`claude_subscription`). Real credentials stay
+    /// in agentcore and every model call is recorded.
+    Gateway,
+    /// A person logs Claude Code in from the live terminal (`/login`: Claude
+    /// subscription, Anthropic Console or SSO). The login lives in the
+    /// sandbox for the session; model calls go straight to Anthropic.
+    Login,
+    /// Amazon Bedrock, with credentials from the agent's `env`.
+    Bedrock,
+    /// Google Vertex AI, with credentials from the agent's `env`.
+    Vertex,
+    /// Microsoft Foundry, with credentials from the agent's `env`.
+    Foundry,
+}
+
+impl ClaudeAuth {
+    pub const ALL: [&'static str; 5] = ["gateway", "login", "bedrock", "vertex", "foundry"];
+
+    pub fn parse(spec: &AgentSpec) -> Result<Self, AdapterError> {
+        Ok(match spec.options.get("auth").map(String::as_str) {
+            None | Some("gateway") => Self::Gateway,
+            Some("login") => Self::Login,
+            Some("bedrock") => Self::Bedrock,
+            Some("vertex") => Self::Vertex,
+            Some("foundry") => Self::Foundry,
+            Some(other) => {
+                return Err(AdapterError::InvalidSpec(
+                    spec.name.clone(),
+                    format!(
+                        "unknown Claude Code auth `{other}` (one of: {})",
+                        Self::ALL.join(", ")
+                    ),
+                ));
+            }
+        })
+    }
+
+    /// Claude Code reaches its model provider itself.
+    pub fn is_direct(self) -> bool {
+        self != Self::Gateway
+    }
+
+    /// The variable switching Claude Code to a cloud provider.
+    fn provider_switch(self) -> Option<&'static str> {
+        match self {
+            Self::Bedrock => Some("CLAUDE_CODE_USE_BEDROCK"),
+            Self::Vertex => Some("CLAUDE_CODE_USE_VERTEX"),
+            Self::Foundry => Some("CLAUDE_CODE_USE_FOUNDRY"),
+            Self::Gateway | Self::Login => None,
+        }
+    }
+}
+
+/// Built-in tools that touch files, run code or reach the network: denied
+/// when Claude Code works through the gateway tools, in case `--tools ""`
+/// ever lets one through.
+const CLAUDE_NATIVE_TOOLS: [&str; 11] = [
+    "Bash",
+    "BashOutput",
+    "KillShell",
+    "Read",
+    "Write",
+    "Edit",
+    "NotebookEdit",
+    "Glob",
+    "Grep",
+    "WebFetch",
+    "WebSearch",
+];
+
+pub struct ClaudeCodeAdapter;
+
+impl ClaudeCodeAdapter {
+    /// `options.mode`: `headless` (`claude -p`, one run per turn) or
+    /// `interactive` (Claude Code's own screen, which people can type into
+    /// from the live view; the turn ends when they exit it). Logging in
+    /// needs the screen, so `auth = "login"` is always interactive.
+    fn interactive(spec: &AgentSpec, auth: ClaudeAuth) -> Result<bool, AdapterError> {
+        match spec.options.get("mode").map(String::as_str) {
+            _ if auth == ClaudeAuth::Login => Ok(true),
+            None | Some("headless") => Ok(false),
+            Some("interactive") => Ok(true),
+            Some(other) => Err(AdapterError::InvalidSpec(
+                spec.name.clone(),
+                format!("unknown Claude Code mode `{other}` (headless or interactive)"),
+            )),
+        }
+    }
+
+    /// `options.tools`: `gateway` (default; Claude Code's own tools are off
+    /// and it works through agentcore's policy-checked tools) or `native`
+    /// (its own tools, inside the sandbox).
+    fn native_tools(spec: &AgentSpec) -> Result<bool, AdapterError> {
+        match spec.options.get("tools").map(String::as_str) {
+            None | Some("gateway") => Ok(false),
+            Some("native") => Ok(true),
+            Some(other) => Err(AdapterError::InvalidSpec(
+                spec.name.clone(),
+                format!("unknown Claude Code tools `{other}` (gateway or native)"),
+            )),
+        }
+    }
+
+    /// User settings (`~/.claude/settings.json`). Project settings in the
+    /// repository are not loaded: their hooks would run commands outside
+    /// the policy.
+    pub fn settings(native: bool) -> serde_json::Value {
+        let mut permissions = serde_json::json!({ "allow": ["mcp__agentcore"] });
+        if !native {
+            permissions["deny"] = serde_json::json!(CLAUDE_NATIVE_TOOLS);
+        }
+        serde_json::json!({
+            "permissions": permissions,
+            "disableAllHooks": true,
+            "includeCoAuthoredBy": false,
+            "env": {
+                "DISABLE_AUTOUPDATER": "1",
+                "DISABLE_TELEMETRY": "1",
+                "DISABLE_ERROR_REPORTING": "1",
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+            }
+        })
+    }
+
+    /// `~/.claude.json`: onboarding done and the workspace trusted, so the
+    /// interactive screen starts with the task, not with setup questions.
+    /// The session token is pre-approved when it is the "API key".
+    ///
+    /// With `auth = "login"` onboarding is left on: it is where Claude Code
+    /// asks how to log in.
+    pub fn state(ctx: &LaunchContext, workspace: &str, auth: ClaudeAuth) -> serde_json::Value {
+        let tail: String = {
+            let chars: Vec<char> = ctx.gateway_token.chars().collect();
+            chars[chars.len().saturating_sub(20)..].iter().collect()
+        };
+        serde_json::json!({
+            "hasCompletedOnboarding": auth != ClaudeAuth::Login,
+            "bypassPermissionsModeAccepted": true,
+            "autoUpdates": false,
+            "customApiKeyResponses": { "approved": [tail], "rejected": [] },
+            "projects": {
+                workspace: {
+                    "hasTrustDialogAccepted": true,
+                    "hasCompletedProjectOnboarding": true
+                }
+            }
+        })
+    }
+
+    /// The agentcore tool gateway as Claude Code's only MCP server.
+    pub fn mcp_config(ctx: &LaunchContext) -> serde_json::Value {
+        serde_json::json!({ "mcpServers": { "agentcore": {
+            "type": "http",
+            "url": ctx.gateway_url,
+            "headers": { "Authorization": format!("Bearer {}", ctx.gateway_token) }
+        }}})
+    }
+
+    fn build(
+        &self,
+        spec: &AgentSpec,
+        ctx: &LaunchContext,
+        follow_up: bool,
+    ) -> Result<LaunchPlan, AdapterError> {
+        spec.validate()?;
+        let auth = ClaudeAuth::parse(spec)?;
+        let interactive = Self::interactive(spec, auth)?;
+        let native = Self::native_tools(spec)?;
+        let mcp_path = format!("{}/.agentcore/claude-mcp.json", ctx.home);
+
+        let mut args: Vec<String> = Vec::new();
+        if !interactive {
+            args.push("-p".into());
+        }
+        if follow_up {
+            args.push("--continue".into());
+        }
+        if let Some(model) = spec.model.as_deref().filter(|m| !m.trim().is_empty()) {
+            args.extend(["--model".into(), ctx.render(spec, model, false)]);
+        }
+        args.extend([
+            "--mcp-config".into(),
+            mcp_path.clone(),
+            "--strict-mcp-config".into(),
+            "--setting-sources".into(),
+            "user".into(),
+        ]);
+        if native {
+            args.extend(["--permission-mode".into(), "bypassPermissions".into()]);
+        } else {
+            args.extend([
+                "--tools".into(),
+                String::new(),
+                "--permission-mode".into(),
+                "dontAsk".into(),
+                "--allowedTools".into(),
+                "mcp__agentcore".into(),
+            ]);
+        }
+        // Extra arguments from the agent definition, before the prompt.
+        args.extend(spec.args.iter().map(|a| ctx.render(spec, a, false)));
+        if !ctx.task.is_empty() {
+            // `--mcp-config` and `--allowedTools` take several values: end
+            // the options so they do not swallow the prompt (or a prompt
+            // starting with `-` is not read as an option).
+            args.push("--".into());
+            args.push(ctx.task.clone());
+        }
+
+        let mut env = expand_env(spec, ctx);
+        if let Some(switch) = auth.provider_switch() {
+            env.insert(switch.into(), "1".into());
+        }
+        let files: Vec<(String, String, bool)> = vec![
+            (
+                ".claude/settings.json".into(),
+                Self::settings(native).to_string(),
+                false,
+            ),
+            // Kept once written: Claude Code records a login here.
+            (
+                ".claude.json".into(),
+                Self::state(ctx, &ctx.workdir, auth).to_string(),
+                true,
+            ),
+            (mcp_path, Self::mcp_config(ctx).to_string(), false),
+        ];
+        for (i, (path, content, keep)) in files.iter().enumerate() {
+            env.insert(format!("AGENTCORE_FILE_{i}_PATH"), path.clone());
+            env.insert(format!("AGENTCORE_FILE_{i}_CONTENT"), content.clone());
+            if *keep {
+                env.insert(format!("AGENTCORE_FILE_{i}_KEEP"), "1".into());
+            }
+        }
+        env.insert("AGENTCORE_FILE_COUNT".into(), files.len().to_string());
+
+        let mut wrapped = vec![
+            "-c".to_string(),
+            WRITE_FILES.to_string(),
+            "agentcore-files".to_string(),
+            spec.command.clone().unwrap_or_else(|| "claude".into()),
+        ];
+        wrapped.extend(args);
+        Ok(LaunchPlan {
+            program: "sh".into(),
+            args: wrapped,
+            env,
+            // The interactive screen needs a terminal; headless output reads
+            // better in one too.
+            tty: if interactive {
+                true
+            } else {
+                spec.tty.unwrap_or(true)
+            },
+            direct_model_access: auth.is_direct(),
+        })
+    }
+}
+
+impl AgentAdapter for ClaudeCodeAdapter {
+    fn id(&self) -> &'static str {
+        "claude-code"
+    }
+
+    fn direct_model_access(&self, spec: &AgentSpec) -> bool {
+        ClaudeAuth::parse(spec).is_ok_and(ClaudeAuth::is_direct)
+    }
+
+    /// `claude --continue <message>` resumes the last conversation in the
+    /// workspace (kept in the agent's HOME, which lives as long as the
+    /// sandbox).
+    fn follow_up(
+        &self,
+        spec: &AgentSpec,
+        ctx: &LaunchContext,
+        message: &str,
+    ) -> Result<Option<LaunchPlan>, AdapterError> {
+        let follow_ctx = LaunchContext {
+            task: message.to_string(),
+            ..ctx.clone()
+        };
+        self.build(spec, &follow_ctx, true).map(Some)
+    }
+
+    fn plan(&self, spec: &AgentSpec, ctx: &LaunchContext) -> Result<LaunchPlan, AdapterError> {
+        self.build(spec, ctx, false)
     }
 }
 
@@ -285,6 +589,7 @@ mod tests {
             session_id: uuid::Uuid::nil(),
             task: "fix the bug".into(),
             workspace: "/workspace".into(),
+            workdir: "/workspace".into(),
             home: "/home/agent".into(),
             gateway_url: "http://gw/mcp/x".into(),
             gateway_token: "secret".into(),
@@ -310,6 +615,171 @@ mod tests {
             follow_up_args: vec![],
             ..Default::default()
         }
+    }
+
+    fn claude(options: &[(&str, &str)]) -> AgentSpec {
+        let mut s = spec("claude-code");
+        s.command = None;
+        s.args.clear();
+        s.env.clear();
+        s.model = Some("claude-sonnet-4-5".into());
+        s.options = options
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        s
+    }
+
+    fn file(plan: &LaunchPlan, path: &str) -> serde_json::Value {
+        let i = (0..)
+            .find(|i| {
+                plan.env
+                    .get(&format!("AGENTCORE_FILE_{i}_PATH"))
+                    .is_none_or(|p| p.ends_with(path))
+            })
+            .unwrap();
+        serde_json::from_str(&plan.env[&format!("AGENTCORE_FILE_{i}_CONTENT")]).unwrap()
+    }
+
+    #[test]
+    fn claude_code_works_through_the_gateway_tools_by_default() {
+        let plan = ClaudeCodeAdapter.plan(&claude(&[]), &ctx()).unwrap();
+        assert_eq!(plan.program, "sh");
+        let args = &plan.args[3..];
+        assert_eq!(args[0], "claude");
+        assert_eq!(args[1], "-p");
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--model", "claude-sonnet-4-5"])
+        );
+        assert!(args.windows(2).any(|w| w == ["--tools", ""]));
+        assert!(args.windows(2).any(|w| w == ["--setting-sources", "user"]));
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--permission-mode", "dontAsk"])
+        );
+        assert!(args.contains(&"--strict-mcp-config".to_string()));
+        assert_eq!(&args[args.len() - 2..], ["--", "fix the bug"]);
+        // The session token never reaches the (audited) arguments.
+        assert!(!plan.args.iter().any(|a| a.contains("secret")));
+        assert!(!plan.direct_model_access);
+
+        let mcp = file(&plan, "claude-mcp.json");
+        assert_eq!(mcp["mcpServers"]["agentcore"]["url"], "http://gw/mcp/x");
+        assert_eq!(
+            mcp["mcpServers"]["agentcore"]["headers"]["Authorization"],
+            "Bearer secret"
+        );
+        let settings = file(&plan, ".claude/settings.json");
+        assert_eq!(settings["disableAllHooks"], true);
+        for tool in ["Bash", "Edit", "Write", "Read", "WebFetch"] {
+            assert!(
+                settings["permissions"]["deny"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&tool.into()),
+                "{tool}"
+            );
+        }
+        let state = file(&plan, ".claude.json");
+        assert_eq!(
+            state["projects"]["/workspace"]["hasTrustDialogAccepted"],
+            true
+        );
+        assert_eq!(state["customApiKeyResponses"]["approved"][0], "secret");
+
+        let next = ClaudeCodeAdapter
+            .follow_up(&claude(&[]), &ctx(), "now add tests")
+            .unwrap()
+            .unwrap();
+        let args = &next.args[3..];
+        assert_eq!(&args[..3], ["claude", "-p", "--continue"]);
+        assert_eq!(&args[args.len() - 2..], ["--", "now add tests"]);
+    }
+
+    #[test]
+    fn claude_code_native_tools_and_interactive_mode() {
+        let plan = ClaudeCodeAdapter
+            .plan(
+                &claude(&[("tools", "native"), ("mode", "interactive")]),
+                &ctx(),
+            )
+            .unwrap();
+        let args = &plan.args[3..];
+        assert!(!args.contains(&"-p".to_string()));
+        assert!(!args.contains(&"--tools".to_string()));
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--permission-mode", "bypassPermissions"])
+        );
+        assert!(plan.tty);
+        let settings = file(&plan, ".claude/settings.json");
+        assert!(settings["permissions"].get("deny").is_none());
+    }
+
+    #[test]
+    fn claude_code_login_and_cloud_providers_bring_their_own_credentials() {
+        let login = claude(&[("auth", "login")]);
+        assert!(ClaudeCodeAdapter.direct_model_access(&login));
+        let plan = ClaudeCodeAdapter.plan(&login, &ctx()).unwrap();
+        assert!(plan.direct_model_access);
+        assert!(plan.tty);
+        assert!(
+            !plan.args.contains(&"-p".to_string()),
+            "login needs the screen"
+        );
+        // The login Claude Code stores in ~/.claude.json survives later turns.
+        let i = (0..)
+            .find(|i| plan.env[&format!("AGENTCORE_FILE_{i}_PATH")] == ".claude.json")
+            .unwrap();
+        assert_eq!(plan.env[&format!("AGENTCORE_FILE_{i}_KEEP")], "1");
+        assert_eq!(file(&plan, ".claude.json")["hasCompletedOnboarding"], false);
+        // The screen is needed to log in, whatever the mode says.
+        let plan = ClaudeCodeAdapter
+            .plan(&claude(&[("auth", "login"), ("mode", "headless")]), &ctx())
+            .unwrap();
+        assert!(!plan.args.contains(&"-p".to_string()));
+
+        let plan = ClaudeCodeAdapter
+            .plan(&claude(&[("auth", "bedrock")]), &ctx())
+            .unwrap();
+        assert_eq!(plan.env["CLAUDE_CODE_USE_BEDROCK"], "1");
+        assert!(plan.direct_model_access);
+        assert!(plan.args.contains(&"-p".to_string()));
+        for (auth, var) in [
+            ("vertex", "CLAUDE_CODE_USE_VERTEX"),
+            ("foundry", "CLAUDE_CODE_USE_FOUNDRY"),
+        ] {
+            let plan = ClaudeCodeAdapter
+                .plan(&claude(&[("auth", auth)]), &ctx())
+                .unwrap();
+            assert_eq!(plan.env[var], "1");
+        }
+        assert!(
+            ClaudeCodeAdapter
+                .plan(&claude(&[("auth", "magic")]), &ctx())
+                .is_err()
+        );
+        assert!(!ClaudeCodeAdapter.direct_model_access(&claude(&[])));
+    }
+
+    #[test]
+    fn claude_subscription_is_a_bearer_token_for_its_agent_only() {
+        let mut c = ctx();
+        c.models.push(agentcore_core::ModelEndpoint {
+            name: "max".into(),
+            kind: ProviderKind::ClaudeSubscription,
+        });
+        let mut s = claude(&[]);
+        s.provider = Some("max".into());
+        let env = c.model_env_for(Some(&s));
+        assert_eq!(env["ANTHROPIC_BASE_URL"], "http://gw/llm/x/max");
+        assert_eq!(env["ANTHROPIC_AUTH_TOKEN"], "secret");
+        assert!(!env.contains_key("ANTHROPIC_API_KEY"));
+        // Other agents keep the API-key provider.
+        let env = c.model_env();
+        assert_eq!(env["ANTHROPIC_BASE_URL"], "http://gw/llm/x/claude");
+        assert_eq!(env["ANTHROPIC_API_KEY"], "secret");
     }
 
     #[test]

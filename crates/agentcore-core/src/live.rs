@@ -92,4 +92,9 @@ pub enum LiveFrame {
     Processes {
         processes: Vec<ProcessInfo>,
     },
+    /// Whether people can type into the agent's terminal
+    /// (`POST /sessions/{id}/input`): true while an agent in a terminal runs.
+    Keyboard {
+        open: bool,
+    },
 }

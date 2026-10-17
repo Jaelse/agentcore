@@ -14,6 +14,11 @@ pub enum ProviderKind {
     /// OpenCode Zen, opencode's hosted model service (OpenAI-compatible).
     /// Its free models (e.g. Big Pickle) accept the API key `public`.
     OpencodeZen,
+    /// A Claude Pro/Max/Team/Enterprise subscription, used by Claude Code
+    /// only. The "API key" is a long-lived OAuth token from
+    /// `claude setup-token`; it is sent as `Authorization: Bearer` with the
+    /// OAuth beta header, on the Anthropic Messages API.
+    ClaudeSubscription,
 }
 
 impl ProviderKind {
@@ -22,12 +27,13 @@ impl ProviderKind {
             Self::Anthropic => "anthropic",
             Self::Openai => "openai",
             Self::OpencodeZen => "opencode_zen",
+            Self::ClaudeSubscription => "claude_subscription",
         }
     }
 
     pub fn default_base_url(self) -> &'static str {
         match self {
-            Self::Anthropic => "https://api.anthropic.com",
+            Self::Anthropic | Self::ClaudeSubscription => "https://api.anthropic.com",
             Self::Openai => "https://api.openai.com",
             Self::OpencodeZen => "https://opencode.ai/zen",
         }
@@ -35,11 +41,25 @@ impl ProviderKind {
 }
 
 impl ProviderKind {
+    /// Speaks the Anthropic Messages API (usage parsing, streaming).
+    pub fn is_anthropic(self) -> bool {
+        matches!(self, Self::Anthropic | Self::ClaudeSubscription)
+    }
+
+    /// Only the given adapter may use providers of this kind: a Claude
+    /// subscription is licensed for Claude Code, not for other agents.
+    pub fn restricted_to_adapter(self) -> Option<&'static str> {
+        match self {
+            Self::ClaudeSubscription => Some("claude-code"),
+            _ => None,
+        }
+    }
+
     /// API key used when none is given: OpenCode Zen's free tier is keyless.
     pub fn default_api_key(self) -> Option<&'static str> {
         match self {
             Self::OpencodeZen => Some("public"),
-            Self::Anthropic | Self::Openai => None,
+            Self::Anthropic | Self::Openai | Self::ClaudeSubscription => None,
         }
     }
 }
@@ -52,6 +72,7 @@ impl std::str::FromStr for ProviderKind {
             "anthropic" => Ok(Self::Anthropic),
             "openai" => Ok(Self::Openai),
             "opencode_zen" => Ok(Self::OpencodeZen),
+            "claude_subscription" => Ok(Self::ClaudeSubscription),
             other => Err(format!("unknown provider kind `{other}`")),
         }
     }

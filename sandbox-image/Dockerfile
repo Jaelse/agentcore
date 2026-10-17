@@ -3,6 +3,8 @@
 #   docker build -t agentcore-sandbox:latest sandbox-image                       # opencode only
 #   docker build --build-arg AGENTS="codex goose" -t agentcore-sandbox:latest sandbox-image
 #   docker build --build-arg AGENTS=all -t agentcore-sandbox:full sandbox-image
+#   docker build --build-arg AGENTS="opencode claude-code" -t my-sandbox:claude sandbox-image
+#     (Claude Code is not open source: you accept Anthropic's terms; keep the image private)
 #
 # AGENTS names entries of the agent catalogue (templates/agents/); see
 # docs/AGENT_CATALOG.md for what each one is and its license.

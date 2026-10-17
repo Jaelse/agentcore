@@ -14,6 +14,8 @@
 pub mod docker;
 mod io;
 pub mod process;
+#[cfg(unix)]
+mod pty;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -86,6 +88,9 @@ pub struct SandboxRequest {
     pub workspace_dir: PathBuf,
     /// Image override (container backends).
     pub image: Option<String>,
+    /// The agent reaches its model provider itself (e.g. Claude Code logged
+    /// in to a Claude account) and needs a route to the internet.
+    pub egress: bool,
 }
 
 /// Receives command output while it is produced (for the live view).
@@ -97,6 +102,8 @@ pub struct AgentProcess {
     /// With a TTY: the terminal (stdout and stderr merged). Otherwise stdout.
     pub stdout: Option<std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>>,
     pub stderr: Option<std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>>,
+    /// With a TTY: the terminal's keyboard, for people watching the live view.
+    pub stdin: Option<std::pin::Pin<Box<dyn tokio::io::AsyncWrite + Send>>>,
     pub tty: bool,
 }
 
@@ -154,6 +161,11 @@ pub trait Sandbox: Send + Sync {
     /// The agent's `HOME` as seen from inside the sandbox.
     fn home(&self) -> String {
         "/home/agent".into()
+    }
+
+    /// Directory the agent starts in, as the agent sees it.
+    fn workdir(&self) -> String {
+        WORKSPACE.into()
     }
 
     /// Start the long-running agent process, in a pseudo-terminal if

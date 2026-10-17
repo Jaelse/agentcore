@@ -8,6 +8,11 @@
 #
 # Everything comes from the projects' official channels (npm, PyPI, GitHub
 # releases), unmodified, with their license files.
+#
+# claude-code is not open source and is never part of `all`: name it
+# explicitly, which means accepting Anthropic's terms
+# (https://www.anthropic.com/legal/commercial-terms). Images with it are for
+# your own use; do not publish them.
 set -eu
 
 AGENTS="${AGENTS:-opencode}"
@@ -20,6 +25,7 @@ GOOSE_VERSION="${GOOSE_VERSION:-1.53.0}"
 FAST_AGENT_VERSION="${FAST_AGENT_VERSION:-0.10.43}"
 AIDER_VERSION="${AIDER_VERSION:-0.86.2}"
 MINI_SWE_AGENT_VERSION="${MINI_SWE_AGENT_VERSION:-2.4.6}"
+CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-2.1.292}"
 
 # Python agents live in their own virtual environments (via uv), with their
 # own Python where they need a newer one than the image has.
@@ -37,6 +43,7 @@ for agent in $AGENTS; do
   case "$agent" in
     opencode)       npm install -g "opencode-ai@${OPENCODE_VERSION}" ;;
     codex)          npm install -g "@openai/codex@${CODEX_VERSION}" ;;
+    claude-code)    npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" ;;
     qwen-code)      npm install -g "@qwen-code/qwen-code@${QWEN_CODE_VERSION}" ;;
     fast-agent)     uv_tool "fast-agent-mcp==${FAST_AGENT_VERSION}" 3.12 ;;
     aider)          uv_tool "aider-chat==${AIDER_VERSION}" 3.12 ;;

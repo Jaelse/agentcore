@@ -1,0 +1,111 @@
+# See codex.toml for the placeholders. Uses agentcore's built-in claude-code
+# adapter, which configures Claude Code's tools, MCP server and sign-in.
+#
+# Claude Code is not open source: agentcore does not ship it. Install it into
+# your own sandbox image (AGENTS="opencode claude-code", see
+# sandbox-image/install-agents.sh), which means accepting Anthropic's terms.
+id = "claude-code"
+name = "Claude Code"
+vendor = "Anthropic"
+summary = "Anthropic's agentic coding tool, signed in with your Claude account or an API key."
+description = """
+Reads, changes and tests code. People can sign it in with an Anthropic API
+key or a Claude subscription (both through agentcore's model gateway), or log
+it in themselves from the live terminal, or run it on Amazon Bedrock, Google
+Vertex AI or Microsoft Foundry. By default its own file, shell and web tools
+are off, so it works through agentcore's policy-checked tools.
+"""
+domains = ["software"]
+homepage = "https://code.claude.com"
+repository = "https://github.com/anthropics/claude-code"
+license = "LicenseRef-Anthropic-Commercial-Terms"
+license_url = "https://github.com/anthropics/claude-code/blob/main/LICENSE.md"
+bring_your_own = true
+terms_url = "https://www.anthropic.com/legal/commercial-terms"
+package = "npm: @anthropic-ai/claude-code"
+verified_version = "2.1.292"
+protocols = ["anthropic", "claude_subscription"]
+suggested_models = ["claude-sonnet-4-5", "claude-opus-4-5"]
+guardrails = "full"
+conversation = true
+
+[[options]]
+key = "auth"
+label = "Sign in with"
+default = "gateway"
+
+  [[options.values]]
+  value = "gateway"
+  label = "agentcore model provider"
+  description = """An Anthropic API key or a Claude subscription (Pro, Max, Team, Enterprise) \
+added under Settings → Model providers. For a subscription, run claude setup-token and paste \
+the token. Credentials stay in agentcore; every model call is recorded and budgeted."""
+
+  [[options.values]]
+  value = "login"
+  label = "Log in from the live terminal"
+  description = """Each session starts at Claude Code's login screen. A person takes the \
+keyboard in the live view and logs in with a Claude account, Anthropic Console or SSO. The \
+login lasts for the session. Model calls go straight to Anthropic, so agentcore does not \
+record them. Needs sandbox.docker.egress_network."""
+  direct = true
+
+  [[options.values]]
+  value = "bedrock"
+  label = "Amazon Bedrock"
+  description = """Uses AWS credentials from the agent's environment (e.g. \
+AWS_BEARER_TOKEN_BEDROCK or AWS_PROFILE plus AWS_REGION, set in its env with {env:NAME}). \
+Model calls go straight to AWS. Needs sandbox.docker.egress_network."""
+  direct = true
+
+  [[options.values]]
+  value = "vertex"
+  label = "Google Vertex AI"
+  description = """Uses Google Cloud credentials from the agent's environment \
+(CLOUD_ML_REGION, ANTHROPIC_VERTEX_PROJECT_ID, GOOGLE_APPLICATION_CREDENTIALS). Model calls \
+go straight to Google. Needs sandbox.docker.egress_network."""
+  direct = true
+
+  [[options.values]]
+  value = "foundry"
+  label = "Microsoft Foundry"
+  description = """Uses Azure credentials from the agent's environment \
+(ANTHROPIC_FOUNDRY_RESOURCE, ANTHROPIC_FOUNDRY_API_KEY). Model calls go straight to Azure. \
+Needs sandbox.docker.egress_network."""
+  direct = true
+
+[[options]]
+key = "mode"
+label = "Screen"
+default = "headless"
+
+  [[options.values]]
+  value = "headless"
+  label = "Headless"
+  description = "Runs claude -p once per turn; people steer it with follow-up messages."
+
+  [[options.values]]
+  value = "interactive"
+  label = "Interactive"
+  description = """Claude Code's own screen. People can take the keyboard in the live view and \
+work with it directly; the turn ends when they exit it. Always used when logging in from the terminal."""
+
+[[options]]
+key = "tools"
+label = "Tools"
+default = "gateway"
+
+  [[options.values]]
+  value = "gateway"
+  label = "agentcore's policy-checked tools"
+  description = "Claude Code's own file, shell and web tools are off; every action is checked by the policy."
+
+  [[options.values]]
+  value = "native"
+  label = "Claude Code's own tools"
+  description = """Claude Code's own tools, inside the sandbox. The policy does not see individual \
+actions; the sandbox, live view and recording still apply."""
+
+[spec]
+adapter = "claude-code"
+command = "claude"

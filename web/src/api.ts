@@ -169,6 +169,8 @@ export const api = {
     request<SessionInfo>("POST", "/sessions", { agent, task, policy: policy || undefined }),
   pause: (id: string) => request<SessionInfo>("POST", `/sessions/${id}/pause`),
   resume: (id: string) => request<SessionInfo>("POST", `/sessions/${id}/resume`),
+  /** Type into the agent's terminal (keystrokes as a terminal sends them). */
+  typeInput: (id: string, data: string) => request<void>("POST", `/sessions/${id}/input`, { data }),
   /** The terminal recording (asciicast v2), or null if there is none. */
   async recording(id: string): Promise<string | null> {
     const res = await fetch(`/api/v1/sessions/${id}/recording`, { headers: headers() });
@@ -245,6 +247,7 @@ export const api = {
     policy?: string;
     image?: string;
     description?: string;
+    options?: Record<string, string>;
   }) => request<unknown>("POST", "/agents", body),
   updateAgentInstall: (
     name: string,
