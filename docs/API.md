@@ -14,7 +14,7 @@ flowchart LR
 
 | Surface | Callers | Authentication |
 |---|---|---|
-| `/api/v1/...` | the web UI, scripts, CI | `Authorization: Bearer <operator token>` (none when no operators are configured and the server is on loopback) |
+| `/api/v1/...` | the web UI, the [Flutter app](../app/README.md), scripts, CI | `Authorization: Bearer <operator token>` (none when no operators are configured and the server is on loopback) |
 | `/mcp/{session}` | the agent of that session | `Authorization: Bearer <session token>` (`$AGENTCORE_GATEWAY_TOKEN`) |
 | `/llm/{session}/{provider}/...` | the agent of that session | session token as `x-api-key`, `Authorization: Bearer`, or `x-agentcore-token` |
 

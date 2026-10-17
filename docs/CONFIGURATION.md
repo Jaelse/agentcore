@@ -45,6 +45,7 @@ managed in the web UI and stored in PostgreSQL.
 | `gateway_url` | `http://<bind>` | agentcore's URL **as seen from inside the sandbox** (tool and model gateways). With docker-compose: `http://agentcore:8080`. |
 | `public_url` | none | URL of the web UI, used for links in GitHub comments. |
 | `ui_dir` | `web/dist` | Built web UI. |
+| `cors_origins` | `[]` | Browser origins allowed to call `/api/v1` from another site, e.g. `["https://app.example.com"]` for the [Flutter app](../app/README.md) built for the web. Native apps and the bundled web UI need nothing here. |
 
 ### `[[server.operators]]`
 

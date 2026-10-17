@@ -106,6 +106,10 @@ pub struct ServerConfig {
     /// Authenticated operators. When empty, the server only accepts
     /// connections on a loopback address and treats callers as `local`.
     pub operators: Vec<Operator>,
+    /// Browser origins (e.g. `https://app.example.com`) allowed to call
+    /// `/api/v1` cross-origin, such as the Flutter app built for the web.
+    /// Native apps and the bundled web UI need nothing here.
+    pub cors_origins: Vec<String>,
 }
 
 impl Default for ServerConfig {
@@ -116,6 +120,7 @@ impl Default for ServerConfig {
             ui_dir: "web/dist".into(),
             public_url: None,
             operators: Vec::new(),
+            cors_origins: Vec::new(),
         }
     }
 }
@@ -332,6 +337,21 @@ impl Config {
         }
         if self.cluster.reconcile_millis < 100 {
             anyhow::bail!("[cluster]: reconcile_millis must be at least 100");
+        }
+        for origin in &self.server.cors_origins {
+            if origin == "*" {
+                anyhow::bail!("[server].cors_origins: list origins explicitly, `*` is not allowed");
+            }
+            axum::http::HeaderValue::from_str(origin)
+                .ok()
+                // Browsers send `scheme://host[:port]`: no path, not even `/`.
+                .filter(|_| {
+                    origin
+                        .strip_prefix("https://")
+                        .or_else(|| origin.strip_prefix("http://"))
+                        .is_some_and(|rest| !rest.is_empty() && !rest.contains('/'))
+                })
+                .with_context(|| format!("[server].cors_origins: `{origin}` is not an origin"))?;
         }
         for op in &self.server.operators {
             if op.token_sha256.len() != 64 || hex::decode(&op.token_sha256).is_err() {
