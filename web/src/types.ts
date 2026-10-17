@@ -274,7 +274,19 @@ export interface CatalogAgent {
   suggested_models: string[];
   guardrails: "full" | "sandbox";
   conversation: boolean;
+  /** Not open source: admins install it into their own image under the vendor's terms. */
+  bring_your_own?: boolean;
+  terms_url?: string | null;
+  options?: CatalogOption[];
   installed: string[];
+}
+
+/** A setting chosen when adding a catalogue agent (e.g. how Claude Code signs in). */
+export interface CatalogOption {
+  key: string;
+  label: string;
+  default: string;
+  values: { value: string; label: string; description: string; direct: boolean }[];
 }
 
 export interface AgentEntry {
@@ -295,6 +307,7 @@ export interface AgentEntry {
     image: string | null;
     catalog: string | null;
     conversation: boolean;
+    options?: Record<string, string>;
   };
 }
 
@@ -480,7 +493,7 @@ export interface Me {
   role: Role;
 }
 
-export type ProviderKind = "anthropic" | "openai" | "opencode_zen";
+export type ProviderKind = "anthropic" | "openai" | "opencode_zen" | "claude_subscription";
 
 export interface ProviderInfo {
   name: string;
@@ -591,7 +604,8 @@ export type LiveFrame =
   | { frame: "model_delta"; call_id: string; kind: ModelDeltaKind; text: string }
   | { frame: "model_end"; call_id: string }
   | { frame: "files"; changes: FileChange[] }
-  | { frame: "processes"; processes: ProcessInfo[] };
+  | { frame: "processes"; processes: ProcessInfo[] }
+  | { frame: "keyboard"; open: boolean };
 
 export type DataSourceKind = "postgres" | "http" | "table";
 

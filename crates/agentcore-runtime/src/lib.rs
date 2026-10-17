@@ -38,6 +38,8 @@ pub enum RuntimeError {
     NotRunning,
     #[error("the agent is not waiting for input")]
     NotAwaitingInput,
+    #[error("the agent has no terminal to type into right now")]
+    NoTerminal,
     #[error("workspace: {0}")]
     Workspace(String),
     #[error(transparent)]

@@ -76,6 +76,10 @@ fn manager(dir: &std::path::Path) -> SessionManager {
                 ..agent("listener", "echo ready")
             },
             agent(
+                "asker",
+                "printf 'login code? '; read code; echo \"thanks ${#code}\"",
+            ),
+            agent(
                 "ticker",
                 "[ -t 1 ] && printf '\\033[32mon a terminal\\033[0m\\n'; \
                  while true; do date +%s%N >> ticks; sleep 0.05; done",
@@ -401,6 +405,64 @@ async fn live_view_pause_resume_and_recording() {
     let cast = String::from_utf8(cast).unwrap();
     assert!(cast.contains("paused by alice"));
     assert!(cast.contains("\"m\",\"turn 1\""));
+}
+
+#[tokio::test]
+async fn people_type_into_the_agents_terminal() {
+    use agentcore_core::LiveFrame;
+    let dir = tempfile::tempdir().unwrap();
+    let manager = manager(dir.path());
+    let session = create(&manager, "asker");
+    wait_for(&session, |s| s == SessionStatus::Running).await;
+    for _ in 0..200 {
+        if session.accepts_input() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let (initial, _) = session.live().subscribe();
+    assert!(
+        initial.contains(&LiveFrame::Keyboard { open: true }),
+        "{initial:?}"
+    );
+
+    session
+        .type_input(Principal::human("alice"), b"s3cr")
+        .unwrap();
+    session
+        .type_input(Principal::human("alice"), b"et\r")
+        .unwrap();
+    assert_eq!(
+        wait_for(&session, SessionStatus::is_terminal).await,
+        SessionStatus::Completed
+    );
+    assert!(!session.accepts_input());
+    assert!(matches!(
+        session.type_input(Principal::human("alice"), b"x"),
+        Err(agentcore_runtime::RuntimeError::NoTerminal)
+    ));
+
+    let (events, _) = session.subscribe();
+    assert!(events.iter().any(|e| matches!(
+        &e.kind,
+        EventKind::Output { line, .. } if line.contains("thanks 6")
+    )));
+    // Who typed is recorded once per turn; the event holds no keystrokes
+    // (the screen, with whatever the program echoes, is recorded as usual).
+    let typed: Vec<_> = events
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EventKind::TerminalInput { by, turn } => Some((by.clone(), *turn)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(typed, [(Principal::human("alice"), 1)]);
+    let audit = std::fs::read_to_string(session.audit_path()).unwrap();
+    let line = audit
+        .lines()
+        .find(|l| l.contains("terminal_input"))
+        .unwrap();
+    assert!(!line.contains("s3cr"), "{line}");
 }
 
 #[tokio::test]

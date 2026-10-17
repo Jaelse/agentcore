@@ -42,7 +42,9 @@ impl From<RuntimeError> for ApiError {
             RuntimeError::UnknownAgent(_) | RuntimeError::UnknownPolicy(_) => {
                 StatusCode::BAD_REQUEST
             }
-            RuntimeError::NotRunning | RuntimeError::NotAwaitingInput => StatusCode::CONFLICT,
+            RuntimeError::NotRunning
+            | RuntimeError::NotAwaitingInput
+            | RuntimeError::NoTerminal => StatusCode::CONFLICT,
             RuntimeError::Workspace(_) => StatusCode::CONFLICT,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };

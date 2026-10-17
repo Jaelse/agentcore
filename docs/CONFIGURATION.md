@@ -111,6 +111,7 @@ agent's `policy` → `policies.default`.
 | `image` | `agentcore-sandbox:latest` | Default image (`docker build -t agentcore-sandbox:latest sandbox-image`) |
 | `runtime` | none | OCI runtime, e.g. `runsc` (gVisor), strongly recommended for untrusted agents |
 | `network` | `none` | Docker network; use an `--internal` network shared with agentcore so agents reach only the gateways |
+| `egress_network` | unset | Network for agents that reach their model provider themselves: Claude Code logged in from the live terminal, or on Bedrock / Vertex AI / Foundry. It must reach the provider and agentcore's gateways; limit its egress to those hosts where you can. Unset: such agents do not start |
 | `user` | `1000:1000` | User the agent runs as |
 | `memory` / `cpus` / `pids_limit` | `4g` / `2` / `512` | Resource limits |
 | `tmpfs_size` | `1g` | Size of `/tmp` and the agent's HOME |

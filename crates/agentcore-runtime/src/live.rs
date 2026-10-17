@@ -30,6 +30,7 @@ struct Screen {
     backlog: VecDeque<u8>,
     files: VecDeque<FileChange>,
     processes: Vec<ProcessInfo>,
+    keyboard: bool,
 }
 
 /// What a closed recording looked like, for the audit log.
@@ -120,6 +121,7 @@ impl Default for LiveHub {
                 backlog: VecDeque::new(),
                 files: VecDeque::new(),
                 processes: Vec::new(),
+                keyboard: false,
             }),
             recorder: Mutex::new(None),
         }
@@ -149,6 +151,9 @@ impl LiveHub {
         initial.push(LiveFrame::Processes {
             processes: screen.processes.clone(),
         });
+        initial.push(LiveFrame::Keyboard {
+            open: screen.keyboard,
+        });
         (initial, self.frames.subscribe())
     }
 
@@ -175,6 +180,14 @@ impl LiveHub {
     /// Close the recording; `None` when nothing was being recorded.
     pub fn finish_recording(&self) -> Option<std::io::Result<RecordingSummary>> {
         lock(&self.recorder).take().map(Recorder::finish)
+    }
+
+    /// The agent's terminal starts or stops taking keyboard input.
+    pub fn keyboard(&self, open: bool) {
+        let mut screen = lock(&self.screen);
+        screen.keyboard = open;
+        // Sent under the lock, so a new viewer sees one state or the other.
+        let _ = self.frames.send(LiveFrame::Keyboard { open });
     }
 
     /// A marker in the recording (shown as a chapter by players).

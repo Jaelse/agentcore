@@ -60,6 +60,9 @@ pub struct AgentSpec {
     /// Catalogue entry the agent was created from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog: Option<String>,
+    /// Adapter-specific settings, e.g. Claude Code's `auth` and `mode`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub options: BTreeMap<String, String>,
 }
 
 /// Placeholders that expand to secrets: allowed in `env` and `files` only,
@@ -94,6 +97,10 @@ pub struct LaunchContext {
     pub task: String,
     /// Workspace path as seen from inside the sandbox.
     pub workspace: String,
+    /// Directory the agent process starts in, as the agent sees it: the
+    /// workspace for container backends, its host path for the process
+    /// backend (e.g. for agents that remember trusted folders by path).
+    pub workdir: String,
     /// The agent's `HOME` as seen from inside the sandbox.
     pub home: String,
     /// MCP tool gateway URL as seen from inside the sandbox.
@@ -122,14 +129,31 @@ impl LaunchContext {
     /// Environment variables pointing standard SDKs at the model gateway.
     /// The "API key" is the session token: real keys never enter the sandbox.
     pub fn model_env(&self) -> BTreeMap<String, String> {
+        self.model_env_for(None)
+    }
+
+    /// [`Self::model_env`] for one agent: when the agent's own provider
+    /// speaks the Anthropic API, the Anthropic variables point at it. For a
+    /// Claude subscription the token goes in `ANTHROPIC_AUTH_TOKEN` (a bearer
+    /// token, as the subscription is used upstream), not `ANTHROPIC_API_KEY`.
+    pub fn model_env_for(&self, spec: Option<&AgentSpec>) -> BTreeMap<String, String> {
         let mut env = BTreeMap::new();
         env.insert(
             "AGENTCORE_MODEL_GATEWAY_URL".into(),
             self.model_gateway_url.clone(),
         );
-        if let Some(m) = self.model(ProviderKind::Anthropic) {
+        let anthropic = spec
+            .and_then(|s| self.endpoint(s))
+            .filter(|e| e.kind.is_anthropic())
+            .or_else(|| self.model(ProviderKind::Anthropic));
+        if let Some(m) = anthropic {
             env.insert("ANTHROPIC_BASE_URL".into(), self.model_base_url(&m.name));
-            env.insert("ANTHROPIC_API_KEY".into(), self.gateway_token.clone());
+            let key = if m.kind == ProviderKind::ClaudeSubscription {
+                "ANTHROPIC_AUTH_TOKEN"
+            } else {
+                "ANTHROPIC_API_KEY"
+            };
+            env.insert(key.into(), self.gateway_token.clone());
         }
         if let Some(m) = self.model(ProviderKind::Openai) {
             env.insert(
@@ -197,6 +221,11 @@ pub struct LaunchPlan {
     /// Allocate a pseudo-terminal (stdout and stderr merged).
     #[serde(default)]
     pub tty: bool,
+    /// The agent reaches its model provider itself (its own login or cloud
+    /// credentials) instead of through the model gateway: it gets no gateway
+    /// model variables, and the sandbox needs a route to the provider.
+    #[serde(default)]
+    pub direct_model_access: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -210,6 +239,13 @@ pub trait AgentAdapter: Send + Sync {
     fn id(&self) -> &'static str;
 
     fn plan(&self, spec: &AgentSpec, ctx: &LaunchContext) -> Result<LaunchPlan, AdapterError>;
+
+    /// The agent reaches its model provider itself (see
+    /// [`LaunchPlan::direct_model_access`]), so its sandbox needs a route to
+    /// the internet. Decided before the sandbox starts.
+    fn direct_model_access(&self, _spec: &AgentSpec) -> bool {
+        false
+    }
 
     /// Plan for a follow-up turn that continues the same conversation with a
     /// new message from a human. `None` means the agent cannot continue and

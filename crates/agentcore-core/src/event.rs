@@ -57,6 +57,11 @@ pub enum EventKind {
     AgentStarted {
         program: String,
         args: Vec<String>,
+        /// The agent reaches its model provider itself (e.g. Claude Code
+        /// logged in to a Claude account, or on Bedrock / Vertex AI), not
+        /// through the model gateway: its model calls are not recorded.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        direct_model_access: bool,
     },
     /// One agent run. Multi-turn sessions have several.
     TurnStarted {
@@ -148,6 +153,13 @@ pub enum EventKind {
     Paused {
         by: Principal,
     },
+    /// A human typed into the agent's terminal (first keystrokes of a turn).
+    /// The keystrokes themselves are not in the event; what the program
+    /// shows on its screen is recorded like any other output.
+    TerminalInput {
+        by: Principal,
+        turn: u32,
+    },
     Resumed {
         by: Principal,
     },
@@ -173,6 +185,7 @@ impl EventKind {
             Self::WorkspacePrepared { .. } => "workspace_prepared",
             Self::RoleApplied { .. } => "role_applied",
             Self::AgentStarted { .. } => "agent_started",
+            Self::TerminalInput { .. } => "terminal_input",
             Self::TurnStarted { .. } => "turn_started",
             Self::TurnEnded { .. } => "turn_ended",
             Self::UserMessage { .. } => "user_message",

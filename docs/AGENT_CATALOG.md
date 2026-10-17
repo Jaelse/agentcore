@@ -10,6 +10,7 @@ started (sessions, projects, departments).
 - [Adding an agent](#adding-an-agent)
 - [How agents are connected](#how-agents-are-connected)
 - [Guardrail levels](#guardrail-levels)
+- [Claude Code](#claude-code)
 - [Licenses and legal notes](#licenses-and-legal-notes)
 - [Agents that are not in the catalogue](#agents-that-are-not-in-the-catalogue)
 - [How the integrations were verified](#how-the-integrations-were-verified)
@@ -26,6 +27,7 @@ started (sessions, projects, departments).
 | **fast-agent** | Lightweight MCP-native assistant for any department | Apache-2.0 | Anthropic, OpenAI | Full | yes |
 | **Aider** | AI pair programmer that edits and commits | Apache-2.0 | Anthropic, OpenAI | Sandbox only | yes |
 | **mini-SWE-agent** (SWE-agent team) | Minimal bash-only agent for software tasks | MIT | Anthropic, OpenAI | Sandbox only | single run |
+| **Claude Code** (Anthropic) | Coding agent; sign in with an API key, a Claude subscription or a login | Anthropic Commercial Terms, *bring your own* | Anthropic, Claude subscription (or direct, see [Claude Code](#claude-code)) | Full (or sandbox only, by choice) | yes |
 
 * *Model protocols*: which kind of provider (Settings → Model providers) the
   agent can use. "OpenAI" includes OpenAI-compatible servers.
@@ -117,6 +119,7 @@ What each agent gets:
 | fast-agent | `fast-agent go` / `--resume` | `~/.fast-agent/fast-agent.yaml` | MCP (no built-in tools) |
 | Aider | `aider --message` / `--restore-chat-history` | LiteLLM via `OPENAI_API_BASE` / `ANTHROPIC_API_BASE` | its own file editing and git |
 | mini-SWE-agent | `mini --yolo --exit-immediately` | LiteLLM, as Aider | its own bash |
+| Claude Code | `claude -p` or its interactive screen; `--continue` (built-in adapter) | `ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` (API key) or `ANTHROPIC_AUTH_TOKEN` (subscription); or direct | `--mcp-config` with `--strict-mcp-config`; `--tools ""`, native tools denied in `~/.claude/settings.json`, project settings and hooks not loaded |
 
 ## Guardrail levels
 
@@ -129,11 +132,62 @@ Use sandbox-only agents where the sandbox boundary is enough (work in a
 checkout that a person reviews before delivery); use agents with full
 guardrails where individual actions need policy and approval.
 
+## Claude Code
+
+Claude Code is a *bring your own* entry: it is not open source, so agentcore
+does not ship or install it by default. Build your own sandbox image with it,
+which means accepting [Anthropic's terms](https://www.anthropic.com/legal/commercial-terms),
+and keep that image private:
+
+```sh
+docker build --build-arg AGENTS="opencode claude-code" -t my-sandbox:claude sandbox-image
+```
+
+When adding it you choose three things.
+
+**Sign in with** (`auth`), covering every way Claude Code can authenticate:
+
+| Choice | How | Model calls | Needs |
+|---|---|---|---|
+| `gateway`, Anthropic API key | Add an *Anthropic* provider (Console API key) | Through the model gateway: recorded, budgeted, key never in the sandbox | nothing more |
+| `gateway`, Claude subscription | Run `claude setup-token` on a computer where you are logged in to Claude (Pro, Max, Team or Enterprise), add a *Claude subscription* provider with the token | Through the model gateway, sent upstream as an OAuth bearer token. Only Claude Code sessions may use this provider | nothing more |
+| `login` | Each session opens at Claude Code's login screen; a person takes the keyboard in the live view and logs in (Claude account, Anthropic Console or SSO). The login lasts for the session | Directly to Anthropic: **not** recorded or budgeted by agentcore | `sandbox.docker.egress_network` |
+| `bedrock` | `CLAUDE_CODE_USE_BEDROCK=1`; AWS credentials from the agent's `env` (e.g. `AWS_BEARER_TOKEN_BEDROCK = "{env:AWS_BEARER_TOKEN_BEDROCK}"`, `AWS_REGION`) | Directly to AWS | `egress_network` |
+| `vertex` | `CLAUDE_CODE_USE_VERTEX=1`; `CLOUD_ML_REGION`, `ANTHROPIC_VERTEX_PROJECT_ID`, Google credentials from `env` | Directly to Google | `egress_network` |
+| `foundry` | `CLAUDE_CODE_USE_FOUNDRY=1`; `ANTHROPIC_FOUNDRY_RESOURCE`, `ANTHROPIC_FOUNDRY_API_KEY` from `env` | Directly to Azure | `egress_network` |
+
+With a direct sign-in, credentials live in the sandbox and agentcore does not
+see the model calls (the session's `agent_started` event says
+`direct_model_access: true`). Tool calls still go through the tool gateway
+and its policy.
+
+**Screen** (`mode`): `headless` runs `claude -p` once per turn and people
+steer with follow-up messages; `interactive` shows Claude Code's own screen,
+and the turn ends when someone exits it. `login` is always interactive.
+
+**Tools** (`tools`): `gateway` (default) switches Claude Code's own file,
+shell and web tools off, so every action is a policy-checked gateway tool
+(full guardrails); `native` lets it use its own tools inside the sandbox
+(sandbox-only guardrails).
+
+### Typing into the agent's terminal
+
+While an agent runs in a terminal, the live view offers **Take the keyboard**:
+what an operator types goes to the agent, to log Claude Code in, answer a
+question or work with it on its interactive screen. Any agent with a
+terminal accepts this, not only Claude Code. The audit log records who typed
+and in which turn (`terminal_input`). The keystrokes are not stored in that
+event, but the screen recording shows whatever the program echoes, such as a
+pasted login code; such codes are single use.
+
 ## Licenses and legal notes
 
-The catalogue only accepts agents under permissive open-source licenses
+The catalogue accepts agents under permissive open-source licenses
 (`MIT`, `Apache-2.0`, `BSD-2-Clause`, `BSD-3-Clause`, `ISC`, `0BSD`);
-agentcore refuses to load an entry with any other license. These licenses
+agentcore refuses to load an entry with any other license, unless the entry
+is marked `bring_your_own` with a `terms_url` (Claude Code). Bring-your-own
+agents are never part of `AGENTS=all` or the published images: you install
+them yourself and their vendor's terms apply to you. These licenses
 allow use, including commercial use, modification and redistribution,
 without copyleft obligations.
 
@@ -180,7 +234,6 @@ advice. Have your legal team review your specific distribution.
 
 | Agent | Why not (yet) |
 |---|---|
-| Claude Code (Anthropic) | Not open source: proprietary license. |
 | Crush (Charm) | Functional Source License (FSL-1.1-MIT): not an open-source license until two years after each release. |
 | Open Interpreter | Released versions are AGPL-3.0 (copyleft); its main branch has since moved to Apache-2.0, but no release under it was verified. |
 | Gemini CLI (Google) | Apache-2.0, but it only speaks Google's Gemini API, which agentcore's model gateway does not support yet. A candidate once a Gemini provider type exists. |
@@ -229,6 +282,18 @@ protocols = ["anthropic", "openai"]     # provider kinds it can use
 suggested_models = ["claude-sonnet-4-5"]
 guardrails = "full"                     # full | sandbox
 conversation = true                     # follow_up_args continue the conversation
+# bring_your_own = true                 # not open source; needs terms_url = "https://…"
+
+# Optional choices offered when adding it, stored in the spec's `options`
+# for the adapter (see templates/agents/claude-code.toml).
+# [[options]]
+# key = "auth"
+# label = "Sign in with"
+# default = "gateway"
+#   [[options.values]]
+#   value = "gateway"
+#   label = "agentcore model provider"
+#   direct = false                      # true: no agentcore provider needed
 
 [spec]
 command = "my-agent"

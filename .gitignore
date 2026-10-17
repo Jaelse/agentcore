@@ -2,3 +2,5 @@
 /data
 *.swp
 .env
+# Local deployment config (may hold secrets); copy from deploy/agentcore.toml.example
+/deploy/agentcore.toml

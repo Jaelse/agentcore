@@ -305,6 +305,15 @@ a.kanban-title:hover { text-decoration: underline; }
 .screen-body { position: relative; overflow-x: auto; padding: 8px; }
 .xterm-host { width: max-content; }
 .xterm-host .xterm-viewport { background-color: transparent !important; }
+.keyboard-toggle {
+  margin-left: auto; padding: 3px 10px; border-radius: 999px; border: 1px solid #2b3240;
+  background: transparent; color: #d6dae0; font-size: 12px; cursor: pointer;
+}
+.keyboard-toggle:hover { border-color: #4b5565; }
+.keyboard-toggle.on { background: #1f6f43; border-color: #2e9a5e; color: #fff; }
+.keyboard-hint { padding: 6px 10px; background: #13261b; color: #b7e4c7; border-bottom: 1px solid #1d222a; }
+.keyboard-hint .error { color: #fca5a5; }
+.xterm-host.is-typing { outline: 2px solid #2e9a5e; outline-offset: 4px; border-radius: 2px; }
 .screen.is-paused .xterm-host { filter: grayscale(0.6) brightness(0.6); }
 .paused-overlay {
   position: absolute; inset: 0; display: grid; place-content: center; gap: 6px; text-align: center;
@@ -475,3 +484,4 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
 /* Outbox */
 .message-preview { white-space: pre-wrap; background: var(--surface-2); border-radius: 8px; padding: 12px; font-size: 14px; line-height: 1.5; }
 .message-preview .muted { margin-top: 8px; }
+.catalog-options label > span.small { display: block; font-weight: 400; margin-top: 4px; }

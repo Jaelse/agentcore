@@ -84,6 +84,31 @@ const HOP_BY_HOP: &[&str] = &[
     "content-length",
 ];
 
+/// Beta flag under which the Anthropic API accepts a Claude subscription's
+/// OAuth token as `Authorization: Bearer`.
+const OAUTH_BETA: &str = "oauth-2025-04-20";
+
+/// Add a flag to `anthropic-beta`, keeping the client's own.
+fn add_beta(headers: &mut HeaderMap, beta: &str) {
+    let name = HeaderName::from_static("anthropic-beta");
+    let existing: Vec<String> = headers
+        .get_all(&name)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(|b| b.trim().to_string())
+        .filter(|b| !b.is_empty())
+        .collect();
+    if existing.iter().any(|b| b == beta) {
+        return;
+    }
+    let mut all = existing;
+    all.push(beta.to_string());
+    if let Ok(value) = HeaderValue::from_str(&all.join(",")) {
+        headers.insert(name, value);
+    }
+}
+
 fn forward_request_headers(headers: &HeaderMap) -> HeaderMap {
     let mut out = HeaderMap::new();
     for (name, value) in headers {
@@ -533,6 +558,16 @@ pub async fn proxy(
             return call.reject(StatusCode::BAD_GATEWAY, "api_error", msg).await;
         }
     };
+    if let Some(adapter) = provider_info.kind.restricted_to_adapter()
+        && session.adapter() != adapter
+    {
+        let msg = format!(
+            "model provider `{provider}` is a Claude subscription, which only Claude Code may use"
+        );
+        return call
+            .reject(StatusCode::FORBIDDEN, "permission_error", msg)
+            .await;
+    }
     if let Err(message) = model_allowed(
         &provider_info.allowed_models,
         call.record.model.as_deref(),
@@ -556,12 +591,15 @@ pub async fn proxy(
         url.push_str(query);
     }
     let mut upstream_headers = forward_request_headers(&headers);
+    if provider_info.kind == ProviderKind::ClaudeSubscription {
+        add_beta(&mut upstream_headers, OAUTH_BETA);
+    }
     let auth = match provider_info.kind {
         ProviderKind::Anthropic => (
             HeaderName::from_static("x-api-key"),
             HeaderValue::from_str(&api_key),
         ),
-        ProviderKind::Openai | ProviderKind::OpencodeZen => (
+        ProviderKind::Openai | ProviderKind::OpencodeZen | ProviderKind::ClaudeSubscription => (
             header::AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {api_key}")),
         ),
@@ -698,6 +736,27 @@ pub async fn proxy(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oauth_beta_is_added_once_next_to_the_clients_own() {
+        let mut headers = HeaderMap::new();
+        add_beta(&mut headers, OAUTH_BETA);
+        assert_eq!(headers["anthropic-beta"], OAUTH_BETA);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "anthropic-beta",
+            HeaderValue::from_static("claude-code-20250219, oauth-2025-04-20"),
+        );
+        add_beta(&mut headers, OAUTH_BETA);
+        assert_eq!(
+            headers["anthropic-beta"],
+            "claude-code-20250219, oauth-2025-04-20"
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert("anthropic-beta", HeaderValue::from_static("a"));
+        add_beta(&mut headers, OAUTH_BETA);
+        assert_eq!(headers["anthropic-beta"], "a,oauth-2025-04-20");
+    }
 
     #[test]
     fn usage_from_anthropic_stream() {

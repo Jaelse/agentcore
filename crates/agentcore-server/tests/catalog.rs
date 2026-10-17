@@ -117,7 +117,8 @@ async fn add_a_catalogue_agent_check_it_and_run_it() {
     let base = format!("http://{addr}/api/v1");
     let (upstream, seen) = mock_openai().await;
 
-    // The catalogue: permissive licenses only, with the facts people need.
+    // The catalogue: permissive licenses, or agents people bring themselves
+    // under their vendor's terms, with the facts people need.
     let (_, catalog) = http(
         "GET",
         &format!("{base}/agents/catalog"),
@@ -128,12 +129,23 @@ async fn add_a_catalogue_agent_check_it_and_run_it() {
     let agents = catalog["agents"].as_array().unwrap();
     assert!(agents.len() >= 7);
     for a in agents {
+        if a["bring_your_own"] == true {
+            assert!(
+                a["terms_url"].as_str().unwrap().starts_with("https://"),
+                "{}",
+                a["id"]
+            );
+            continue;
+        }
         assert!(
             ["MIT", "Apache-2.0"].contains(&a["license"].as_str().unwrap()),
             "{}",
             a["id"]
         );
     }
+    let claude = agents.iter().find(|a| a["id"] == "claude-code").unwrap();
+    assert_eq!(claude["bring_your_own"], true);
+    assert_eq!(claude["options"][0]["key"], "auth");
     let codex = agents.iter().find(|a| a["id"] == "codex").unwrap();
     assert_eq!(codex["guardrails"], "full");
     assert_eq!(codex["protocols"], json!(["openai"]));

@@ -8,18 +8,21 @@ const DEFAULT_URL: Record<ProviderKind, string> = {
   anthropic: "https://api.anthropic.com",
   openai: "https://api.openai.com",
   opencode_zen: "https://opencode.ai/zen",
+  claude_subscription: "https://api.anthropic.com",
 };
 
 const DEFAULT_NAME: Record<ProviderKind, string> = {
   anthropic: "anthropic",
   openai: "openai",
   opencode_zen: "opencode",
+  claude_subscription: "claude",
 };
 
 const KIND_LABEL: Record<ProviderKind, string> = {
   anthropic: "Anthropic",
   openai: "OpenAI",
   opencode_zen: "OpenCode Zen",
+  claude_subscription: "Claude subscription",
 };
 
 const splitModels = (text: string) =>
@@ -293,6 +296,7 @@ function AddProvider({
             <option value="anthropic">Anthropic</option>
             <option value="openai">OpenAI or OpenAI-compatible</option>
             <option value="opencode_zen">OpenCode Zen (e.g. Big Pickle)</option>
+            <option value="claude_subscription">Claude subscription (Claude Code only)</option>
           </select>
         </label>
         <label>
@@ -309,12 +313,23 @@ function AddProvider({
           <input
             value={models}
             onChange={(e) => setModels(e.target.value)}
-            placeholder={kind === "anthropic" ? "claude-*" : kind === "openai" ? "gpt-*" : "big-pickle"}
+            placeholder={
+              kind === "anthropic" || kind === "claude_subscription" ? "claude-*" : kind === "openai" ? "gpt-*" : "big-pickle"
+            }
           />
         </label>
       </div>
+      {kind === "claude_subscription" && (
+        <div className="banner small">
+          Lets Claude Code use a Claude Pro, Max, Team or Enterprise subscription. On a computer where Claude Code is
+          installed, run <code>claude setup-token</code>, log in with the subscription's account, and paste the token
+          it prints (it starts with <code>sk-ant-oat</code>). The gateway sends it to Anthropic for Claude Code agents
+          only. To log in from inside a session instead, add Claude Code with “Log in from the live terminal”.
+        </div>
+      )}
       <label>
-        API key{kind === "opencode_zen" && " (from opencode.ai/zen; the keyless free tier does not work through a proxy)"}
+        {kind === "claude_subscription" ? "Subscription token (from claude setup-token)" : "API key"}
+        {kind === "opencode_zen" && " (from opencode.ai/zen; the keyless free tier does not work through a proxy)"}
         <input type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} />
       </label>
       <p className="muted small">

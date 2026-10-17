@@ -95,6 +95,38 @@ pub async fn resume(
     Ok(Json(json!(session.info())))
 }
 
+/// Most bytes accepted in one `input` request (a paste).
+const MAX_INPUT_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, serde::Deserialize)]
+pub struct InputRequest {
+    /// Keystrokes as a terminal sends them (`\r` for Enter, escape
+    /// sequences for arrow keys), or pasted text.
+    pub data: String,
+}
+
+/// `POST /sessions/{id}/input`: type into the agent's terminal, to answer
+/// its questions or log it in. Only while the live view shows
+/// `keyboard: open`. The audit log records who typed; the screen (with
+/// whatever the program echoes) is recorded as usual.
+pub async fn input(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(id): Path<SessionId>,
+    Json(req): Json<InputRequest>,
+) -> ApiResult<StatusCode> {
+    caller.require_operator()?;
+    if req.data.len() > MAX_INPUT_BYTES {
+        return Err(ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("at most {MAX_INPUT_BYTES} bytes at a time"),
+        ));
+    }
+    let session = state.lookup(id).await?.live()?;
+    session.type_input(caller.principal(), req.data.as_bytes())?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `GET /sessions/{id}/recording`: the terminal recording (asciicast v2).
 /// While the session runs this is the recording so far.
 pub async fn recording(

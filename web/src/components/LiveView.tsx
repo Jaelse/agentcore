@@ -20,11 +20,35 @@ interface ModelStream {
   startedAt: number;
 }
 
-/** A read-only xterm.js screen of the agent's terminal size. */
-function Screen({ onTerminal }: { onTerminal: (t: Terminal | null) => void }) {
+const SCREEN_THEME = { background: "#0b0d11", foreground: "#d6dae0", cursor: "#0b0d11" };
+
+/**
+ * An xterm.js screen of the agent's terminal size. Read-only, unless `onKeys`
+ * is given: then what people type goes to the agent.
+ */
+function Screen({
+  onTerminal,
+  onKeys,
+}: {
+  onTerminal: (t: Terminal | null) => void;
+  onKeys?: (data: string) => void;
+}) {
   const el = useRef<HTMLDivElement>(null);
   const latest = useRef(onTerminal);
   latest.current = onTerminal;
+  const keys = useRef(onKeys);
+  keys.current = onKeys;
+  const termRef = useRef<Terminal | null>(null);
+  const typing = !!onKeys;
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.disableStdin = !typing;
+    term.options.cursorBlink = typing;
+    term.options.theme = typing ? { ...SCREEN_THEME, cursor: SCREEN_THEME.foreground } : SCREEN_THEME;
+    if (typing) term.focus();
+    else term.blur();
+  }, [typing]);
   useEffect(() => {
     if (!el.current) return;
     const term = new Terminal({
@@ -37,9 +61,11 @@ function Screen({ onTerminal }: { onTerminal: (t: Terminal | null) => void }) {
       scrollback: 5000,
       fontSize: 12,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
-      theme: { background: "#0b0d11", foreground: "#d6dae0", cursor: "#0b0d11" },
+      theme: SCREEN_THEME,
     });
     term.open(el.current);
+    termRef.current = term;
+    const input = term.onData((data) => keys.current?.(data));
     latest.current(term);
     // The agent's terminal has a fixed size: scale the font so all columns
     // fit the panel (small screens scroll inside the panel instead).
@@ -55,11 +81,13 @@ function Screen({ onTerminal }: { onTerminal: (t: Terminal | null) => void }) {
     if (box) observer.observe(box);
     return () => {
       observer.disconnect();
+      input.dispose();
+      termRef.current = null;
       latest.current(null);
       term.dispose();
     };
   }, []);
-  return <div className="xterm-host" ref={el} />;
+  return <div className={`xterm-host ${typing ? "is-typing" : ""}`} ref={el} />;
 }
 
 function trimTail(s: string, max: number) {
@@ -96,8 +124,38 @@ export function LiveView({ info, timeline, onEnded }: Props) {
   const [files, setFiles] = useState<FileChange[]>([]);
   const [processes, setProcesses] = useState<ProcessInfo[]>([]);
   const [toolOutput, setToolOutput] = useState<Record<string, string>>({});
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [typing, setTyping] = useState(false);
+  const [typeError, setTypeError] = useState<string | null>(null);
   const endedRef = useRef(onEnded);
   endedRef.current = onEnded;
+
+  // Keystrokes go out in order, a few at a time.
+  const outbox = useRef<{ buffer: string; sending: boolean }>({ buffer: "", sending: false });
+  const sendKeys = (data: string) => {
+    const box = outbox.current;
+    box.buffer += data;
+    if (box.sending) return;
+    box.sending = true;
+    const flush = async () => {
+      while (box.buffer) {
+        const chunk = box.buffer;
+        box.buffer = "";
+        try {
+          await api.typeInput(info.id, chunk);
+          setTypeError(null);
+        } catch (e) {
+          setTypeError(e instanceof Error ? e.message : String(e));
+          box.buffer = "";
+        }
+      }
+      box.sending = false;
+    };
+    void flush();
+  };
+  useEffect(() => {
+    if (!keyboardOpen) setTyping(false);
+  }, [keyboardOpen]);
 
   const write = (data: string, reset = false) => {
     const t = term.current;
@@ -163,6 +221,7 @@ export function LiveView({ info, timeline, onEnded }: Props) {
         });
       }
       for (const f of batch) if (f.frame === "processes") setProcesses(f.processes);
+      for (const f of batch) if (f.frame === "keyboard") setKeyboardOpen(f.open);
       const outputs = batch.filter((f) => f.frame === "tool_output");
       if (outputs.length) {
         setToolOutput((prev) => {
@@ -209,9 +268,26 @@ export function LiveView({ info, timeline, onEnded }: Props) {
           <div className="screen-bar">
             <span className={`live-badge ${connected ? "on" : ""}`}>{connected ? "● LIVE" : "○ connecting…"}</span>
             <span className="muted small">agent terminal · {COLS}×{ROWS} · recorded</span>
+            {keyboardOpen && !paused && (
+              <button
+                type="button"
+                className={`keyboard-toggle ${typing ? "on" : ""}`}
+                aria-pressed={typing}
+                onClick={() => setTyping((t) => !t)}
+                title="Type into the agent's terminal: answer its questions or log it in"
+              >
+                {typing ? "⌨ Typing: click to stop" : "⌨ Take the keyboard"}
+              </button>
+            )}
           </div>
+          {typing && (
+            <div className="keyboard-hint small">
+              What you type goes to the agent. The screen is recorded, including anything it shows back, such as a pasted login code.
+              {typeError && <span className="error"> · {typeError}</span>}
+            </div>
+          )}
           <div className="screen-body">
-            <Screen onTerminal={onTerminal} />
+            <Screen onTerminal={onTerminal} onKeys={typing ? sendKeys : undefined} />
             {paused && (
               <div className="paused-overlay" role="status">
                 <strong>Paused</strong>

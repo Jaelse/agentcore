@@ -176,90 +176,6 @@ fn kill_group(pgid: u32) {
     signal_group(pgid, nix::sys::signal::Signal::SIGKILL);
 }
 
-/// Non-blocking reader for a PTY master (`tokio::fs::File` would park a
-/// blocking thread on every read).
-struct PtyReader(tokio::io::unix::AsyncFd<std::fs::File>);
-
-impl PtyReader {
-    fn new(master: std::fs::File) -> Result<Self> {
-        use nix::fcntl::{FcntlArg, OFlag, fcntl};
-        let flags = fcntl(&master, FcntlArg::F_GETFL)
-            .map_err(|e| SandboxError::Command(format!("pseudo-terminal: {e}")))?;
-        fcntl(
-            &master,
-            FcntlArg::F_SETFL(OFlag::from_bits_truncate(flags) | OFlag::O_NONBLOCK),
-        )
-        .map_err(|e| SandboxError::Command(format!("pseudo-terminal: {e}")))?;
-        tokio::io::unix::AsyncFd::new(master)
-            .map(Self)
-            .map_err(SandboxError::io("register pseudo-terminal"))
-    }
-}
-
-impl tokio::io::AsyncRead for PtyReader {
-    fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        use std::io::Read;
-        use std::task::Poll;
-        loop {
-            let mut guard = match self.0.poll_read_ready(cx) {
-                Poll::Ready(Ok(guard)) => guard,
-                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                Poll::Pending => return Poll::Pending,
-            };
-            let unfilled = buf.initialize_unfilled();
-            match guard.try_io(|fd| fd.get_ref().read(unfilled)) {
-                Ok(Ok(n)) => {
-                    buf.advance(n);
-                    return Poll::Ready(Ok(()));
-                }
-                // EIO: every process holding the terminal has exited.
-                Ok(Err(e)) if e.raw_os_error() == Some(nix::libc::EIO) => {
-                    return Poll::Ready(Ok(()));
-                }
-                Ok(Err(e)) => return Poll::Ready(Err(e)),
-                Err(_would_block) => continue,
-            }
-        }
-    }
-}
-
-/// A pseudo-terminal of the live view's size: (master, slave).
-///
-/// Both ends are opened close-on-exec, so a process spawned at the same time
-/// for another session cannot inherit them: a stray copy of the slave would
-/// keep the terminal open after the agent exits, and its last output would
-/// never be read.
-fn open_pty() -> Result<(std::fs::File, std::os::fd::OwnedFd)> {
-    use agentcore_core::live::{TERMINAL_COLS, TERMINAL_ROWS};
-    use rustix::fs::{Mode, OFlags};
-    use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
-    let err =
-        |e: rustix::io::Errno| SandboxError::Command(format!("cannot open a pseudo-terminal: {e}"));
-    let master =
-        openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC).map_err(err)?;
-    grantpt(&master).map_err(err)?;
-    unlockpt(&master).map_err(err)?;
-    let name = ptsname(&master, Vec::new()).map_err(err)?;
-    let slave = rustix::fs::open(
-        name.as_c_str(),
-        OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(err)?;
-    let size = rustix::termios::Winsize {
-        ws_row: TERMINAL_ROWS,
-        ws_col: TERMINAL_COLS,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-    rustix::termios::tcsetwinsize(&slave, size).map_err(err)?;
-    Ok((std::fs::File::from(master), slave))
-}
-
 #[async_trait]
 impl Sandbox for ProcessSandbox {
     fn backend(&self) -> &'static str {
@@ -274,6 +190,10 @@ impl Sandbox for ProcessSandbox {
         self.home.to_string_lossy().into_owned()
     }
 
+    fn workdir(&self) -> String {
+        self.root.to_string_lossy().into_owned()
+    }
+
     async fn spawn(&self, plan: &LaunchPlan) -> Result<AgentProcess> {
         self.check_alive()?;
         let mut cmd = self.command(&plan.program, &plan.args, &self.root);
@@ -286,11 +206,12 @@ impl Sandbox for ProcessSandbox {
             return Ok(AgentProcess {
                 stdout: child.stdout.take().map(|s| Box::pin(s) as _),
                 stderr: child.stderr.take().map(|s| Box::pin(s) as _),
+                stdin: None,
                 child,
                 tty: false,
             });
         }
-        let (master, slave) = open_pty()?;
+        let (master, slave) = crate::pty::open_pty()?;
         let clone = |fd: &std::os::fd::OwnedFd| {
             fd.try_clone()
                 .map_err(SandboxError::io("duplicate pseudo-terminal"))
@@ -307,10 +228,12 @@ impl Sandbox for ProcessSandbox {
         // master ends once the agent exits.
         drop(cmd);
         self.track(&child);
+        let keyboard = crate::pty::PtyWriter::new(&master)?;
         Ok(AgentProcess {
             child,
-            stdout: Some(Box::pin(PtyReader::new(master)?)),
+            stdout: Some(Box::pin(crate::pty::PtyReader::new(master)?)),
             stderr: None,
+            stdin: Some(Box::pin(keyboard)),
             tty: true,
         })
     }
@@ -445,6 +368,7 @@ mod tests {
             session_id: uuid::Uuid::new_v4(),
             workspace_dir: dir.to_path_buf(),
             image: None,
+            egress: false,
         })
         .await
         .unwrap()
@@ -558,7 +482,7 @@ mod tests {
                 program: "sh".into(),
                 args: vec!["-c".into(), "sleep 30 & sleep 30".into()],
                 env: Default::default(),
-                tty: false,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -588,6 +512,7 @@ mod tests {
                 ],
                 env: Default::default(),
                 tty: true,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -610,6 +535,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn people_can_type_into_the_agents_terminal() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = tempfile::tempdir().unwrap();
+        let sb = sandbox(dir.path()).await;
+        let mut agent = sb
+            .spawn(&LaunchPlan {
+                program: "sh".into(),
+                args: vec!["-c".into(), "read answer; echo \"got:$answer\"".into()],
+                tty: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let mut keyboard = agent.stdin.take().expect("a terminal has a keyboard");
+        keyboard.write_all(b"yes\r").await.unwrap();
+        let mut out = Vec::new();
+        let mut reader = agent.stdout.take().unwrap();
+        let _ = tokio::time::timeout(Duration::from_secs(5), reader.read_to_end(&mut out)).await;
+        agent.child.wait().await.unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("got:yes"), "{text}");
+    }
+
+    #[tokio::test]
     async fn pause_freezes_and_resume_continues() {
         let dir = tempfile::tempdir().unwrap();
         let sb = sandbox(dir.path()).await;
@@ -621,7 +570,7 @@ mod tests {
                     "while true; do date +%s%N >> ticks; sleep 0.05; done".into(),
                 ],
                 env: Default::default(),
-                tty: false,
+                ..Default::default()
             })
             .await
             .unwrap();

@@ -79,8 +79,42 @@ pub struct CatalogEntry {
     pub guardrails: Guardrails,
     /// Continues the conversation across turns (woken by messages).
     pub conversation: bool,
+    /// Not open source: agentcore neither ships nor installs it by default.
+    /// Admins install it into their own sandbox image and accept the
+    /// vendor's terms (`terms_url`); `license` then names those terms.
+    #[serde(default)]
+    pub bring_your_own: bool,
+    #[serde(default)]
+    pub terms_url: Option<String>,
+    /// Settings people choose when adding the agent (the adapter's
+    /// `options`), e.g. how Claude Code signs in.
+    #[serde(default)]
+    pub options: Vec<CatalogOption>,
     /// Launch template (`name` is set when the agent is added).
     pub spec: SpecTemplate,
+}
+
+/// One choice offered when adding an agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CatalogOption {
+    pub key: String,
+    pub label: String,
+    pub default: String,
+    pub values: Vec<OptionValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OptionValue {
+    pub value: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    /// The agent then reaches its model provider itself: no model provider
+    /// of agentcore's is needed (and the sandbox needs internet access).
+    #[serde(default)]
+    pub direct: bool,
 }
 
 /// [`AgentSpec`] without the per-installation fields.
@@ -107,9 +141,36 @@ fn command_adapter() -> String {
 }
 
 impl CatalogEntry {
+    /// The chosen options, defaults filled in; unknown keys are dropped.
+    pub fn options(&self, choice: &Choice) -> std::collections::BTreeMap<String, String> {
+        self.options
+            .iter()
+            .map(|o| {
+                let value = choice
+                    .options
+                    .get(&o.key)
+                    .filter(|v| !v.trim().is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| o.default.clone());
+                (o.key.clone(), value)
+            })
+            .collect()
+    }
+
+    /// The chosen options make the agent reach its model provider itself.
+    pub fn is_direct(&self, choice: &Choice) -> bool {
+        let chosen = self.options(choice);
+        self.options.iter().any(|o| {
+            o.values
+                .iter()
+                .any(|v| v.direct && chosen.get(&o.key) == Some(&v.value))
+        })
+    }
+
     /// The agent definition for one installation.
     pub fn instantiate(&self, choice: &Choice) -> AgentSpec {
         let s = &self.spec;
+        let direct = self.is_direct(choice);
         AgentSpec {
             name: choice.name.clone(),
             adapter: s.adapter.clone(),
@@ -126,10 +187,11 @@ impl CatalogEntry {
             follow_up_args: s.follow_up_args.clone(),
             tty: s.tty,
             files: s.files.clone(),
-            provider: Some(choice.provider.clone()),
+            provider: (!direct).then(|| choice.provider.clone()),
             protocol: None,
-            model: Some(choice.model.trim().to_string()),
+            model: Some(choice.model.trim().to_string()).filter(|m| !m.is_empty()),
             catalog: Some(self.id.clone()),
+            options: self.options(choice),
         }
     }
 }
@@ -148,6 +210,9 @@ pub struct Choice {
     /// Sandbox image override (an image with this agent installed).
     #[serde(default)]
     pub image: Option<String>,
+    /// Values for the entry's `options`, by key.
+    #[serde(default)]
+    pub options: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -183,13 +248,32 @@ impl AgentCatalog {
         let mut ids = std::collections::HashSet::new();
         for e in &self.agents {
             anyhow::ensure!(ids.insert(e.id.as_str()), "duplicate agent `{}`", e.id);
-            anyhow::ensure!(
-                ALLOWED_LICENSES.contains(&e.license.as_str()),
-                "agent `{}`: license `{}` is not on the allowed list ({})",
-                e.id,
-                e.license,
-                ALLOWED_LICENSES.join(", ")
-            );
+            if e.bring_your_own {
+                anyhow::ensure!(
+                    e.terms_url
+                        .as_deref()
+                        .is_some_and(|u| u.starts_with("https://")),
+                    "agent `{}`: bring-your-own agents need a `terms_url`",
+                    e.id
+                );
+            } else {
+                anyhow::ensure!(
+                    ALLOWED_LICENSES.contains(&e.license.as_str()),
+                    "agent `{}`: license `{}` is not on the allowed list ({})",
+                    e.id,
+                    e.license,
+                    ALLOWED_LICENSES.join(", ")
+                );
+            }
+            for o in &e.options {
+                anyhow::ensure!(
+                    o.values.iter().any(|v| v.value == o.default),
+                    "agent `{}`: option `{}` defaults to `{}`, which is not one of its values",
+                    e.id,
+                    o.key,
+                    o.default
+                );
+            }
             anyhow::ensure!(!e.protocols.is_empty(), "agent `{}`: no protocols", e.id);
             anyhow::ensure!(
                 e.conversation || e.spec.follow_up_args.is_empty(),
@@ -203,6 +287,7 @@ impl AgentCatalog {
                 policy: None,
                 description: None,
                 image: None,
+                options: Default::default(),
             });
             probe
                 .validate()
@@ -303,13 +388,39 @@ fn public_spec(spec: &AgentSpec) -> Value {
         "model": spec.model,
         "image": spec.image,
         "catalog": spec.catalog,
-        "conversation": !spec.follow_up_args.is_empty() || spec.adapter == "opencode",
+        "conversation": !spec.follow_up_args.is_empty()
+            || matches!(spec.adapter.as_str(), "opencode" | "claude-code"),
+        "options": spec.options,
     })
 }
 
 /// Check the provider and model a person chose for a catalogue agent.
 async fn check_choice(state: &AppState, entry: &CatalogEntry, choice: &Choice) -> ApiResult<()> {
     let bad = |m: String| ApiError::new(StatusCode::BAD_REQUEST, m);
+    for (key, value) in &choice.options {
+        let option = entry
+            .options
+            .iter()
+            .find(|o| &o.key == key)
+            .ok_or_else(|| bad(format!("{} has no option `{key}`", entry.name)))?;
+        if !value.trim().is_empty() && !option.values.iter().any(|v| &v.value == value) {
+            return Err(bad(format!(
+                "{}: `{value}` is not a choice for {} ({})",
+                entry.name,
+                option.label,
+                option
+                    .values
+                    .iter()
+                    .map(|v| v.value.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+    }
+    // Signed in by other means: no provider of agentcore's, model optional.
+    if entry.is_direct(choice) {
+        return Ok(());
+    }
     let providers = state.store.list_providers().await?;
     let provider = providers
         .iter()
@@ -405,6 +516,8 @@ pub struct UpdateRequest {
     #[serde(default)]
     pub image: Option<String>,
     #[serde(default)]
+    pub options: Option<std::collections::BTreeMap<String, String>>,
+    #[serde(default)]
     pub enabled: Option<bool>,
 }
 
@@ -433,6 +546,7 @@ pub async fn update(
         policy: req.policy.or_else(|| old.policy.clone()),
         description: req.description.or_else(|| Some(old.description.clone())),
         image: req.image.or_else(|| old.image.clone()),
+        options: req.options.unwrap_or_else(|| old.options.clone()),
     };
     check_choice(&state, entry, &choice).await?;
     // Re-created from the current catalogue entry: updating an agent also
@@ -488,6 +602,7 @@ pub async fn check(
                 session_id: id,
                 workspace_dir: dir.clone(),
                 image: spec.image.clone(),
+                egress: false,
             })
             .await?;
         let out = sandbox
@@ -546,7 +661,11 @@ mod tests {
         let c = catalog();
         assert!(c.agents.len() >= 7, "{}", c.agents.len());
         for e in &c.agents {
-            assert!(ALLOWED_LICENSES.contains(&e.license.as_str()), "{}", e.id);
+            assert!(
+                e.bring_your_own || ALLOWED_LICENSES.contains(&e.license.as_str()),
+                "{}",
+                e.id
+            );
             assert!(e.license_url.starts_with("https://"), "{}", e.id);
             let all_args = e.spec.args.iter().chain(&e.spec.follow_up_args);
             for a in all_args {
@@ -557,12 +676,14 @@ mod tests {
             assert!(
                 text.contains("{model_base_url}")
                     || text.contains("{openai_base_url}")
-                    || e.spec.adapter == "opencode",
+                    || matches!(e.spec.adapter.as_str(), "opencode" | "claude-code"),
                 "{}",
                 e.id
             );
             // Agents with full guardrails are connected to the tool gateway.
-            if e.guardrails == Guardrails::Full && e.spec.adapter != "opencode" {
+            if e.guardrails == Guardrails::Full
+                && !matches!(e.spec.adapter.as_str(), "opencode" | "claude-code")
+            {
                 assert!(text.contains("{gateway_url}"), "{}", e.id);
             }
         }
@@ -589,11 +710,43 @@ mod tests {
             policy: Some("default".into()),
             description: None,
             image: None,
+            options: Default::default(),
         });
         assert_eq!(spec.catalog.as_deref(), Some("codex"));
         assert_eq!(spec.model.as_deref(), Some("gpt-5.1"));
         assert_eq!(spec.provider.as_deref(), Some("openai"));
         assert!(spec.files.contains_key(".codex/config.toml"));
         assert!(spec.description.starts_with("Codex CLI"));
+    }
+
+    #[test]
+    fn claude_code_is_bring_your_own_with_sign_in_choices() {
+        let c = catalog();
+        let entry = c.get("claude-code").unwrap();
+        assert!(entry.bring_your_own);
+        assert!(entry.protocols.contains(&ProviderKind::ClaudeSubscription));
+        let mut choice = Choice {
+            name: "claude".into(),
+            provider: "max".into(),
+            model: "claude-sonnet-4-5".into(),
+            policy: None,
+            description: None,
+            image: None,
+            options: Default::default(),
+        };
+        let spec = entry.instantiate(&choice);
+        assert_eq!(spec.adapter, "claude-code");
+        assert_eq!(spec.options["auth"], "gateway");
+        assert_eq!(spec.provider.as_deref(), Some("max"));
+
+        choice.options.insert("auth".into(), "login".into());
+        choice.options.insert("bogus".into(), "x".into());
+        choice.model.clear();
+        assert!(entry.is_direct(&choice));
+        let spec = entry.instantiate(&choice);
+        assert_eq!(spec.options["auth"], "login");
+        assert!(!spec.options.contains_key("bogus"));
+        assert_eq!(spec.provider, None);
+        assert_eq!(spec.model, None);
     }
 }

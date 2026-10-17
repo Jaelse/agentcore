@@ -187,6 +187,7 @@ pub fn router(state: AppState) -> Router {
         .route("/sessions/{id}/live", get(live::stream))
         .route("/sessions/{id}/pause", post(live::pause))
         .route("/sessions/{id}/resume", post(live::resume))
+        .route("/sessions/{id}/input", post(live::input))
         .route("/sessions/{id}/recording", get(live::recording))
         .route("/sessions/{id}/approvals", get(api::list_approvals))
         .route(
