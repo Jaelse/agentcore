@@ -20,6 +20,7 @@ fn dept(name: &str) -> DepartmentInput {
         template: None,
         project_id: None,
         role: None,
+        requires_repository: false,
     }
 }
 

@@ -333,6 +333,23 @@ Projects (see [Ways of working](WAYS_OF_WORKING.md)). Link it when creating
 or editing the department, or choose the repository in the builder: then
 every new department whose template has a role on a repository is linked.
 
+A project can be linked, changed or removed at any time. Agents see the
+current state in real time through `team_project` (repository, branch, role,
+whether a checkout is set up in their session). The checkout and GitHub tools
+are prepared on the host before a session starts, so running workers are
+restarted into a fresh session, with a note saying why, as soon as they are
+idle after the change.
+
+**Holding a team without a repository.** Tick *Its agents need a repository
+to work* on a department (departments built from a template with a role on a
+repository have it on). Until a project is linked, its workers are paused
+and the department shows *waiting for a GitHub repository to be linked*;
+`team_project` tells them why. Linking one resumes them. Whenever an admin
+edits a department (repository, role, tools, mission, policy), everyone in it
+receives a message saying what changed and by whom, which a paused agent
+reads when it carries on. To stop a whole team for any other reason, pause the
+department (or everyone); changes made meanwhile reach it the same way.
+
 ```mermaid
 flowchart LR
     P["Project<br/>acme/shop"] --- E["Engineering<br/>role: developer"]

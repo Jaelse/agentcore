@@ -522,6 +522,11 @@ function DepartmentRoom({
             <span className="chip" title="Agent the communicator runs">
               📡 communicator: {dept.communicator_agent}
             </span>
+            {dept.blocked && (
+              <span className="chip" title="Its workers are paused until a repository is linked. Edit the department to link one.">
+                ⏸ {dept.blocked}
+              </span>
+            )}
             {repo && (
               <a
                 className="chip mono"
@@ -805,6 +810,7 @@ function DepartmentForm({
   const [communicator, setCommunicator] = useState(department?.communicator_agent ?? card.agents[0]?.name ?? "");
   const [projectId, setProjectId] = useState(department?.project_id ?? "");
   const [role, setRole] = useState(department?.role ?? "");
+  const [requiresRepo, setRequiresRepo] = useState(department?.requires_repository ?? false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [roles, setRoles] = useState<TeamRole[]>([]);
   useEffect(() => {
@@ -830,6 +836,7 @@ function DepartmentForm({
               communicator_agent: communicator,
               project_id: projectId || null,
               role: projectId && role ? role : null,
+              requires_repository: requiresRepo,
             }),
           );
         } catch (err) {
@@ -906,6 +913,10 @@ function DepartmentForm({
           </label>
         )}
       </div>
+      <label className="check">
+        <input type="checkbox" checked={requiresRepo} onChange={(e) => setRequiresRepo(e.target.checked)} />
+        Its agents need a repository to work (held until one is linked; told when it is)
+      </label>
       {projectId && (
         <p className="muted small">
           Its agents get GitHub tools for the role{tools.includes("sandbox") ? ", and each a checkout of the repository on its own branch; their work is delivered as a pull request that a person reviews" : ""}.

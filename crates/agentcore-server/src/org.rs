@@ -297,6 +297,10 @@ pub struct TeamTools {
     agent: OrgAgentId,
     kind: AgentKind,
     files: bool,
+    /// The project and sandbox access this session was set up with, to tell
+    /// the agent when the department has changed since.
+    project_at_start: Option<Uuid>,
+    sandbox_at_start: bool,
 }
 
 impl TeamTools {
@@ -306,7 +310,63 @@ impl TeamTools {
             agent: agent.id,
             kind: agent.kind,
             files: agent.kind == AgentKind::Worker && department.grants(TOOL_FILES),
+            project_at_start: department.project_id,
+            sandbox_at_start: department.grants(TOOL_SANDBOX),
         }
+    }
+
+    /// The department's project as it is now. A project linked after this
+    /// session started is reported with what to expect: the organisation
+    /// restarts the worker so the checkout and GitHub tools appear.
+    async fn project(&self) -> Result<Value, String> {
+        let (org, me) = self.me().await?;
+        let dept = org
+            .department(me.department_id)
+            .ok_or("your department no longer exists")?;
+        let Some(project_id) = dept.project_id else {
+            return Ok(json!({
+                "linked": false,
+                "required": dept.requires_repository,
+                "note": if dept.requires_repository {
+                    "Your department needs a GitHub repository to work and has none: you are \
+                     on hold until a person links one (Organisation → your department → \
+                     Edit). You will be told here."
+                } else {
+                    "Your department works on no GitHub repository. A person can link one at \
+                     any time (Organisation → your department → Edit); call this again later."
+                },
+            }));
+        };
+        let project = self
+            .store
+            .get_project(project_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or("the linked project no longer exists")?;
+        let sandbox = dept.grants(TOOL_SANDBOX);
+        let current = self.project_at_start == Some(project_id) && self.sandbox_at_start == sandbox;
+        let mut out = json!({
+            "linked": true,
+            "project": project.name,
+            "repository": project.repository(),
+            "base_branch": project.default_branch,
+            "role": dept.role.as_deref().unwrap_or(&project.role),
+            "checkout_in_sandbox": sandbox,
+            "set_up_in_this_session": current,
+        });
+        out["note"] = if current {
+            "The repository is set up in this session: see your repository section and GitHub \
+             tools."
+                .into()
+        } else if self.kind == AgentKind::Communicator {
+            "Only workers get the repository; ask a worker in your department.".into()
+        } else {
+            "The repository was linked after this session started. Finish what you are doing: \
+             the organisation restarts you with the checkout and GitHub tools in a fresh \
+             session, and you will be told then."
+                .into()
+        };
+        Ok(out)
     }
 
     async fn me(&self) -> Result<(Org, OrgAgent), String> {
@@ -465,6 +525,14 @@ impl ToolHandler for TeamTools {
         let text = json!({ "type": "string" });
         let mut tools = vec![
             def(
+                "team_project",
+                "The GitHub repository (project) your department works on, if one is linked, \
+                 and whether it is set up in this session. Call it when you are asked to work \
+                 on code or a repository: a project can be linked at any time.",
+                json!({}),
+                &[],
+            ),
+            def(
                 "team_list_colleagues",
                 "Who is in your department (with their status), your department's mission, and \
                  the names of the other departments.",
@@ -547,6 +615,7 @@ impl ToolHandler for TeamTools {
             return Err(format!("tool `{tool}` is not available to you"));
         }
         match tool {
+            "team_project" => self.project().await,
             "team_list_colleagues" => self.colleagues().await,
             "team_send_message" => self.send_message(arguments).await,
             "team_read_messages" => self.read_messages().await,
@@ -747,6 +816,13 @@ pub fn compose_prompt(
                  Answers come back to you as messages.\n\n",
                 colleagues.join("\n")
             ));
+            if repo.is_none() {
+                p.push_str(
+                    "## Repository\n\nYour department has no GitHub repository linked. A person \
+                     can link one at any time: if you are asked to work on code, call \
+                     `team_project` to check, and say so if there is none.\n\n",
+                );
+            }
             if let Some(repo) = repo {
                 p.push_str(&format!(
                     "## Your repository\n\nYour department works on the GitHub repository `{}` \
@@ -1213,6 +1289,16 @@ pub async fn start_agent_session(
     Ok(session)
 }
 
+/// Whether a running worker session was set up before its department's
+/// repository (or sandbox access) changed. The checkout and GitHub tools are
+/// prepared when a session starts, so such a worker needs a fresh session.
+pub fn repository_changed(context: &SessionContext, dept: &Department) -> bool {
+    if context.project_id != dept.project_id {
+        return true;
+    }
+    dept.project_id.is_some() && context.work_branch.is_some() != dept.grants(TOOL_SANDBOX)
+}
+
 /// Several tool handlers as one: definitions are concatenated; a call goes
 /// to the handler that defines the tool.
 pub struct Toolset(pub Vec<Arc<dyn ToolHandler>>);
@@ -1251,6 +1337,7 @@ pub fn principal(name: &str) -> Principal {
 fn department_json(dept: &Department, agents: &[&OrgAgent]) -> Value {
     let mut value = json!(dept);
     value["agents"] = json!(agents);
+    value["blocked"] = json!(dept.blocked());
     value
 }
 
@@ -1524,16 +1611,93 @@ pub async fn update_department(
 ) -> ApiResult<Json<Value>> {
     caller.require_admin()?;
     check_department(&state, &mut input).await?;
+    let before = state.store.get_department(id).await?;
     let dept = state
         .store
         .update_department(id, input, &caller.name)
         .await?;
+    // Tell the team what changed, so it can work accordingly (a paused or
+    // held agent reads it when it carries on).
+    if let Some(notice) = change_notice(&state, &before, &dept, &caller.name).await {
+        if let Err(err) = send(
+            &state.store,
+            &Sender::Human(caller.name.clone()),
+            Recipient::Department(id),
+            &notice,
+        )
+        .await
+        {
+            tracing::warn!(department = %dept.name, error = ?err, "could not send the change notice");
+        }
+    }
     notify(
         &state.store,
         json!({ "kind": "department", "departments": [id] }),
     )
     .await;
     Ok(Json(json!(dept)))
+}
+
+/// What changed in a department, in words for its agents; `None` when
+/// nothing that matters to them did.
+async fn change_notice(
+    state: &AppState,
+    before: &Department,
+    after: &Department,
+    by: &str,
+) -> Option<String> {
+    let mut lines: Vec<String> = Vec::new();
+    if before.project_id != after.project_id {
+        match after.project_id {
+            Some(id) => {
+                let name = match state.project(id).await {
+                    Ok(p) => format!("{} (`{}`, base branch `{}`)", p.name, p.repository(), p.default_branch),
+                    Err(_) => "a project".into(),
+                };
+                lines.push(format!(
+                    "- A GitHub repository is now linked: {name}. Call `team_project` for the \
+                     details. If you were waiting for a repository, you can carry on; your \
+                     checkout and GitHub tools are set up in a fresh session."
+                ));
+            }
+            None => lines.push(
+                "- The GitHub repository was unlinked. Do not push or open pull requests for it."
+                    .into(),
+            ),
+        }
+    } else if before.role != after.role && after.project_id.is_some() {
+        lines.push(format!(
+            "- Your role on the repository is now `{}`.",
+            after.role.as_deref().unwrap_or("the project's default")
+        ));
+    }
+    if before.tools != after.tools {
+        lines.push(format!(
+            "- Tool groups granted to the department: {}.",
+            if after.tools.is_empty() { "none".into() } else { after.tools.join(", ") }
+        ));
+    }
+    if before.mission != after.mission {
+        lines.push(format!("- The mission changed:\n{}", after.mission.trim()));
+    }
+    if before.policy != after.policy {
+        lines.push(format!("- The guardrail policy is now `{}`.", after.policy));
+    }
+    if before.requires_repository != after.requires_repository {
+        lines.push(if after.requires_repository {
+            "- The department now needs a linked repository to work.".into()
+        } else {
+            "- The department no longer needs a linked repository to work.".into()
+        });
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    let mut notice = format!("{by} changed the department:\n{}", lines.join("\n"));
+    if let Some(why) = after.blocked() {
+        notice.push_str(&format!("\nStill on hold: {why}."));
+    }
+    Some(notice)
 }
 
 pub async fn delete_department(
@@ -2160,6 +2324,8 @@ pub async fn build(
             template: Some(planned.template.clone()),
             project_id: req.project_id.filter(|_| planned.role.is_some()),
             role: planned.role.clone().filter(|_| req.project_id.is_some()),
+            // Developers and the like cannot work without a repository.
+            requires_repository: planned.role.is_some(),
         };
         check_department(&state, &mut input).await?;
         let dept = match state.store.create_department(input, &caller.name).await {

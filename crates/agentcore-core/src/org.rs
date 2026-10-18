@@ -160,11 +160,21 @@ pub struct Department {
     /// project's role.
     #[serde(default)]
     pub role: Option<String>,
+    /// Its workers cannot work without a linked project: they are held until
+    /// one is linked.
+    #[serde(default)]
+    pub requires_repository: bool,
     pub created_at: DateTime<Utc>,
     pub updated_by: String,
 }
 
 impl Department {
+    /// Why the department's workers are held, if they are.
+    pub fn blocked(&self) -> Option<&'static str> {
+        (self.requires_repository && self.project_id.is_none())
+            .then_some("waiting for a GitHub repository to be linked")
+    }
+
     pub fn grants(&self, group: &str) -> bool {
         self.tools.iter().any(|t| t == group)
     }
