@@ -1618,17 +1618,16 @@ pub async fn update_department(
         .await?;
     // Tell the team what changed, so it can work accordingly (a paused or
     // held agent reads it when it carries on).
-    if let Some(notice) = change_notice(&state, &before, &dept, &caller.name).await {
-        if let Err(err) = send(
+    if let Some(notice) = change_notice(&state, &before, &dept, &caller.name).await
+        && let Err(err) = send(
             &state.store,
             &Sender::Human(caller.name.clone()),
             Recipient::Department(id),
             &notice,
         )
         .await
-        {
-            tracing::warn!(department = %dept.name, error = ?err, "could not send the change notice");
-        }
+    {
+        tracing::warn!(department = %dept.name, error = ?err, "could not send the change notice");
     }
     notify(
         &state.store,
