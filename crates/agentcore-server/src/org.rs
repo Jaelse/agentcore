@@ -1651,7 +1651,12 @@ async fn change_notice(
         match after.project_id {
             Some(id) => {
                 let name = match state.project(id).await {
-                    Ok(p) => format!("{} (`{}`, base branch `{}`)", p.name, p.repository(), p.default_branch),
+                    Ok(p) => format!(
+                        "{} (`{}`, base branch `{}`)",
+                        p.name,
+                        p.repository(),
+                        p.default_branch
+                    ),
                     Err(_) => "a project".into(),
                 };
                 lines.push(format!(
@@ -1674,7 +1679,11 @@ async fn change_notice(
     if before.tools != after.tools {
         lines.push(format!(
             "- Tool groups granted to the department: {}.",
-            if after.tools.is_empty() { "none".into() } else { after.tools.join(", ") }
+            if after.tools.is_empty() {
+                "none".into()
+            } else {
+                after.tools.join(", ")
+            }
         ));
     }
     if before.mission != after.mission {
