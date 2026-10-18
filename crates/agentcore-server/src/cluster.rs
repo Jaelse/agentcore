@@ -19,7 +19,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use agentcore_core::{DepartmentState, Desired, OrgAgent, SessionStatus};
+use agentcore_core::{AgentKind, DepartmentState, Desired, OrgAgent, SessionStatus};
 use agentcore_runtime::{EndCause, Session};
 use agentcore_store::ORG_CHANNEL;
 use axum::body::Body;
@@ -250,7 +250,10 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
                         .await?;
                     changed = true;
                 }
-                Desired::Running if dept.state == DepartmentState::Active => {
+                Desired::Running
+                    if dept.state == DepartmentState::Active
+                        && !(agent.kind == AgentKind::Worker && dept.blocked().is_some()) =>
+                {
                     sleepers.push(agent);
                 }
                 _ => {}
@@ -270,7 +273,42 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
                         .await;
                     continue;
                 }
-                let dept_paused = dept.state == DepartmentState::Paused;
+                // A project linked (or unlinked) after this session started:
+                // once the worker is idle, restart it so the checkout and
+                // GitHub tools are there, and tell it why.
+                if agent.kind == AgentKind::Worker
+                    && agent.desired == Desired::Running
+                    && dept.state == DepartmentState::Active
+                    && session.status() == SessionStatus::AwaitingInput
+                    && !session.is_paused()
+                    && org::repository_changed(&session.context(), dept)
+                {
+                    session
+                        .stop(
+                            org::principal(&dept.updated_by),
+                            "the department's repository changed",
+                        )
+                        .await;
+                    let models = endpoints(store, &mut models).await?;
+                    start_agent(
+                        state,
+                        &org,
+                        agent,
+                        models,
+                        Some(
+                            "Your department's repository was changed by a person (linked, \
+                             unlinked or its access changed), so your previous session was \
+                             ended to set it up.",
+                        ),
+                    )
+                    .await?;
+                    changed = true;
+                    continue;
+                }
+                // Workers of a department that needs a repository are held
+                // (paused) until one is linked, then carry on.
+                let held = agent.kind == AgentKind::Worker && dept.blocked().is_some();
+                let dept_paused = dept.state == DepartmentState::Paused || held;
                 let pause = agent.desired == Desired::Paused || dept_paused;
                 let by = if agent.desired == Desired::Paused {
                     org::principal(&agent.changed_by)
@@ -303,7 +341,9 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
                 let wanted = agent.desired == Desired::Running;
                 match session.end_cause() {
                     Some(EndCause::TimeBudget) if wanted => {
-                        if dept.state == DepartmentState::Active {
+                        if dept.state == DepartmentState::Active
+                            && !(agent.kind == AgentKind::Worker && dept.blocked().is_some())
+                        {
                             let models = endpoints(store, &mut models).await?;
                             start_agent(
                                 state,
@@ -358,7 +398,8 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
                     }
                 }
                 None if agent.desired == Desired::Running
-                    && dept.state == DepartmentState::Active =>
+                    && dept.state == DepartmentState::Active
+                    && !(agent.kind == AgentKind::Worker && dept.blocked().is_some()) =>
                 {
                     // Started by a person: the loop guard starts over.
                     forget_starts(agent.id);

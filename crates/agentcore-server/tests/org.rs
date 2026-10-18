@@ -841,6 +841,41 @@ async fn build_an_organisation_from_templates_and_grow_it() {
         .map(|a| a["name"].as_str().unwrap())
         .collect();
     assert_eq!(names, ["lead", "developer", "communicator"]);
+
+    // Engineering cannot work without a repository: its workers are held.
+    let dept = &org["departments"][0];
+    assert_eq!(dept["requires_repository"], true);
+    assert_eq!(
+        dept["blocked"],
+        "waiting for a GitHub repository to be linked"
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        node.agent(members[0]["id"].as_str().unwrap()).await["session_id"].is_null(),
+        "a held worker does not start"
+    );
+
+    // Lifting the requirement lets them work, and tells them what changed.
+    let mut input = json!({});
+    for key in [
+        "name",
+        "description",
+        "mission",
+        "policy",
+        "tools",
+        "communicator_agent",
+        "template",
+        "project_id",
+        "role",
+    ] {
+        input[key] = dept[key].clone();
+    }
+    input["requires_repository"] = json!(false);
+    let id = dept["id"].as_str().unwrap();
+    let updated = node
+        .ok("PUT", &format!("/org/departments/{id}"), Some(input))
+        .await;
+    assert_eq!(updated["requires_repository"], false);
     let lead = node
         .wait_agent(members[0]["id"].as_str().unwrap(), "lead running", |a| {
             a["status"] == "awaiting_input"
@@ -849,6 +884,13 @@ async fn build_an_organisation_from_templates_and_grow_it() {
     let events = node.events(lead["session_id"].as_str().unwrap()).await;
     let out = output(&events);
     assert!(out.contains("Acme: We make rockets."), "{out}");
+    let notices = node.messages(&format!("?department={id}")).await;
+    assert!(
+        notices.iter().any(|m| m["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("no longer needs a linked repository"))),
+        "the team is told what changed: {notices:#?}"
+    );
 
     // Suggestions: the next stage first, then neighbours and more agents.
     let suggestions = node.ok("GET", "/org/suggestions", None).await;

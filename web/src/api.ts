@@ -224,6 +224,7 @@ export const api = {
       communicator_agent: string;
       project_id: string | null;
       role: string | null;
+      requires_repository: boolean;
     },
   ) =>
     id ? request<Department>("PUT", `/org/departments/${id}`, body) : request<Department>("POST", "/org/departments", body),

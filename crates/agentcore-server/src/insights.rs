@@ -1117,6 +1117,7 @@ async fn apply_one(state: &AppState, action: &ProposalAction, by: &str) -> Resul
                 template: d.template.clone(),
                 project_id: d.project_id,
                 role: d.role.clone(),
+                requires_repository: d.requires_repository,
             };
             org::check_department(state, &mut input)
                 .await

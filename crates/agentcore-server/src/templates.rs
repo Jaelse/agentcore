@@ -585,6 +585,7 @@ mod tests {
             template: Some(template.into()),
             project_id: None,
             role: None,
+            requires_repository: false,
             created_at: chrono::Utc::now(),
             updated_by: "a".into(),
         }

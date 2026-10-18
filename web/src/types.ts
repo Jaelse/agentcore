@@ -103,6 +103,9 @@ export interface Department {
   template: string | null;
   project_id: string | null;
   role: string | null;
+  requires_repository: boolean;
+  /** Why its workers are held, if they are. */
+  blocked?: string | null;
   created_at: string;
   updated_by: string;
   agents: OrgAgent[];
