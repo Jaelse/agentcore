@@ -13,6 +13,7 @@ pub mod cluster;
 pub mod config;
 pub mod distribution;
 mod error;
+pub mod feed;
 pub mod github;
 pub mod insights;
 pub mod launch;
@@ -269,6 +270,7 @@ pub fn router(state: AppState) -> Router {
         .route("/org/goals", get(org::list_goals).post(org::create_goal))
         .route("/org/metrics", get(insights::metrics))
         .route("/org/spending", get(budgets::spending))
+        .route("/feed", get(feed::feed))
         .route("/org/outbox", get(outbox::list))
         .route("/org/outbox/{id}", put(outbox::edit))
         .route("/org/outbox/{id}/send", post(outbox::approve))

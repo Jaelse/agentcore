@@ -201,7 +201,7 @@ Goals (`/org/goals`) and scheduled check-ins
 organisation working without a person writing to it; see
 [Goals, check-ins and agents that keep going](MULTI_AGENT.md#goals-check-ins-and-agents-that-keep-going).
 
-Metrics (`GET /org/metrics?days=`), improvement proposals
+The home feed (`GET /feed`), metrics (`GET /org/metrics?days=`), improvement proposals
 (`/org/proposals`, apply / change / send back / reject, `/org/auto-apply`),
 business data sources (`/org/data-sources`), and prices and budgets
 (`/org/spending`, `/org/prices`, `/org/budgets`, `/org/currency`), and the

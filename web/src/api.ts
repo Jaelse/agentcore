@@ -53,6 +53,8 @@ import type {
   Release,
   ReleaseDetail,
   LaunchStats,
+  FeedKind,
+  FeedPage,
 } from "./types";
 
 const TOKEN_KEY = "agentcore.token";
@@ -293,6 +295,13 @@ export const api = {
     request<CheckIn>("PUT", `/org/checkins/${id}`, body),
   deleteCheckIn: (id: string) => request<void>("DELETE", `/org/checkins/${id}`),
   runCheckIn: (id: string) => request<CheckIn>("POST", `/org/checkins/${id}/run`),
+  feed: (opts: { kind?: FeedKind; before?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.kind) q.set("kind", opts.kind);
+    if (opts.before) q.set("before", opts.before);
+    if (opts.limit) q.set("limit", String(opts.limit));
+    return request<FeedPage>("GET", `/feed?${q}`);
+  },
   metrics: (days: number) => request<OrgMetrics>("GET", `/org/metrics?days=${days}`),
   proposals: (status?: ProposalStatus) =>
     request<Proposal[]>("GET", `/org/proposals${status ? `?status=${status}` : ""}`),

@@ -1000,3 +1000,25 @@ export interface ProductInput {
   announce_departments?: string[];
   announce_patches?: boolean;
 }
+
+export type FeedKind = "session" | "message" | "proposal" | "outbox" | "release" | "goal";
+
+export interface FeedItem {
+  id: string;
+  at: string;
+  kind: FeedKind;
+  /** "warn" means it is waiting for a person. */
+  tone: "neutral" | "good" | "warn" | "bad";
+  title: string;
+  detail: string | null;
+  actor: string | null;
+  department: string | null;
+  project: string | null;
+  /** The session to open, for session events. */
+  session: string | null;
+}
+
+export interface FeedPage {
+  items: FeedItem[];
+  has_more: boolean;
+}

@@ -87,8 +87,12 @@ pub async fn list_sessions(
     State(state): State<AppState>,
     _caller: Caller,
 ) -> ApiResult<Json<Value>> {
-    // Archived sessions come from the database; live ones from memory, which
-    // has fresher state (pending approvals, counters).
+    Ok(Json(json!(all_sessions(&state).await?)))
+}
+
+/// Archived sessions come from the database; live ones from memory, which
+/// has fresher state (pending approvals, counters). Newest first.
+pub(crate) async fn all_sessions(state: &AppState) -> ApiResult<Vec<SessionInfo>> {
     let mut sessions: Vec<SessionInfo> = state
         .store
         .list_sessions(200)
@@ -103,7 +107,7 @@ pub async fn list_sessions(
         }
     }
     sessions.sort_by_key(|s| std::cmp::Reverse(s.created_at));
-    Ok(Json(json!(sessions)))
+    Ok(sessions)
 }
 
 pub async fn create_session(
