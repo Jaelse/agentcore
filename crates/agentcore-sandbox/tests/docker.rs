@@ -41,6 +41,7 @@ async fn docker_sandbox_lifecycle() {
             workspace_dir: dir.path().to_path_buf(),
             image: None,
             egress: false,
+            shared_login_dir: None,
         })
         .await
         .expect("create container");
@@ -198,6 +199,7 @@ async fn docker_sandbox_lifecycle() {
             workspace_dir: dir.path().to_path_buf(),
             image: None,
             egress: true,
+            shared_login_dir: None,
         })
         .await;
     assert!(
@@ -213,6 +215,7 @@ async fn docker_sandbox_lifecycle() {
             workspace_dir: dir.path().to_path_buf(),
             image: None,
             egress: false,
+            shared_login_dir: None,
         })
         .await
         .unwrap();

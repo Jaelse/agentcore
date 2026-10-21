@@ -91,6 +91,10 @@ pub struct SandboxRequest {
     /// The agent reaches its model provider itself (e.g. Claude Code logged
     /// in to a Claude account) and needs a route to the internet.
     pub egress: bool,
+    /// Host directory holding a login shared by the sandboxes of one agent,
+    /// mounted read-write as `~/.claude`. Conversation history (`projects`)
+    /// stays private to each sandbox. Container backends only.
+    pub shared_login_dir: Option<PathBuf>,
 }
 
 /// Receives command output while it is produced (for the live view).

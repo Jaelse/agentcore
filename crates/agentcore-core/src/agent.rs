@@ -247,6 +247,13 @@ pub trait AgentAdapter: Send + Sync {
         false
     }
 
+    /// Name under which sandboxes of this agent share one login, if the
+    /// agent definition asks for it (a person logs in once, later sessions
+    /// start signed in).
+    fn shared_login(&self, _spec: &AgentSpec) -> Option<String> {
+        None
+    }
+
     /// Plan for a follow-up turn that continues the same conversation with a
     /// new message from a human. `None` means the agent cannot continue and
     /// the session ends after the first run.
