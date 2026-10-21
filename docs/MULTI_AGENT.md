@@ -1021,6 +1021,7 @@ an admin.
 | `POST /org/goals/{id}/progress` | A person records progress: `{"text"}`. |
 | `GET`/`POST /org/departments/{id}/checkins` | Check-ins of a department; create `{"name", "message", "every_minutes", "agent_id"?, "first_run_at"?}` (operators; default first run: one interval from now). |
 | `PUT`/`DELETE /org/checkins/{id}` | Change `name`, `message`, `every_minutes`, `enabled`; delete. |
+| `GET /feed?limit=&before=&kind=` | The home feed: what happened lately, newest first, as `{"items", "has_more"}`. Merged from sessions (started, finished), messages between departments or from people, proposals, outbox drafts, releases and goals (set, progress). `limit` 1–200 (default 50), `before` an RFC 3339 time to page back, `kind` a comma-separated subset of `session,message,proposal,outbox,release,goal`. Each item has `tone` (`neutral`, `good`, `warn` = waiting for a person, `bad`). Any signed-in user; each source contributes at most its newest 200 records. |
 | `GET /org/metrics?days=` | Metrics of the last `days` (1–365, default 14), budgets, currency and signals. |
 | `GET /org/outbox?status=` | Drafts and sent messages, newest first. |
 | `PUT /org/outbox/{id}` | A person edits `recipients`, `subject`, `body` (`note`): a new revision (operators). |

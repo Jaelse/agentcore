@@ -1,6 +1,8 @@
 import { useState } from "react";
 import type { Me, SystemCard } from "../types";
 
+export type View = "home" | "sessions" | "org" | "projects" | "settings";
+
 interface Props {
   me: Me;
   card: SystemCard;
@@ -8,8 +10,8 @@ interface Props {
   onStopAll: () => Promise<void>;
   onShowCard: () => void;
   onSignOut: () => void;
-  view: "sessions" | "org" | "projects" | "settings";
-  onView: (v: "sessions" | "org" | "projects" | "settings") => void;
+  view: View;
+  onView: (v: View) => void;
 }
 
 export function TopBar({ me, card, liveSessions, onStopAll, onShowCard, onSignOut, view, onView }: Props) {
@@ -25,6 +27,9 @@ export function TopBar({ me, card, liveSessions, onStopAll, onShowCard, onSignOu
           AI system
         </button>
         <nav className="nav">
+          <button className={`nav-item ${view === "home" ? "active" : ""}`} onClick={() => onView("home")}>
+            Home
+          </button>
           <button className={`nav-item ${view === "sessions" ? "active" : ""}`} onClick={() => onView("sessions")}>
             Sessions
           </button>

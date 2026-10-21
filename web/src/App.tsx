@@ -3,15 +3,14 @@ import { ApiError, api, getToken, setToken } from "./api";
 import { useInterval } from "./hooks";
 import type { Me, SessionInfo, SystemCard } from "./types";
 import { Login } from "./components/Login";
-import { TopBar } from "./components/TopBar";
+import { TopBar, type View } from "./components/TopBar";
 import { Sidebar } from "./components/Sidebar";
 import { SessionView } from "./components/SessionView";
 import { SystemCardDialog } from "./components/SystemCardDialog";
 import { Settings } from "./components/Settings";
 import { Projects } from "./components/Projects";
 import { Organisation } from "./components/Organisation";
-
-type View = "sessions" | "org" | "projects" | "settings";
+import { Home } from "./components/Home";
 
 export default function App() {
   const [me, setMe] = useState<Me | null>(null);
@@ -20,7 +19,8 @@ export default function App() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [selected, setSelected] = useState<string | null>(() => location.hash.slice(1) || null);
   const [showCard, setShowCard] = useState(false);
-  const [view, setView] = useState<View>("sessions");
+  // A link to a session (#id) opens it; otherwise start on the feed.
+  const [view, setView] = useState<View>(() => (location.hash.slice(1) ? "sessions" : "home"));
   const [providerCount, setProviderCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -115,7 +115,18 @@ export default function App() {
           </button>
         </div>
       )}
-      {view === "settings" ? (
+      {view === "home" ? (
+        <Home
+          me={me}
+          onOpenSession={(id) => {
+            setSelected(id);
+            setView("sessions");
+            refresh();
+          }}
+          onOpenOrganisation={() => setView("org")}
+          onError={handleError}
+        />
+      ) : view === "settings" ? (
         <main className="main settings-main">
           <Settings
             me={me}
