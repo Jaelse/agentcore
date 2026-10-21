@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Me, SystemCard } from "../types";
 
-export type View = "home" | "sessions" | "org" | "projects" | "settings";
+export type View = "home" | "sessions" | "org" | "projects" | "settings" | "more";
 
 interface Props {
   me: Me;
@@ -46,12 +46,12 @@ export function TopBar({ me, card, liveSessions, onStopAll, onShowCard, onSignOu
           )}
         </nav>
       </div>
-      <div className="topbar-right">
-        <span className="muted small">
+      <div className={`topbar-right`}>
+        <span className="muted small topbar-info">
           sandbox: <strong>{card.sandbox_backend}</strong>
           {card.sandbox_backend === "process" && <span className="warn-text"> (not isolated)</span>}
         </span>
-        <span className="muted small">
+        <span className="muted small topbar-info">
           {me.name} · {me.role}
         </span>
         {me.role !== "viewer" && (
@@ -68,7 +68,7 @@ export function TopBar({ me, card, liveSessions, onStopAll, onShowCard, onSignOu
             ■ Stop all agents{liveSessions > 0 ? ` (${liveSessions})` : ""}
           </button>
         )}
-        <button className="btn ghost" onClick={onSignOut}>
+        <button className="btn ghost topbar-info" onClick={onSignOut}>
           Sign out
         </button>
       </div>

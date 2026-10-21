@@ -11,6 +11,8 @@ import { Settings } from "./components/Settings";
 import { Projects } from "./components/Projects";
 import { Organisation } from "./components/Organisation";
 import { Home } from "./components/Home";
+import { BottomNav } from "./components/BottomNav";
+import { MoreMenu } from "./components/MoreMenu";
 
 export default function App() {
   const [me, setMe] = useState<Me | null>(null);
@@ -81,6 +83,12 @@ export default function App() {
   }
   if (!me || !card) return <div className="splash">Connecting to agentcore…</div>;
 
+  const signOut = () => {
+    setToken(null);
+    setMe(null);
+    setNeedsLogin(true);
+  };
+  const waiting = sessions.filter((s) => s.pending_approvals > 0).length;
   const live = sessions.filter((s) => !["stopped", "completed", "failed"].includes(s.status)).length;
   const current = sessions.find((s) => s.id === selected) ?? null;
 
@@ -101,11 +109,7 @@ export default function App() {
         onShowCard={() => setShowCard(true)}
         view={view}
         onView={setView}
-        onSignOut={() => {
-          setToken(null);
-          setMe(null);
-          setNeedsLogin(true);
-        }}
+        onSignOut={signOut}
       />
       {error && (
         <div className="banner error" role="alert">
@@ -125,6 +129,14 @@ export default function App() {
           }}
           onOpenOrganisation={() => setView("org")}
           onError={handleError}
+        />
+      ) : view === "more" ? (
+        <MoreMenu
+          me={me}
+          card={card}
+          onView={setView}
+          onShowCard={() => setShowCard(true)}
+          onSignOut={signOut}
         />
       ) : view === "settings" ? (
         <main className="main settings-main">
@@ -174,6 +186,11 @@ export default function App() {
           onError={handleError}
         />
         <main className="main">
+          {current && (
+            <button className="btn ghost mobile-back" onClick={() => setSelected(null)}>
+              ← All sessions
+            </button>
+          )}
           {current ? (
             <SessionView key={current.id} info={current} me={me} onChanged={refresh} onError={handleError} />
           ) : (
@@ -191,6 +208,15 @@ export default function App() {
           About this system
         </button>
       </footer>
+      <BottomNav
+        view={view}
+        waiting={waiting}
+        onView={(v) => {
+          // Tapping the Sessions tab again leaves the open session, like a feed tab scrolling to top.
+          if (v === "sessions" && view === "sessions") setSelected(null);
+          setView(v);
+        }}
+      />
       {showCard && <SystemCardDialog card={card} onClose={() => setShowCard(false)} />}
     </div>
   );
