@@ -10,7 +10,7 @@ use crate::{Result, Store, StoreError, admin_event, key_hint};
 /// Statuses after which a session no longer needs its token.
 const ENDED: &str = "('stopped', 'completed', 'failed')";
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct PoolToken {
     pub id: Uuid,
     pub label: String,
@@ -42,38 +42,17 @@ pub enum Lease {
 impl Store {
     /// Tokens in the provider's pool, with who uses them.
     pub async fn list_pool_tokens(&self, provider: &str) -> Result<Vec<PoolToken>> {
-        let rows: Vec<(
-            Uuid,
-            String,
-            String,
-            bool,
-            Option<Uuid>,
-            DateTime<Utc>,
-            String,
-        )> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        let rows: Vec<PoolToken> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT t.id, t.label, t.hint, t.enabled,
-                        CASE WHEN s.id IS NOT NULL AND s.status NOT IN {ENDED} THEN s.id END,
-                        t.created_at, t.created_by
-                 FROM claude_tokens t LEFT JOIN sessions s ON s.id = t.session_id
-                 WHERE t.provider = $1 ORDER BY t.created_at, t.id"
+                    CASE WHEN s.id IS NOT NULL AND s.status NOT IN {ENDED} THEN s.id END AS in_use_by,
+                    t.created_at, t.created_by
+             FROM claude_tokens t LEFT JOIN sessions s ON s.id = t.session_id
+             WHERE t.provider = $1 ORDER BY t.created_at, t.id"
         )))
         .bind(provider)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .map(
-                |(id, label, hint, enabled, in_use_by, created_at, created_by)| PoolToken {
-                    id,
-                    label,
-                    hint,
-                    enabled,
-                    in_use_by,
-                    created_at,
-                    created_by,
-                },
-            )
-            .collect())
+        Ok(rows)
     }
 
     pub async fn add_pool_token(
