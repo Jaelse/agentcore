@@ -59,12 +59,6 @@ impl SandboxProvider for ProcessProvider {
             .await
             .map_err(SandboxError::io("resolve workspace"))?;
         tracing::warn!(session = %request.session_id, "using the insecure `process` sandbox backend");
-        if request.shared_login_dir.is_some() {
-            tracing::warn!(
-                session = %request.session_id,
-                "the `process` backend does not share logins between sessions"
-            );
-        }
         // HOME lives next to the workspace, so agent state (e.g. opencode's
         // sessions) does not show up as changes in the repository.
         let name = root
@@ -375,7 +369,6 @@ mod tests {
             workspace_dir: dir.to_path_buf(),
             image: None,
             egress: false,
-            shared_login_dir: None,
         })
         .await
         .unwrap()

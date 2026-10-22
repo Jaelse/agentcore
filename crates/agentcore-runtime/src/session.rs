@@ -760,19 +760,6 @@ impl Session {
             workspace_dir: workspace_dir.clone(),
             image: self.spec.image.clone(),
             egress: adapter.direct_model_access(&self.spec),
-            shared_login_dir: adapter.shared_login(&self.spec).map(|name| {
-                let dir: String = name
-                    .chars()
-                    .map(|c| {
-                        if c.is_ascii_alphanumeric() || c == '-' {
-                            c
-                        } else {
-                            '_'
-                        }
-                    })
-                    .collect();
-                config.data_dir.join("logins").join(dir)
-            }),
         };
         let sandbox = tokio::select! {
             sandbox = provider.create(&request) => sandbox?,

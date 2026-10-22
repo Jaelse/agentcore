@@ -603,7 +603,6 @@ pub async fn check(
                 workspace_dir: dir.clone(),
                 image: spec.image.clone(),
                 egress: false,
-                shared_login_dir: None,
             })
             .await?;
         let out = sandbox

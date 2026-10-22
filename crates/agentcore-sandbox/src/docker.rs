@@ -82,13 +82,7 @@ impl DockerProvider {
     }
 
     /// Arguments for `docker run`, exposed for testing and auditing.
-    pub fn run_args(
-        &self,
-        request: &SandboxRequest,
-        name: &str,
-        workspace: &str,
-        shared_login: Option<&str>,
-    ) -> Vec<String> {
+    pub fn run_args(&self, request: &SandboxRequest, name: &str, workspace: &str) -> Vec<String> {
         let c = &self.config;
         let network = match (&c.egress_network, request.egress) {
             (Some(egress), true) => egress,
@@ -118,14 +112,6 @@ impl DockerProvider {
             format!("--volume={workspace}:{WORKSPACE}:rw"),
             format!("--workdir={WORKSPACE}"),
         ];
-        if let Some(login) = shared_login {
-            args.push(format!("--volume={login}:{AGENT_HOME}/.claude:rw"));
-            // Conversations (`claude --continue`) must not leak between sessions.
-            args.push(format!(
-                "--tmpfs={AGENT_HOME}/.claude/projects:rw,nosuid,nodev,size={},uid=1000,gid=1000",
-                c.tmpfs_size
-            ));
-        }
         if let Some(runtime) = &c.runtime {
             args.push(format!("--runtime={runtime}"));
         }
@@ -184,29 +170,8 @@ impl SandboxProvider for DockerProvider {
         let workspace: PathBuf = tokio::fs::canonicalize(&request.workspace_dir)
             .await
             .map_err(SandboxError::io("resolve workspace"))?;
-        let shared_login = match &request.shared_login_dir {
-            Some(login) => {
-                tokio::fs::create_dir_all(login)
-                    .await
-                    .map_err(SandboxError::io("create shared login directory"))?;
-                let (user, dir) = (self.config.user.clone(), login.clone());
-                tokio::task::spawn_blocking(move || hand_over(&user, &dir))
-                    .await
-                    .map_err(|e| SandboxError::Command(e.to_string()))?;
-                let login = tokio::fs::canonicalize(login)
-                    .await
-                    .map_err(SandboxError::io("resolve shared login directory"))?;
-                Some(login.to_string_lossy().into_owned())
-            }
-            None => None,
-        };
         let name = format!("agentcore-{}", request.session_id);
-        let args = self.run_args(
-            request,
-            &name,
-            &workspace.to_string_lossy(),
-            shared_login.as_deref(),
-        );
+        let args = self.run_args(request, &name, &workspace.to_string_lossy());
         let output = Command::new(&self.config.cli)
             .args(&args)
             .stdin(Stdio::null())
@@ -627,9 +592,8 @@ mod tests {
             workspace_dir: "/data/ws".into(),
             image: Some("img:1".into()),
             egress: false,
-            shared_login_dir: None,
         };
-        let args = provider.run_args(&request, "agentcore-x", "/data/ws", None);
+        let args = provider.run_args(&request, "agentcore-x", "/data/ws");
         for expected in [
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges",
@@ -645,29 +609,6 @@ mod tests {
     }
 
     #[test]
-    fn shared_login_is_mounted_without_sharing_conversations() {
-        let provider = DockerProvider::new(DockerConfig::default());
-        let request = SandboxRequest {
-            session_id: uuid::Uuid::nil(),
-            workspace_dir: "/data/ws".into(),
-            image: None,
-            egress: false,
-            shared_login_dir: Some("/data/logins/a".into()),
-        };
-        let args = provider.run_args(&request, "x", "/data/ws", Some("/data/logins/a"));
-        assert!(
-            args.iter()
-                .any(|a| a == "--volume=/data/logins/a:/home/agent/.claude:rw")
-        );
-        assert!(
-            args.iter()
-                .any(|a| a.starts_with("--tmpfs=/home/agent/.claude/projects:"))
-        );
-        let plain = provider.run_args(&request, "x", "/data/ws", None);
-        assert!(!plain.iter().any(|a| a.contains("/.claude")));
-    }
-
-    #[test]
     fn only_agents_that_need_it_get_the_egress_network() {
         let provider = DockerProvider::new(DockerConfig {
             egress_network: Some("claude-egress".into()),
@@ -678,11 +619,10 @@ mod tests {
             workspace_dir: "/data/ws".into(),
             image: None,
             egress: false,
-            shared_login_dir: None,
         };
         let network = |r: &SandboxRequest| {
             provider
-                .run_args(r, "x", "/data/ws", None)
+                .run_args(r, "x", "/data/ws")
                 .into_iter()
                 .find(|a| a.starts_with("--network="))
                 .unwrap()

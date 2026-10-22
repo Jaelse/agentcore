@@ -168,18 +168,6 @@ own key for all sessions. Tokens can be disabled or removed at any time. Pro
 and Max usage limits are still shared by everything signed in to the same
 account.
 
-**Logins between sessions** (`login_share`, with `auth = "login"`): by default
-every session logs in again. Several sessions each holding their own copy of a
-Claude subscription login can log one another out, because the token is
-refreshed and rotated. With `login_share = "agent"`, the Docker sandboxes of one
-agent mount a shared `~/.claude` (kept in `<data>/logins/<agent>`), so one login
-serves them all; conversation history stays private to each session. Every
-sandbox of that agent can read the login, and two sandboxes refreshing the
-token at the same instant can still clash. For many parallel agents prefer
-`gateway` with a `claude setup-token` subscription provider: one long-lived
-token, nothing to refresh, nothing in the sandbox. Pro and Max limits are
-shared by all sessions.
-
 With a direct sign-in, credentials live in the sandbox and agentcore does not
 see the model calls (the session's `agent_started` event says
 `direct_model_access: true`). Tool calls still go through the tool gateway

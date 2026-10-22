@@ -75,24 +75,6 @@ Needs sandbox.docker.egress_network."""
   direct = true
 
 [[options]]
-key = "login_share"
-label = "Logins between sessions"
-default = "none"
-
-  [[options.values]]
-  value = "none"
-  label = "Separate"
-  description = "Every session logs in on its own and is logged out when it ends."
-
-  [[options.values]]
-  value = "agent"
-  label = "Shared by this agent"
-  description = """Only with a terminal login. Sessions of this agent share one login, so after \
-the first person logs in, parallel and later sessions start signed in and are not logged out \
-when another one refreshes the token. Every sandbox of this agent can read the login; \
-conversations stay private to each session. Docker sandboxes only."""
-
-[[options]]
 key = "mode"
 label = "Screen"
 default = "headless"

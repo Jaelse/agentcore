@@ -559,15 +559,6 @@ impl AgentAdapter for ClaudeCodeAdapter {
         ClaudeAuth::parse(spec).is_ok_and(ClaudeAuth::is_direct)
     }
 
-    /// `options.login_share = "agent"`: sessions of this agent definition
-    /// share the login made in one of them, so parallel sandboxes stay
-    /// signed in. Only meaningful with `auth = "login"`.
-    fn shared_login(&self, spec: &AgentSpec) -> Option<String> {
-        let shared = spec.options.get("login_share").map(String::as_str) == Some("agent");
-        (shared && matches!(ClaudeAuth::parse(spec), Ok(ClaudeAuth::Login)))
-            .then(|| spec.name.clone())
-    }
-
     /// `claude --continue <message>` resumes the last conversation in the
     /// workspace (kept in the agent's HOME, which lives as long as the
     /// sandbox).
@@ -770,22 +761,6 @@ mod tests {
                 .is_err()
         );
         assert!(!ClaudeCodeAdapter.direct_model_access(&claude(&[])));
-    }
-
-    #[test]
-    fn login_is_shared_between_sessions_only_when_asked() {
-        assert_eq!(
-            ClaudeCodeAdapter.shared_login(&claude(&[("auth", "login")])),
-            None
-        );
-        let shared = claude(&[("auth", "login"), ("login_share", "agent")]);
-        assert_eq!(
-            ClaudeCodeAdapter.shared_login(&shared),
-            Some(shared.name.clone())
-        );
-        // Other sign-ins have nothing to share.
-        let gateway = claude(&[("login_share", "agent")]);
-        assert_eq!(ClaudeCodeAdapter.shared_login(&gateway), None);
     }
 
     #[test]
