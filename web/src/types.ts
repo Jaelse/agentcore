@@ -509,6 +509,16 @@ export interface ProviderInfo {
   updated_by: string;
 }
 
+export interface PoolToken {
+  id: string;
+  label: string;
+  hint: string;
+  enabled: boolean;
+  in_use_by: string | null;
+  created_at: string;
+  created_by: string;
+}
+
 export interface ModelCallRecord {
   id: string;
   session_id: string;

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
-import type { AdminEvent, Me, ProviderInfo, ProviderKind, SystemCard } from "../types";
+import type { AdminEvent, Me, PoolToken, ProviderInfo, ProviderKind, SystemCard } from "../types";
 import { AgentCatalog } from "./AgentCatalog";
 import { GitHubSettings, RolesOverview } from "./TeamSettings";
 
@@ -119,6 +119,126 @@ export function Settings({
   );
 }
 
+/** Subscription tokens from `claude setup-token`; each running session uses one. */
+function TokenPool({
+  provider,
+  canEdit,
+  onError,
+}: {
+  provider: string;
+  canEdit: boolean;
+  onError: (err: unknown) => void;
+}) {
+  const [tokens, setTokens] = useState<PoolToken[] | null>(null);
+  const [label, setLabel] = useState("");
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    api.poolTokens(provider).then(setTokens).catch(onError);
+  };
+  useEffect(load, [provider]);
+
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    try {
+      await fn();
+      load();
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const free = tokens?.filter((t) => t.enabled && !t.in_use_by).length ?? 0;
+  return (
+    <div className="token-pool">
+      <h3>Token pool</h3>
+      <div className="muted small">
+        <p>
+          Run several agents at once without sharing one login. Each running session uses its own token.
+        </p>
+        <ol>
+          <li>
+            On a computer with Claude Code installed, run <code>claude setup-token</code> and log in with a Claude
+            account (Pro, Max, Team or Enterprise). Copy the token it prints (starts with <code>sk-ant-oat</code>).
+          </li>
+          <li>Give it a label below and add it. Repeat for as many tokens as you want to run agents in parallel.</li>
+          <li>
+            A session takes a free token when it makes its first model call and gives it back when it ends. When all
+            tokens are in use, new model calls fail with a message asking you to add another token here.
+          </li>
+        </ol>
+        <p>
+          Tokens are encrypted before they are stored and never reach a sandbox. While this list is empty, the
+          provider’s own key (entered when it was created) is used by every session; once you add a token here, only
+          pool tokens are used. Tokens from the same Claude account share that account’s usage limits.
+        </p>
+      </div>
+      {tokens && tokens.length > 0 && (
+        <p className="small">
+          {free} of {tokens.length} free
+        </p>
+      )}
+      <ul className="plain">
+        {(tokens ?? []).map((t) => (
+          <li key={t.id} className="row">
+            <strong>{t.label}</strong> <span className="mono small">{t.hint}</span>{" "}
+            {!t.enabled && <span className="tag tone-bad">disabled</span>}
+            {t.in_use_by && <span className="tag">in use</span>}
+            {canEdit && (
+              <>
+                <button
+                  className="btn ghost"
+                  disabled={busy}
+                  onClick={() => run(() => api.setPoolTokenEnabled(provider, t.id, !t.enabled))}
+                >
+                  {t.enabled ? "Disable" : "Enable"}
+                </button>
+                <button
+                  className="btn ghost danger-text"
+                  disabled={busy}
+                  onClick={() => {
+                    if (confirm(`Remove token “${t.label}”?`)) void run(() => api.removePoolToken(provider, t.id));
+                  }}
+                >
+                  Remove
+                </button>
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+      {canEdit && (
+        <form
+          className="row"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void run(async () => {
+              await api.addPoolToken(provider, label.trim(), token.trim());
+              setLabel("");
+              setToken("");
+            });
+          }}
+        >
+          <input placeholder="Label" value={label} onChange={(e) => setLabel(e.target.value)} />
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder="Token from claude setup-token"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+          />
+          <button className="btn primary" disabled={busy || !label.trim() || !token.trim()}>
+            Add token
+          </button>
+        </form>
+      )}
+    </div>
+  );
+}
+
 function ProviderCard({
   provider: p,
   canEdit,
@@ -201,6 +321,7 @@ function ProviderCard({
           </dd>
         </div>
       </dl>
+      {p.kind === "claude_subscription" && <TokenPool provider={p.name} canEdit={canEdit} onError={onError} />}
       {editing && (
         <form
           className="provider-edit"
@@ -324,7 +445,8 @@ function AddProvider({
           Lets Claude Code use a Claude Pro, Max, Team or Enterprise subscription. On a computer where Claude Code is
           installed, run <code>claude setup-token</code>, log in with the subscription's account, and paste the token
           it prints (it starts with <code>sk-ant-oat</code>). The gateway sends it to Anthropic for Claude Code agents
-          only. To log in from inside a session instead, add Claude Code with “Log in from the live terminal”.
+          only. To run several agents at once, add more tokens afterwards in this provider’s Token pool: each running
+          session then uses its own. To log in from inside a session instead, add Claude Code with “Log in from the live terminal”.
         </div>
       )}
       <label>

@@ -412,6 +412,58 @@ pub async fn delete_provider(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub async fn list_pool_tokens(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(name): Path<String>,
+) -> ApiResult<Json<Value>> {
+    caller.require_operator()?;
+    Ok(Json(json!(state.store.list_pool_tokens(&name).await?)))
+}
+
+pub async fn add_pool_token(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(name): Path<String>,
+    Json(new): Json<agentcore_store::NewPoolToken>,
+) -> ApiResult<impl IntoResponse> {
+    caller.require_admin()?;
+    let token = state.store.add_pool_token(&name, new, &caller.name).await?;
+    Ok((StatusCode::CREATED, Json(json!(token))))
+}
+
+#[derive(serde::Deserialize)]
+pub struct PoolTokenUpdate {
+    pub enabled: bool,
+}
+
+pub async fn update_pool_token(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path((name, id)): Path<(String, Uuid)>,
+    Json(update): Json<PoolTokenUpdate>,
+) -> ApiResult<StatusCode> {
+    caller.require_admin()?;
+    state
+        .store
+        .set_pool_token_enabled(&name, id, update.enabled, &caller.name)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn remove_pool_token(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path((name, id)): Path<(String, Uuid)>,
+) -> ApiResult<StatusCode> {
+    caller.require_admin()?;
+    state
+        .store
+        .remove_pool_token(&name, id, &caller.name)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Configuration change history.
 pub async fn admin_events(State(state): State<AppState>, caller: Caller) -> ApiResult<Json<Value>> {
     caller.require_admin()?;

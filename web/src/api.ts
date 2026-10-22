@@ -28,6 +28,7 @@ import type {
   Me,
   ModelCallRecord,
   PendingApproval,
+  PoolToken,
   ProviderInfo,
   ProviderKind,
   SessionInfo,
@@ -212,6 +213,14 @@ export const api = {
     update: Partial<{ base_url: string; api_key: string; allowed_models: string[]; enabled: boolean }>,
   ) => request<ProviderInfo>("PATCH", `/providers/${encodeURIComponent(name)}`, update),
   deleteProvider: (name: string) => request<void>("DELETE", `/providers/${encodeURIComponent(name)}`),
+  poolTokens: (provider: string) =>
+    request<PoolToken[]>("GET", `/providers/${encodeURIComponent(provider)}/tokens`),
+  addPoolToken: (provider: string, label: string, token: string) =>
+    request<PoolToken>("POST", `/providers/${encodeURIComponent(provider)}/tokens`, { label, token }),
+  setPoolTokenEnabled: (provider: string, id: string, enabled: boolean) =>
+    request<void>("PATCH", `/providers/${encodeURIComponent(provider)}/tokens/${id}`, { enabled }),
+  removePoolToken: (provider: string, id: string) =>
+    request<void>("DELETE", `/providers/${encodeURIComponent(provider)}/tokens/${id}`),
   adminEvents: () => request<AdminEvent[]>("GET", "/admin-events"),
   org: () => request<OrgOverview>("GET", "/org"),
   saveOrgSettings: (s: OrgSettings) => request<OrgSettings>("PUT", "/org/settings", s),

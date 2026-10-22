@@ -18,6 +18,7 @@ mod spending;
 mod teamwork;
 #[doc(hidden)]
 pub mod testing;
+mod token_pool;
 
 use std::path::PathBuf;
 
@@ -56,6 +57,7 @@ pub use spending::{BudgetInput, BudgetUpdate, PriceInput};
 pub use teamwork::{
     BoardColumns, BoardConfig, GitHubConfig, GitHubConnection, GitHubUpdate, Project, ProjectInput,
 };
+pub use token_pool::{Lease, NewPoolToken, PoolToken};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
