@@ -344,3 +344,76 @@ async fn github_connection_and_projects() {
     store.delete_project(p.id, "root").await.unwrap();
     assert!(store.get_project(p.id).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn claude_token_pool_lends_one_token_per_live_session() {
+    use agentcore_store::{Lease, NewPoolToken};
+    let Some((store, _)) = fresh_store().await else {
+        return;
+    };
+    store
+        .create_provider(
+            NewProvider {
+                name: "sub".into(),
+                kind: ProviderKind::ClaudeSubscription,
+                base_url: None,
+                api_key: "sk-ant-oat-base".into(),
+                allowed_models: vec![],
+                enabled: true,
+            },
+            "alice",
+        )
+        .await
+        .unwrap();
+    let (a, b, c) = (
+        session(SessionStatus::Running),
+        session(SessionStatus::Running),
+        session(SessionStatus::Running),
+    );
+    for s in [&a, &b, &c] {
+        store.upsert_session(s).await.unwrap();
+    }
+    // No pool yet: the provider's own key is used.
+    assert!(matches!(
+        store.lease_pool_token("sub", a.info.id).await.unwrap(),
+        Lease::NoPool
+    ));
+    for (label, token) in [("one", "tok-1"), ("two", "tok-2")] {
+        store
+            .add_pool_token(
+                "sub",
+                NewPoolToken {
+                    label: label.into(),
+                    token: token.into(),
+                },
+                "alice",
+            )
+            .await
+            .unwrap();
+    }
+    let Lease::Token(first) = store.lease_pool_token("sub", a.info.id).await.unwrap() else {
+        panic!("expected a token");
+    };
+    // The same session keeps its token; another session gets the other one.
+    let Lease::Token(again) = store.lease_pool_token("sub", a.info.id).await.unwrap() else {
+        panic!("expected a token");
+    };
+    assert_eq!(first, again);
+    let Lease::Token(second) = store.lease_pool_token("sub", b.info.id).await.unwrap() else {
+        panic!("expected a token");
+    };
+    assert_ne!(first, second);
+    // All in use: the user has to add more.
+    assert!(matches!(
+        store.lease_pool_token("sub", c.info.id).await.unwrap(),
+        Lease::Exhausted { total: 2 }
+    ));
+    // A finished session frees its token.
+    let mut ended = a.clone();
+    ended.info.status = SessionStatus::Completed;
+    store.upsert_session(&ended).await.unwrap();
+    let Lease::Token(reused) = store.lease_pool_token("sub", c.info.id).await.unwrap() else {
+        panic!("expected a token");
+    };
+    assert_eq!(reused, first);
+}

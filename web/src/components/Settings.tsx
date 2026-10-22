@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
-import type { AdminEvent, Me, ProviderInfo, ProviderKind, SystemCard } from "../types";
+import type { AdminEvent, Me, PoolToken, ProviderInfo, ProviderKind, SystemCard } from "../types";
 import { AgentCatalog } from "./AgentCatalog";
 import { GitHubSettings, RolesOverview } from "./TeamSettings";
 
@@ -119,6 +119,110 @@ export function Settings({
   );
 }
 
+/** Subscription tokens from `claude setup-token`; each running session uses one. */
+function TokenPool({
+  provider,
+  canEdit,
+  onError,
+}: {
+  provider: string;
+  canEdit: boolean;
+  onError: (err: unknown) => void;
+}) {
+  const [tokens, setTokens] = useState<PoolToken[] | null>(null);
+  const [label, setLabel] = useState("");
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    api.poolTokens(provider).then(setTokens).catch(onError);
+  };
+  useEffect(load, [provider]);
+
+  const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    try {
+      await fn();
+      load();
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const free = tokens?.filter((t) => t.enabled && !t.in_use_by).length ?? 0;
+  return (
+    <div className="token-pool">
+      <h3>Token pool</h3>
+      <p className="muted small">
+        Run <code>claude setup-token</code> once per token and add each one here. Every running session uses its own
+        token; when all are in use, new sessions wait for you to add another. Without any token here, the provider’s
+        own key is used by all sessions.
+      </p>
+      {tokens && tokens.length > 0 && (
+        <p className="small">
+          {free} of {tokens.length} free
+        </p>
+      )}
+      <ul className="plain">
+        {(tokens ?? []).map((t) => (
+          <li key={t.id} className="row">
+            <strong>{t.label}</strong> <span className="mono small">{t.hint}</span>{" "}
+            {!t.enabled && <span className="tag tone-bad">disabled</span>}
+            {t.in_use_by && <span className="tag">in use</span>}
+            {canEdit && (
+              <>
+                <button
+                  className="btn ghost"
+                  disabled={busy}
+                  onClick={() => run(() => api.setPoolTokenEnabled(provider, t.id, !t.enabled))}
+                >
+                  {t.enabled ? "Disable" : "Enable"}
+                </button>
+                <button
+                  className="btn ghost danger-text"
+                  disabled={busy}
+                  onClick={() => {
+                    if (confirm(`Remove token “${t.label}”?`)) void run(() => api.removePoolToken(provider, t.id));
+                  }}
+                >
+                  Remove
+                </button>
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+      {canEdit && (
+        <form
+          className="row"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void run(async () => {
+              await api.addPoolToken(provider, label.trim(), token.trim());
+              setLabel("");
+              setToken("");
+            });
+          }}
+        >
+          <input placeholder="Label" value={label} onChange={(e) => setLabel(e.target.value)} />
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder="Token from claude setup-token"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+          />
+          <button className="btn primary" disabled={busy || !label.trim() || !token.trim()}>
+            Add token
+          </button>
+        </form>
+      )}
+    </div>
+  );
+}
+
 function ProviderCard({
   provider: p,
   canEdit,
@@ -201,6 +305,7 @@ function ProviderCard({
           </dd>
         </div>
       </dl>
+      {p.kind === "claude_subscription" && <TokenPool provider={p.name} canEdit={canEdit} onError={onError} />}
       {editing && (
         <form
           className="provider-edit"

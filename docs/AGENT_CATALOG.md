@@ -156,6 +156,18 @@ When adding it you choose three things.
 | `vertex` | `CLAUDE_CODE_USE_VERTEX=1`; `CLOUD_ML_REGION`, `ANTHROPIC_VERTEX_PROJECT_ID`, Google credentials from `env` | Directly to Google | `egress_network` |
 | `foundry` | `CLAUDE_CODE_USE_FOUNDRY=1`; `ANTHROPIC_FOUNDRY_RESOURCE`, `ANTHROPIC_FOUNDRY_API_KEY` from `env` | Directly to Azure | `egress_network` |
 
+**Token pool** (`gateway` with a *Claude subscription* provider): run
+`claude setup-token` several times (one token per Claude login or run) and add
+each token under Settings → Model providers → *Token pool*, or with
+`POST /api/providers/{name}/tokens`. Tokens are stored encrypted with the
+master key (AES-256-GCM) and never enter a sandbox. Each running session leases
+one token on its first model call and keeps it until it ends; a finished
+session frees its token. When every token is in use, model calls get HTTP 429
+that says to add another token. A provider without pool tokens keeps using its
+own key for all sessions. Tokens can be disabled or removed at any time. Pro
+and Max usage limits are still shared by everything signed in to the same
+account.
+
 **Logins between sessions** (`login_share`, with `auth = "login"`): by default
 every session logs in again. Several sessions each holding their own copy of a
 Claude subscription login can log one another out, because the token is

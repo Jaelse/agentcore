@@ -558,6 +558,30 @@ pub async fn proxy(
             return call.reject(StatusCode::BAD_GATEWAY, "api_error", msg).await;
         }
     };
+    // A Claude subscription with a token pool: the session uses one token of
+    // the pool for as long as it lives.
+    let api_key = if provider_info.kind == ProviderKind::ClaudeSubscription {
+        match state.store.lease_pool_token(&provider, session.id()).await {
+            Ok(agentcore_store::Lease::NoPool) => api_key,
+            Ok(agentcore_store::Lease::Token(token)) => token,
+            Ok(agentcore_store::Lease::Exhausted { total }) => {
+                let msg = format!(
+                    "all {total} Claude subscription tokens of `{provider}` are in use: run \
+                     `claude setup-token` and add another token under Settings → Model providers"
+                );
+                return call
+                    .reject(StatusCode::TOO_MANY_REQUESTS, "rate_limit_error", msg)
+                    .await;
+            }
+            Err(err) => {
+                tracing::error!(error = %err, "failed to lease a Claude subscription token");
+                let msg = "agentcore could not load the provider credentials".to_string();
+                return call.reject(StatusCode::BAD_GATEWAY, "api_error", msg).await;
+            }
+        }
+    } else {
+        api_key
+    };
     if let Some(adapter) = provider_info.kind.restricted_to_adapter()
         && session.adapter() != adapter
     {
