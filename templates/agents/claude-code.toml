@@ -39,7 +39,7 @@ default = "gateway"
   label = "agentcore model provider"
   description = """An Anthropic API key or a Claude subscription (Pro, Max, Team, Enterprise) \
 added under Settings → Model providers. For a subscription, run claude setup-token and paste \
-the token. Credentials stay in agentcore; every model call is recorded and budgeted."""
+the token; add more tokens to the provider's Token pool to run agents in parallel. Credentials stay in agentcore; every model call is recorded and budgeted."""
 
   [[options.values]]
   value = "login"

@@ -155,11 +155,27 @@ function TokenPool({
   return (
     <div className="token-pool">
       <h3>Token pool</h3>
-      <p className="muted small">
-        Run <code>claude setup-token</code> once per token and add each one here. Every running session uses its own
-        token; when all are in use, new sessions wait for you to add another. Without any token here, the provider’s
-        own key is used by all sessions.
-      </p>
+      <div className="muted small">
+        <p>
+          Run several agents at once without sharing one login. Each running session uses its own token.
+        </p>
+        <ol>
+          <li>
+            On a computer with Claude Code installed, run <code>claude setup-token</code> and log in with a Claude
+            account (Pro, Max, Team or Enterprise). Copy the token it prints (starts with <code>sk-ant-oat</code>).
+          </li>
+          <li>Give it a label below and add it. Repeat for as many tokens as you want to run agents in parallel.</li>
+          <li>
+            A session takes a free token when it makes its first model call and gives it back when it ends. When all
+            tokens are in use, new model calls fail with a message asking you to add another token here.
+          </li>
+        </ol>
+        <p>
+          Tokens are encrypted before they are stored and never reach a sandbox. While this list is empty, the
+          provider’s own key (entered when it was created) is used by every session; once you add a token here, only
+          pool tokens are used. Tokens from the same Claude account share that account’s usage limits.
+        </p>
+      </div>
       {tokens && tokens.length > 0 && (
         <p className="small">
           {free} of {tokens.length} free
@@ -429,7 +445,8 @@ function AddProvider({
           Lets Claude Code use a Claude Pro, Max, Team or Enterprise subscription. On a computer where Claude Code is
           installed, run <code>claude setup-token</code>, log in with the subscription's account, and paste the token
           it prints (it starts with <code>sk-ant-oat</code>). The gateway sends it to Anthropic for Claude Code agents
-          only. To log in from inside a session instead, add Claude Code with “Log in from the live terminal”.
+          only. To run several agents at once, add more tokens afterwards in this provider’s Token pool: each running
+          session then uses its own. To log in from inside a session instead, add Claude Code with “Log in from the live terminal”.
         </div>
       )}
       <label>

@@ -156,7 +156,13 @@ When adding it you choose three things.
 | `vertex` | `CLAUDE_CODE_USE_VERTEX=1`; `CLOUD_ML_REGION`, `ANTHROPIC_VERTEX_PROJECT_ID`, Google credentials from `env` | Directly to Google | `egress_network` |
 | `foundry` | `CLAUDE_CODE_USE_FOUNDRY=1`; `ANTHROPIC_FOUNDRY_RESOURCE`, `ANTHROPIC_FOUNDRY_API_KEY` from `env` | Directly to Azure | `egress_network` |
 
-**Token pool** (`gateway` with a *Claude subscription* provider): run
+**Token pool** (`gateway` with a *Claude subscription* provider). Setup:
+
+1. On a computer with Claude Code, run `claude setup-token`, log in, copy the token.
+2. Settings → Model providers → the subscription provider → *Token pool* → label + token → *Add token*.
+3. Repeat for as many parallel agents as you want. Watch the *in use* tags; add more when the pool is full.
+
+In detail: run
 `claude setup-token` several times (one token per Claude login or run) and add
 each token under Settings → Model providers → *Token pool*, or with
 `POST /api/providers/{name}/tokens`. Tokens are stored encrypted with the
