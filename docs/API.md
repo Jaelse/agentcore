@@ -111,6 +111,7 @@ before).
 | `GET /providers` | O | Providers (key hint only) |
 | `GET /providers/{name}/tokens` | O | Token pool of a `claude_subscription` provider: `[{id, label, hint, enabled, in_use_by, ...}]` |
 | `POST /providers/{name}/tokens` | A | `{label, token}`: add a `claude setup-token` token to the pool. Each running session leases one; with none free, model calls get 429 |
+| `POST /providers/{name}/agents` | A | Point the already-added Claude Code agents that sign in through the model gateway (`auth: gateway`) at this `claude_subscription` provider, so they use its token pool. Keeps each agent's model; agents with a direct sign-in, or whose model the provider does not allow, are left as they are. Returns `{provider, updated: [names], skipped: [{name, reason}]}` |
 | `PATCH /providers/{name}/tokens/{id}` | A | `{enabled}` |
 | `DELETE /providers/{name}/tokens/{id}` | A | Remove a token |
 | `POST /providers` | A | `{name, kind: anthropic \| openai \| opencode_zen \| claude_subscription, base_url?, api_key, allowed_models?, enabled?}`. For `claude_subscription` the key is a token from `claude setup-token`; only Claude Code sessions may use it |
