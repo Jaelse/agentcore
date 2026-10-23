@@ -572,6 +572,14 @@ pub async fn attach_subscription(
     UrlPath(provider): UrlPath<String>,
 ) -> ApiResult<Json<Value>> {
     caller.require_admin()?;
+    Ok(Json(
+        attach_provider(&state, &provider, &caller.name).await?,
+    ))
+}
+
+/// See [`attach_subscription`]; also run when a subscription provider is added.
+pub async fn attach_provider(state: &AppState, provider: &str, by: &str) -> ApiResult<Value> {
+    let provider = provider.to_string();
     let bad = |m: String| ApiError::new(StatusCode::BAD_REQUEST, m);
     let found = state
         .store
@@ -615,7 +623,7 @@ pub async fn attach_subscription(
             image: old.image.clone(),
             options: old.options.clone(),
         };
-        if let Err(err) = check_choice(&state, entry, &choice).await {
+        if let Err(err) = check_choice(state, entry, &choice).await {
             skipped.push(json!({"name": agent.name, "reason": err.message()}));
             continue;
         }
@@ -623,16 +631,14 @@ pub async fn attach_subscription(
         state.manager.check_agent(&spec)?;
         state
             .store
-            .update_installed_agent(&spec, agent.enabled, &caller.name)
+            .update_installed_agent(&spec, agent.enabled, by)
             .await?;
         updated.push(agent.name);
     }
     if !updated.is_empty() {
         state.agents_changed().await;
     }
-    Ok(Json(
-        json!({ "provider": provider, "updated": updated, "skipped": skipped }),
-    ))
+    Ok(json!({ "provider": provider, "updated": updated, "skipped": skipped }))
 }
 
 pub async fn uninstall(

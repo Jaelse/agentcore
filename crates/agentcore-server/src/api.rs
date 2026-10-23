@@ -384,6 +384,13 @@ pub async fn create_provider(
 ) -> ApiResult<impl IntoResponse> {
     caller.require_admin()?;
     let created = state.store.create_provider(provider, &caller.name).await?;
+    // Agents added before the provider existed start using it.
+    if created.kind == agentcore_core::ProviderKind::ClaudeSubscription
+        && created.enabled
+        && let Err(err) = crate::catalog::attach_provider(&state, &created.name, &caller.name).await
+    {
+        tracing::warn!(provider = %created.name, error = %err.message(), "could not attach agents");
+    }
     Ok((StatusCode::CREATED, Json(json!(created))))
 }
 
