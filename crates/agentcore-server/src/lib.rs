@@ -214,6 +214,14 @@ pub fn router(state: AppState) -> Router {
             "/providers/{name}/tokens/{id}",
             patch(api::update_pool_token).delete(api::remove_pool_token),
         )
+        .route(
+            "/providers/{name}/agents",
+            post(catalog::attach_subscription),
+        )
+        .route(
+            "/providers/{name}/tokens/{id}/test",
+            post(api::test_pool_token),
+        )
         .route("/admin-events", get(api::admin_events))
         .route("/roles", get(teamwork::list_roles))
         .route(

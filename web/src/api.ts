@@ -221,6 +221,16 @@ export const api = {
     request<void>("PATCH", `/providers/${encodeURIComponent(provider)}/tokens/${id}`, { enabled }),
   removePoolToken: (provider: string, id: string) =>
     request<void>("DELETE", `/providers/${encodeURIComponent(provider)}/tokens/${id}`),
+  testPoolToken: (provider: string, id: string) =>
+    request<{ ok: boolean; status: number | null; message: string }>(
+      "POST",
+      `/providers/${encodeURIComponent(provider)}/tokens/${id}/test`,
+    ),
+  attachAgents: (provider: string) =>
+    request<{ provider: string; updated: string[]; skipped: { name: string; reason: string }[] }>(
+      "POST",
+      `/providers/${encodeURIComponent(provider)}/agents`,
+    ),
   adminEvents: () => request<AdminEvent[]>("GET", "/admin-events"),
   org: () => request<OrgOverview>("GET", "/org"),
   saveOrgSettings: (s: OrgSettings) => request<OrgSettings>("PUT", "/org/settings", s),

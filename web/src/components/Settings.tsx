@@ -133,6 +133,8 @@ function TokenPool({
   const [label, setLabel] = useState("");
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
+  const [tested, setTested] = useState<Record<string, { ok: boolean; message: string }>>({});
+  const [attached, setAttached] = useState<string | null>(null);
 
   const load = () => {
     api.poolTokens(provider).then(setTokens).catch(onError);
@@ -176,6 +178,28 @@ function TokenPool({
           pool tokens are used. Tokens from the same Claude account share that account’s usage limits.
         </p>
       </div>
+      {canEdit && (
+        <p className="small">
+          <button
+            className="btn"
+            disabled={busy}
+            onClick={() =>
+              run(async () => {
+                const r = await api.attachAgents(provider);
+                const skipped = r.skipped.map((x) => `${x.name} (${x.reason})`).join("; ");
+                setAttached(
+                  `${r.updated.length} agent(s) now use this provider${r.updated.length ? `: ${r.updated.join(", ")}` : ""}.` +
+                    (skipped ? ` Skipped: ${skipped}.` : ""),
+                );
+              })
+            }
+          >
+            Use for existing Claude Code agents
+          </button>{" "}
+          <span className="muted">Switches Claude Code agents added earlier to this provider and its token pool.</span>
+          {attached && <span> {attached}</span>}
+        </p>
+      )}
       {tokens && tokens.length > 0 && (
         <p className="small">
           {free} of {tokens.length} free
@@ -187,8 +211,23 @@ function TokenPool({
             <strong>{t.label}</strong> <span className="mono small">{t.hint}</span>{" "}
             {!t.enabled && <span className="tag tone-bad">disabled</span>}
             {t.in_use_by && <span className="tag">in use</span>}
+            {tested[t.id] && (
+              <span className={`tag ${tested[t.id].ok ? "" : "tone-bad"}`}>{tested[t.id].message}</span>
+            )}
             {canEdit && (
               <>
+                <button
+                  className="btn ghost"
+                  disabled={busy}
+                  onClick={() =>
+                    run(async () => {
+                      const r = await api.testPoolToken(provider, t.id);
+                      setTested((prev) => ({ ...prev, [t.id]: r }));
+                    })
+                  }
+                >
+                  Test
+                </button>
                 <button
                   className="btn ghost"
                   disabled={busy}

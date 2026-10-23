@@ -384,6 +384,13 @@ pub async fn create_provider(
 ) -> ApiResult<impl IntoResponse> {
     caller.require_admin()?;
     let created = state.store.create_provider(provider, &caller.name).await?;
+    // Agents added before the provider existed start using it.
+    if created.kind == agentcore_core::ProviderKind::ClaudeSubscription
+        && created.enabled
+        && let Err(err) = crate::catalog::attach_provider(&state, &created.name, &caller.name).await
+    {
+        tracing::warn!(provider = %created.name, error = %err.message(), "could not attach agents");
+    }
     Ok((StatusCode::CREATED, Json(json!(created))))
 }
 
@@ -430,6 +437,63 @@ pub async fn add_pool_token(
     caller.require_admin()?;
     let token = state.store.add_pool_token(&name, new, &caller.name).await?;
     Ok((StatusCode::CREATED, Json(json!(token))))
+}
+
+/// Try a pool token with one tiny model call, the way the gateway would send
+/// it. Never returns the token. `{"ok", "status", "message"}`.
+pub async fn test_pool_token(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path((name, id)): Path<(String, Uuid)>,
+) -> ApiResult<Json<Value>> {
+    caller.require_admin()?;
+    let provider = state
+        .store
+        .list_providers()
+        .await?
+        .into_iter()
+        .find(|p| p.name == name)
+        .ok_or_else(|| {
+            ApiError::new(StatusCode::NOT_FOUND, format!("unknown provider `{name}`"))
+        })?;
+    let token = state.store.pool_token_secret(&name, id).await?;
+    let model = provider
+        .allowed_models
+        .iter()
+        .find(|m| !m.contains(['*', '?', '[']))
+        .map_or("claude-haiku-4-5", String::as_str);
+    let sent = state
+        .http
+        .post(format!("{}/v1/messages", provider.base_url))
+        .bearer_auth(&token)
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("anthropic-version", "2023-06-01")
+        .timeout(std::time::Duration::from_secs(30))
+        .json(&json!({
+            "model": model,
+            "max_tokens": 1,
+            "messages": [{ "role": "user", "content": "hi" }],
+        }))
+        .send()
+        .await;
+    Ok(Json(match sent {
+        Err(err) => {
+            json!({ "ok": false, "status": null, "message": format!("could not reach {}: {}", provider.base_url, err.without_url()) })
+        }
+        Ok(resp) => {
+            let status = resp.status();
+            let body: Value = resp.json().await.unwrap_or(Value::Null);
+            let detail = body["error"]["message"].as_str().unwrap_or("");
+            let message = match status.as_u16() {
+                200..=299 => format!("works ({model} answered)"),
+                401 | 403 => format!("rejected: {detail}. Run `claude setup-token` again"),
+                429 => format!("valid, but its usage limit is used up: {detail}"),
+                _ => format!("HTTP {status}: {detail}"),
+            };
+            // A rate limit still proves the token is accepted.
+            json!({ "ok": status.is_success() || status.as_u16() == 429, "status": status.as_u16(), "message": message })
+        }
+    }))
 }
 
 #[derive(serde::Deserialize)]

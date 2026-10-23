@@ -161,6 +161,7 @@ When adding it you choose three things.
 1. On a computer with Claude Code, run `claude setup-token`, log in, copy the token.
 2. Settings → Model providers → the subscription provider → *Token pool* → label + token → *Add token*.
 3. Repeat for as many parallel agents as you want. Watch the *in use* tags; add more when the pool is full.
+4. Creating a subscription provider points existing gateway-signed-in Claude Code agents at it automatically. For ones skipped or added later, press *Use for existing Claude Code agents* in the Token pool section, or run `POST /api/providers/{name}/agents` to point every gateway-signed-in Claude Code agent at the subscription provider (their model is kept; agents with a direct sign-in are left alone).
 
 In detail: run
 `claude setup-token` several times (one token per Claude login or run) and add

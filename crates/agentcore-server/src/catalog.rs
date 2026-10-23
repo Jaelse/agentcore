@@ -561,6 +561,86 @@ pub async fn update(
     Ok(Json(json!(saved)))
 }
 
+/// Point the already-added Claude Code agents that sign in through agentcore's
+/// model gateway at a Claude subscription provider (the one with the
+/// `claude setup-token` token pool). Agents that log in themselves or use a
+/// cloud provider are left alone, as are those whose model the provider does
+/// not allow; those are reported under `skipped`.
+pub async fn attach_subscription(
+    State(state): State<AppState>,
+    caller: Caller,
+    UrlPath(provider): UrlPath<String>,
+) -> ApiResult<Json<Value>> {
+    caller.require_admin()?;
+    Ok(Json(
+        attach_provider(&state, &provider, &caller.name).await?,
+    ))
+}
+
+/// See [`attach_subscription`]; also run when a subscription provider is added.
+pub async fn attach_provider(state: &AppState, provider: &str, by: &str) -> ApiResult<Value> {
+    let provider = provider.to_string();
+    let bad = |m: String| ApiError::new(StatusCode::BAD_REQUEST, m);
+    let found = state
+        .store
+        .list_providers()
+        .await?
+        .into_iter()
+        .find(|p| p.name == provider)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                format!("unknown model provider `{provider}`"),
+            )
+        })?;
+    if found.kind != ProviderKind::ClaudeSubscription {
+        return Err(bad(format!("`{provider}` is not a Claude subscription")));
+    }
+    if !found.enabled {
+        return Err(bad(format!("model provider `{provider}` is disabled")));
+    }
+    let mut updated = Vec::new();
+    let mut skipped = Vec::new();
+    for agent in state.store.list_installed_agents().await? {
+        let old = &agent.spec;
+        let gateway_auth = old.options.get("auth").is_none_or(|a| a == "gateway");
+        if old.adapter != "claude-code"
+            || !gateway_auth
+            || old.provider.as_deref() == Some(&provider)
+        {
+            continue;
+        }
+        let Some(entry) = state.agent_catalog.get(&agent.catalog) else {
+            skipped.push(json!({"name": agent.name, "reason": "no longer in the agent catalogue"}));
+            continue;
+        };
+        let choice = Choice {
+            name: agent.name.clone(),
+            provider: provider.clone(),
+            model: old.model.clone().unwrap_or_default(),
+            policy: old.policy.clone(),
+            description: Some(old.description.clone()),
+            image: old.image.clone(),
+            options: old.options.clone(),
+        };
+        if let Err(err) = check_choice(state, entry, &choice).await {
+            skipped.push(json!({"name": agent.name, "reason": err.message()}));
+            continue;
+        }
+        let spec = entry.instantiate(&choice);
+        state.manager.check_agent(&spec)?;
+        state
+            .store
+            .update_installed_agent(&spec, agent.enabled, by)
+            .await?;
+        updated.push(agent.name);
+    }
+    if !updated.is_empty() {
+        state.agents_changed().await;
+    }
+    Ok(json!({ "provider": provider, "updated": updated, "skipped": skipped }))
+}
+
 pub async fn uninstall(
     State(state): State<AppState>,
     caller: Caller,

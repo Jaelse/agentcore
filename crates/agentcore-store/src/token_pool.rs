@@ -169,6 +169,22 @@ impl Store {
         Ok(())
     }
 
+    /// A pool token's secret, to try it out. It must never be sent to a client.
+    pub async fn pool_token_secret(&self, provider: &str, id: Uuid) -> Result<String> {
+        let row: Option<(Vec<u8>, Vec<u8>)> = sqlx::query_as(
+            "SELECT ciphertext, nonce FROM claude_tokens WHERE id = $1 AND provider = $2",
+        )
+        .bind(id)
+        .bind(provider)
+        .fetch_optional(&self.pool)
+        .await?;
+        let (ciphertext, nonce) = row.ok_or_else(|| StoreError::NotFound("token".into()))?;
+        let token = self
+            .cipher
+            .decrypt(&nonce, &ciphertext, id.to_string().as_bytes())?;
+        String::from_utf8(token).map_err(|_| StoreError::Crypto)
+    }
+
     /// The token for `session`: the one it already holds, else a free one
     /// (the longest unused first). Safe to call from several nodes at once.
     pub async fn lease_pool_token(&self, provider: &str, session: SessionId) -> Result<Lease> {
