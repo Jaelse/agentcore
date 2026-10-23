@@ -218,6 +218,10 @@ pub fn router(state: AppState) -> Router {
             "/providers/{name}/agents",
             post(catalog::attach_subscription),
         )
+        .route(
+            "/providers/{name}/tokens/{id}/test",
+            post(api::test_pool_token),
+        )
         .route("/admin-events", get(api::admin_events))
         .route("/roles", get(teamwork::list_roles))
         .route(

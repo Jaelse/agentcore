@@ -133,6 +133,7 @@ function TokenPool({
   const [label, setLabel] = useState("");
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
+  const [tested, setTested] = useState<Record<string, { ok: boolean; message: string }>>({});
   const [attached, setAttached] = useState<string | null>(null);
 
   const load = () => {
@@ -210,8 +211,23 @@ function TokenPool({
             <strong>{t.label}</strong> <span className="mono small">{t.hint}</span>{" "}
             {!t.enabled && <span className="tag tone-bad">disabled</span>}
             {t.in_use_by && <span className="tag">in use</span>}
+            {tested[t.id] && (
+              <span className={`tag ${tested[t.id].ok ? "" : "tone-bad"}`}>{tested[t.id].message}</span>
+            )}
             {canEdit && (
               <>
+                <button
+                  className="btn ghost"
+                  disabled={busy}
+                  onClick={() =>
+                    run(async () => {
+                      const r = await api.testPoolToken(provider, t.id);
+                      setTested((prev) => ({ ...prev, [t.id]: r }));
+                    })
+                  }
+                >
+                  Test
+                </button>
                 <button
                   className="btn ghost"
                   disabled={busy}
