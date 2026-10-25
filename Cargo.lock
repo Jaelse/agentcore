@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "agentcore-audit"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "agentcore-core",
  "chrono",
@@ -54,7 +54,7 @@ dependencies = [
 
 [[package]]
 name = "agentcore-cli"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "agentcore-audit",
  "agentcore-core",
@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "agentcore-core"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "chrono",
  "serde",
@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "agentcore-policy"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "agentcore-core",
  "globset",
@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "agentcore-roles"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "hex",
  "regex",
@@ -110,7 +110,7 @@ dependencies = [
 
 [[package]]
 name = "agentcore-runtime"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "agentcore-audit",
  "agentcore-core",
@@ -135,7 +135,7 @@ dependencies = [
 
 [[package]]
 name = "agentcore-sandbox"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "agentcore-core",
  "async-trait",
@@ -152,7 +152,7 @@ dependencies = [
 
 [[package]]
 name = "agentcore-server"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "agentcore-audit",
  "agentcore-core",
@@ -189,7 +189,7 @@ dependencies = [
 
 [[package]]
 name = "agentcore-store"
-version = "0.1.0-beta.4"
+version = "0.1.0-beta.5"
 dependencies = [
  "aes-gcm",
  "agentcore-core",
