@@ -8,6 +8,7 @@ const DEFAULT_URL: Record<ProviderKind, string> = {
   anthropic: "https://api.anthropic.com",
   openai: "https://api.openai.com",
   opencode_zen: "https://opencode.ai/zen",
+  qwen: "https://dashscope-intl.aliyuncs.com/compatible-mode",
   claude_subscription: "https://api.anthropic.com",
 };
 
@@ -15,6 +16,7 @@ const DEFAULT_NAME: Record<ProviderKind, string> = {
   anthropic: "anthropic",
   openai: "openai",
   opencode_zen: "opencode",
+  qwen: "qwen",
   claude_subscription: "claude",
 };
 
@@ -22,6 +24,7 @@ const KIND_LABEL: Record<ProviderKind, string> = {
   anthropic: "Anthropic",
   openai: "OpenAI",
   opencode_zen: "OpenCode Zen",
+  qwen: "Qwen",
   claude_subscription: "Claude subscription",
 };
 
@@ -456,6 +459,7 @@ function AddProvider({
             <option value="anthropic">Anthropic</option>
             <option value="openai">OpenAI or OpenAI-compatible</option>
             <option value="opencode_zen">OpenCode Zen (e.g. Big Pickle)</option>
+            <option value="qwen">Qwen (Alibaba Cloud Model Studio)</option>
             <option value="claude_subscription">Claude subscription (Claude Code only)</option>
           </select>
         </label>
@@ -474,7 +478,7 @@ function AddProvider({
             value={models}
             onChange={(e) => setModels(e.target.value)}
             placeholder={
-              kind === "anthropic" || kind === "claude_subscription" ? "claude-*" : kind === "openai" ? "gpt-*" : "big-pickle"
+              kind === "anthropic" || kind === "claude_subscription" ? "claude-*" : kind === "openai" ? "gpt-*" : kind === "qwen" ? "qwen*" : "big-pickle"
             }
           />
         </label>
@@ -490,6 +494,7 @@ function AddProvider({
       )}
       <label>
         {kind === "claude_subscription" ? "Subscription token (from claude setup-token)" : "API key"}
+        {kind === "qwen" && " (from Alibaba Cloud Model Studio; use the endpoint of the key's region, e.g. dashscope.aliyuncs.com/compatible-mode for China)"}
         {kind === "opencode_zen" && " (from opencode.ai/zen; the keyless free tier does not work through a proxy)"}
         <input type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} />
       </label>

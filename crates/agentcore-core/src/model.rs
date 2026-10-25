@@ -14,6 +14,9 @@ pub enum ProviderKind {
     /// OpenCode Zen, opencode's hosted model service (OpenAI-compatible).
     /// Its free models (e.g. Big Pickle) accept the API key `public`.
     OpencodeZen,
+    /// Alibaba Cloud Model Studio (DashScope) serving Qwen models through its
+    /// OpenAI-compatible endpoint (`Authorization: Bearer`).
+    Qwen,
     /// A Claude Pro/Max/Team/Enterprise subscription, used by Claude Code
     /// only. The "API key" is a long-lived OAuth token from
     /// `claude setup-token`; it is sent as `Authorization: Bearer` with the
@@ -27,6 +30,7 @@ impl ProviderKind {
             Self::Anthropic => "anthropic",
             Self::Openai => "openai",
             Self::OpencodeZen => "opencode_zen",
+            Self::Qwen => "qwen",
             Self::ClaudeSubscription => "claude_subscription",
         }
     }
@@ -36,6 +40,7 @@ impl ProviderKind {
             Self::Anthropic | Self::ClaudeSubscription => "https://api.anthropic.com",
             Self::Openai => "https://api.openai.com",
             Self::OpencodeZen => "https://opencode.ai/zen",
+            Self::Qwen => "https://dashscope-intl.aliyuncs.com/compatible-mode",
         }
     }
 }
@@ -59,7 +64,7 @@ impl ProviderKind {
     pub fn default_api_key(self) -> Option<&'static str> {
         match self {
             Self::OpencodeZen => Some("public"),
-            Self::Anthropic | Self::Openai | Self::ClaudeSubscription => None,
+            Self::Anthropic | Self::Openai | Self::Qwen | Self::ClaudeSubscription => None,
         }
     }
 }
@@ -72,6 +77,7 @@ impl std::str::FromStr for ProviderKind {
             "anthropic" => Ok(Self::Anthropic),
             "openai" => Ok(Self::Openai),
             "opencode_zen" => Ok(Self::OpencodeZen),
+            "qwen" => Ok(Self::Qwen),
             "claude_subscription" => Ok(Self::ClaudeSubscription),
             other => Err(format!("unknown provider kind `{other}`")),
         }

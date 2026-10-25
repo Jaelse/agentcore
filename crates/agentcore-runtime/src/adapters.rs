@@ -163,6 +163,17 @@ impl AgentAdapter for CommandAdapter {
     }
 }
 
+/// Qwen models opencode offers under the `qwen` provider (opencode needs a
+/// custom provider's models listed). The provider's allow-list still decides
+/// which of them the gateway lets through.
+const QWEN_MODELS: &[&str] = &[
+    "qwen3-coder-plus",
+    "qwen3-coder-flash",
+    "qwen3-max",
+    "qwen-plus",
+    "qwen-flash",
+];
+
 pub struct OpenCodeAdapter;
 
 impl OpenCodeAdapter {
@@ -203,6 +214,27 @@ impl OpenCodeAdapter {
                     }}),
                 );
             }
+        }
+        // Qwen (DashScope) speaks the OpenAI chat-completions protocol only,
+        // so it goes through opencode's OpenAI-compatible provider, not the
+        // built-in `openai` one (which uses the Responses API).
+        if let Some(qwen) = ctx.model(ProviderKind::Qwen) {
+            let models: serde_json::Map<String, serde_json::Value> = QWEN_MODELS
+                .iter()
+                .map(|m| ((*m).into(), serde_json::json!({ "name": m })))
+                .collect();
+            providers.insert(
+                "qwen".into(),
+                serde_json::json!({
+                    "npm": "@ai-sdk/openai-compatible",
+                    "name": "Qwen",
+                    "options": {
+                        "baseURL": format!("{}/v1", ctx.model_base_url(&qwen.name)),
+                        "apiKey": ctx.gateway_token,
+                    },
+                    "models": models,
+                }),
+            );
         }
         serde_json::json!({
             "provider": providers,
@@ -860,6 +892,17 @@ mod tests {
             zen.get("apiKey").is_none(),
             "an apiKey would unlock paid models"
         );
+
+        let mut qwen_ctx = ctx();
+        qwen_ctx.models = vec![agentcore_core::ModelEndpoint {
+            name: "dashscope".into(),
+            kind: ProviderKind::Qwen,
+        }];
+        let qwen = &OpenCodeAdapter::config(&qwen_ctx)["provider"]["qwen"];
+        assert_eq!(qwen["npm"], "@ai-sdk/openai-compatible");
+        assert_eq!(qwen["options"]["baseURL"], "http://gw/llm/x/dashscope/v1");
+        assert_eq!(qwen["options"]["apiKey"], "secret");
+        assert!(qwen["models"].get("qwen3-coder-plus").is_some());
 
         let env = ctx().model_env();
         assert_eq!(env["ANTHROPIC_BASE_URL"], "http://gw/llm/x/claude");

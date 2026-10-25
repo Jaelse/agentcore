@@ -623,7 +623,10 @@ pub async fn proxy(
             HeaderName::from_static("x-api-key"),
             HeaderValue::from_str(&api_key),
         ),
-        ProviderKind::Openai | ProviderKind::OpencodeZen | ProviderKind::ClaudeSubscription => (
+        ProviderKind::Openai
+        | ProviderKind::OpencodeZen
+        | ProviderKind::Qwen
+        | ProviderKind::ClaudeSubscription => (
             header::AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {api_key}")),
         ),

@@ -16,8 +16,8 @@ license = "MIT"
 license_url = "https://github.com/sst/opencode/blob/dev/LICENSE"
 package = "npm: opencode-ai"
 verified_version = "1.18.35"
-protocols = ["anthropic", "openai"]
-suggested_models = ["claude-sonnet-4-5", "gpt-5.1"]
+protocols = ["anthropic", "openai", "qwen"]
+suggested_models = ["claude-sonnet-4-5", "gpt-5.1", "qwen3-coder-plus"]
 guardrails = "full"
 conversation = true
 

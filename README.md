@@ -126,11 +126,17 @@ through your policy.
    - **OpenCode Zen** (name `opencode`) with a Zen API key from
      [opencode.ai/zen](https://opencode.ai/zen). Zen's keyless free tier only
      accepts requests coming directly from the opencode app, so it does not
-     work through agentcore's gateway.
+     work through agentcore's gateway; or
+   - **Qwen** with an Alibaba Cloud Model Studio (DashScope) API key. The
+     default endpoint is the international one
+     (`https://dashscope-intl.aliyuncs.com/compatible-mode`); for a key from
+     the China region use `https://dashscope.aliyuncs.com/compatible-mode`.
+     In the opencode agent choose a model such as `qwen3-coder-plus`
+     (opencode runs it as `qwen/qwen3-coder-plus`).
 3. Go back to **Sessions**, pick **opencode**, choose a policy, describe the
    task and click **Start agent**.
 
-opencode's `anthropic`, `openai` and `opencode` (Zen) providers are pointed at the model gateway,
+opencode's `anthropic`, `openai`, `qwen` and `opencode` (Zen) providers are pointed at the model gateway,
 so it works on the internal-only sandbox network: the sandbox needs no
 internet access. Each LLM call shows up in the session's activity timeline
 with tokens, timing and the full request and response.

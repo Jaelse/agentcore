@@ -496,7 +496,7 @@ export interface Me {
   role: Role;
 }
 
-export type ProviderKind = "anthropic" | "openai" | "opencode_zen" | "claude_subscription";
+export type ProviderKind = "anthropic" | "openai" | "opencode_zen" | "qwen" | "claude_subscription";
 
 export interface ProviderInfo {
   name: string;
