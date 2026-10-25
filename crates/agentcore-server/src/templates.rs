@@ -703,6 +703,8 @@ mod tests {
             name: "lead".into(),
             kind: agentcore_core::AgentKind::Worker,
             agent: "x".into(),
+            provider: None,
+            model: None,
             instructions: String::new(),
             desired: agentcore_core::Desired::Stopped,
             node: None,

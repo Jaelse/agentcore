@@ -53,8 +53,18 @@ pub struct DepartmentInput {
 pub struct AgentInput {
     pub name: String,
     pub agent: String,
+    /// Model provider for this member instead of the agent's own.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Model for this member instead of the agent's own.
+    #[serde(default)]
+    pub model: Option<String>,
     #[serde(default)]
     pub instructions: String,
+}
+
+fn blank_to_none(v: Option<String>) -> Option<String> {
+    v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 /// A message to store, with its recipients already resolved.
@@ -136,6 +146,8 @@ struct AgentRow {
     name: String,
     kind: String,
     agent: String,
+    provider: Option<String>,
+    model: Option<String>,
     instructions: String,
     desired: String,
     node: Option<String>,
@@ -154,6 +166,8 @@ impl From<AgentRow> for OrgAgent {
             name: r.name,
             kind: r.kind.parse().unwrap_or(AgentKind::Worker),
             agent: r.agent,
+            provider: r.provider,
+            model: r.model,
             instructions: r.instructions,
             desired: r.desired.parse().unwrap_or(Desired::Stopped),
             node: r.node,
@@ -230,7 +244,7 @@ impl From<NodeRow> for NodeInfo {
 
 const DEPARTMENT_COLUMNS: &str = "id, name, description, mission, policy, tools, \
     communicator_agent, state, template, project_id, role, requires_repository, created_at, updated_by";
-const AGENT_COLUMNS: &str = "id, department_id, name, kind, agent, instructions, desired, \
+const AGENT_COLUMNS: &str = "id, department_id, name, kind, agent, provider, model, instructions, desired, \
     node, session_id, status, note, changed_by, created_at";
 const MESSAGE_SELECT: &str = "SELECT m.id, m.created_at, m.scope, m.from_agent, \
     m.from_department, m.from_name, m.to_kind, m.to_agent, m.to_department, m.to_name, m.text, \
@@ -717,13 +731,15 @@ impl Store {
         }
         let id = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO org_agents (id, department_id, name, kind, agent, instructions)
-             VALUES ($1, $2, $3, 'worker', $4, $5)",
+            "INSERT INTO org_agents (id, department_id, name, kind, agent, provider, model, instructions)
+             VALUES ($1, $2, $3, 'worker', $4, $5, $6, $7)",
         )
         .bind(id)
         .bind(department)
         .bind(&input.name)
         .bind(input.agent.trim())
+        .bind(blank_to_none(input.provider.clone()))
+        .bind(blank_to_none(input.model.clone()))
         .bind(&input.instructions)
         .execute(&mut *tx)
         .await
@@ -733,7 +749,10 @@ impl Store {
             actor,
             "agent.create",
             &format!("{dept_name}/{}", input.name),
-            serde_json::json!({ "id": id, "agent": input.agent }),
+            serde_json::json!({
+                "id": id, "agent": input.agent,
+                "provider": input.provider, "model": input.model,
+            }),
         )
         .await?;
         tx.commit().await?;
@@ -745,18 +764,24 @@ impl Store {
         id: OrgAgentId,
         agent: Option<String>,
         instructions: Option<String>,
+        provider: Option<String>,
+        model: Option<String>,
         actor: &str,
     ) -> Result<OrgAgent> {
         let current = self.get_agent(id).await?;
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             "UPDATE org_agents SET agent = COALESCE($2, agent),
-                 instructions = COALESCE($3, instructions), updated_at = now()
+                 instructions = COALESCE($3, instructions),
+                 provider = COALESCE($4, provider), model = COALESCE($5, model),
+                 updated_at = now()
              WHERE id = $1",
         )
         .bind(id)
         .bind(agent.as_deref().map(str::trim).filter(|a| !a.is_empty()))
         .bind(instructions.as_deref())
+        .bind(blank_to_none(provider.clone()))
+        .bind(blank_to_none(model.clone()))
         .execute(&mut *tx)
         .await?;
         admin_event(
@@ -764,7 +789,7 @@ impl Store {
             actor,
             "agent.update",
             &current.name,
-            serde_json::json!({ "id": id, "agent": agent }),
+            serde_json::json!({ "id": id, "agent": agent, "provider": provider, "model": model }),
         )
         .await?;
         tx.commit().await?;

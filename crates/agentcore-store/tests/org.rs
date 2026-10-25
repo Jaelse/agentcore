@@ -28,6 +28,8 @@ fn worker(name: &str) -> AgentInput {
     AgentInput {
         name: name.into(),
         agent: "opencode".into(),
+        provider: None,
+        model: None,
         instructions: String::new(),
     }
 }

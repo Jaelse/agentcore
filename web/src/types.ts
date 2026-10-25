@@ -81,6 +81,9 @@ export interface OrgAgent {
   name: string;
   kind: AgentKind;
   agent: string;
+  /** Model provider chosen for this member; null: the agent's own. */
+  provider: string | null;
+  model: string | null;
   instructions: string;
   desired: Desired;
   node: string | null;

@@ -262,9 +262,12 @@ export const api = {
   deleteDepartment: (id: string) => request<void>("DELETE", `/org/departments/${id}`),
   controlDepartment: (id: string, control: "start" | "pause" | "resume" | "stop") =>
     request<{ changed: number; failed: { agent: string; error: string }[] }>("POST", `/org/departments/${id}/${control}`),
-  addAgent: (department: string, body: { name: string; agent: string; instructions: string }) =>
+  addAgent: (
+    department: string,
+    body: { name: string; agent: string; instructions: string; provider?: string; model?: string },
+  ) =>
     request<OrgAgent>("POST", `/org/departments/${department}/agents`, body),
-  updateAgent: (id: string, body: { agent?: string; instructions?: string }) =>
+  updateAgent: (id: string, body: { agent?: string; instructions?: string; provider?: string; model?: string }) =>
     request<OrgAgent>("PUT", `/org/agents/${id}`, body),
   deleteAgent: (id: string) => request<void>("DELETE", `/org/agents/${id}`),
   controlAgent: (id: string, control: "start" | "pause" | "resume" | "stop") =>

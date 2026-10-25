@@ -20,6 +20,7 @@ import { Dashboard } from "./Dashboard";
 import { DataSources } from "./DataSources";
 import { Improvements } from "./Improvements";
 import { Spending } from "./Spending";
+import { type AgentChoice, AgentModelPicker, useModelChoices } from "./AgentModelPicker";
 import { Outbox } from "./Outbox";
 import { Releases } from "./Releases";
 
@@ -737,9 +738,10 @@ function AgentCard({
 
 function AddAgent({ dept, card, onDone, onError }: { dept: Department; card: SystemCard; onDone: () => void; onError: (e: unknown) => void }) {
   const [name, setName] = useState("");
-  const [agent, setAgent] = useState(card.agents[0]?.name ?? "");
+  const [choice, setChoice] = useState<AgentChoice>({ agent: card.agents[0]?.name ?? "", provider: "", model: "" });
   const [instructions, setInstructions] = useState("");
   const [busy, setBusy] = useState(false);
+  const { providers, known } = useModelChoices(onError);
   return (
     <form
       className="card pad provider-edit"
@@ -748,7 +750,7 @@ function AddAgent({ dept, card, onDone, onError }: { dept: Department; card: Sys
         e.preventDefault();
         setBusy(true);
         try {
-          await api.addAgent(dept.id, { name: name.trim().toLowerCase(), agent, instructions });
+          await api.addAgent(dept.id, { name: name.trim().toLowerCase(), instructions, ...choice });
           onDone();
         } catch (err) {
           onError(err);
@@ -757,22 +759,11 @@ function AddAgent({ dept, card, onDone, onError }: { dept: Department; card: Sys
         }
       }}
     >
-      <div className="grid-2">
-        <label>
-          Name (how colleagues address it)
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="analyst" pattern="[a-z0-9][a-z0-9_\-]{0,31}" required />
-        </label>
-        <label>
-          Runs
-          <select value={agent} onChange={(e) => setAgent(e.target.value)}>
-            {card.agents.map((a) => (
-              <option key={a.name} value={a.name}>
-                {a.name}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+      <label>
+        Name (how colleagues address it)
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="analyst" pattern="[a-z0-9][a-z0-9_\-]{0,31}" required />
+      </label>
+      <AgentModelPicker card={card} value={choice} onChange={setChoice} providers={providers} known={known} />
       <label>
         Instructions (its job in {dept.name})
         <textarea rows={3} value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="You research competitors and summarise…" />
@@ -1113,6 +1104,11 @@ function Grow({
   onError: (e: unknown) => void;
 }) {
   const [all, setAll] = useState<Suggestion[]>([]);
+  const agent = card.agents[0]?.name ?? "";
+  const { providers, known } = useModelChoices(onError);
+  // The suggestion being added: adding an agent asks which agent, provider and model it gets.
+  const [adding, setAdding] = useState<Suggestion | null>(null);
+  const [choice, setChoice] = useState<AgentChoice>({ agent, provider: "", model: "" });
   useEffect(() => {
     api.suggestions().then(setAll).catch(onError);
   }, [tick, onError]);
@@ -1120,14 +1116,22 @@ function Grow({
   if (list.length === 0) return null;
   const isAdmin = me.role === "admin";
   const canOperate = me.role !== "viewer";
-  const agent = card.agents[0]?.name ?? "";
 
   const run = (s: Suggestion) => {
     if (s.kind === "agent" && s.agent && s.department_id) {
-      const a = s.agent;
-      return act(() => api.addAgent(s.department_id!, { name: a.name, agent, instructions: a.instructions }));
+      setChoice({ agent, provider: "", model: "" });
+      setAdding(s);
+      return Promise.resolve();
     }
     return act(() => api.build({ departments: s.templates, size: "lean", agent }));
+  };
+
+  const confirmAdd = async () => {
+    const s = adding;
+    if (!s?.agent || !s.department_id) return;
+    const a = s.agent;
+    setAdding(null);
+    await act(() => api.addAgent(s.department_id!, { name: a.name, instructions: a.instructions, ...choice }));
   };
 
   return (
@@ -1143,7 +1147,24 @@ function Grow({
                 <span className="muted small">{s.reason}</span>
                 {s.blocked && <span className="small attention-text">{s.blocked}</span>}
               </div>
-              {allowed && (
+              {adding?.kind === s.kind && adding.title === s.title && (
+                <form
+                  className="provider-edit"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void confirmAdd();
+                  }}
+                >
+                  <AgentModelPicker card={card} value={choice} onChange={setChoice} providers={providers} known={known} />
+                  <div className="row">
+                    <button className="btn small-btn primary">Add {s.agent?.name}</button>
+                    <button type="button" className="link small" onClick={() => setAdding(null)}>
+                      cancel
+                    </button>
+                  </div>
+                </form>
+              )}
+              {allowed && !(adding?.kind === s.kind && adding.title === s.title) && (
                 <div className="row">
                   <button className="btn small-btn primary" disabled={!!s.blocked} onClick={() => run(s)}>
                     {s.kind === "stage" ? "Add stage" : "Add"}

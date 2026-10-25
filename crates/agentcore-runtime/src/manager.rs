@@ -30,6 +30,12 @@ pub struct CreateSession {
     pub task: String,
     #[serde(default)]
     pub policy: Option<String>,
+    /// Model provider to use instead of the agent's own.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Model to use instead of the agent's own.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 pub struct SessionManager {
@@ -148,9 +154,15 @@ impl SessionManager {
         by: Principal,
         options: SessionOptions,
     ) -> Result<Arc<Session>, RuntimeError> {
-        let spec = self
+        let mut spec = self
             .agent(&request.agent)
             .ok_or_else(|| RuntimeError::UnknownAgent(request.agent.clone()))?;
+        if let Some(provider) = request.provider.filter(|p| !p.trim().is_empty()) {
+            spec.provider = Some(provider);
+        }
+        if let Some(model) = request.model.filter(|m| !m.trim().is_empty()) {
+            spec.model = Some(model);
+        }
         let policy_name = request
             .policy
             .or_else(|| options.role.as_ref().and_then(|r| r.policy.clone()))

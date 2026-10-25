@@ -653,6 +653,8 @@ pub async fn start_session(
             agent: req.agent.unwrap_or_else(|| project.agent.clone()),
             task,
             policy: req.policy,
+            provider: None,
+            model: None,
         },
         caller.principal(),
         SessionOptions {
