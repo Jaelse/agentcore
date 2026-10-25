@@ -30,6 +30,7 @@ import type {
   PendingApproval,
   PoolToken,
   ProviderInfo,
+  KnownModel,
   ProviderKind,
   SessionInfo,
   SystemCard,
@@ -264,7 +265,7 @@ export const api = {
   deleteAgent: (id: string) => request<void>("DELETE", `/org/agents/${id}`),
   controlAgent: (id: string, control: "start" | "pause" | "resume" | "stop") =>
     request<OrgAgent>("POST", `/org/agents/${id}/${control}`),
-  agentCatalog: () => request<{ agents: CatalogAgent[]; allowed_licenses: string[] }>("GET", "/agents/catalog"),
+  agentCatalog: () => request<{ agents: CatalogAgent[]; allowed_licenses: string[]; provider_models: Partial<Record<ProviderKind, KnownModel[]>> }>("GET", "/agents/catalog"),
   agentList: () => request<AgentEntry[]>("GET", "/agents"),
   installAgent: (body: {
     catalog: string;

@@ -345,9 +345,11 @@ pub async fn list_catalog(
             v
         })
         .collect();
-    Ok(Json(
-        json!({ "agents": entries, "allowed_licenses": ALLOWED_LICENSES }),
-    ))
+    Ok(Json(json!({
+        "agents": entries,
+        "allowed_licenses": ALLOWED_LICENSES,
+        "provider_models": provider_models(),
+    })))
 }
 
 /// Every agent: from the configuration file and added from the catalogue.
@@ -373,6 +375,18 @@ pub async fn list_agents(State(state): State<AppState>, _caller: Caller) -> ApiR
         }));
     }
     Ok(Json(json!(list)))
+}
+
+/// Models worth offering per provider kind: `{"qwen": [{id, description}]}`.
+fn provider_models() -> Value {
+    use ProviderKind::{Anthropic, ClaudeSubscription, Openai, OpencodeZen, Qwen};
+    let mut map = serde_json::Map::new();
+    for kind in [Anthropic, Openai, OpencodeZen, Qwen, ClaudeSubscription] {
+        if !kind.known_models().is_empty() {
+            map.insert(kind.as_str().into(), json!(kind.known_models()));
+        }
+    }
+    Value::Object(map)
 }
 
 /// What people see of a spec (files and env may contain templates for

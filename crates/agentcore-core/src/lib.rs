@@ -26,7 +26,7 @@ pub use insights::{
     ProposalStatus,
 };
 pub use live::{FileChange, FileChangeKind, LiveFrame, ModelDeltaKind, ProcessInfo};
-pub use model::{ModelCallOutcome, ModelEndpoint, ProviderKind};
+pub use model::{KnownModel, ModelCallOutcome, ModelEndpoint, ProviderKind};
 pub use org::{
     AgentKind, DeliveredMessage, Department, DepartmentId, DepartmentState, Desired, GoalStatus,
     MessageScope, NodeInfo, OrgAgent, OrgAgentId, OrgGoal, OrgMessage, OrgProfile, OrgSchedule,

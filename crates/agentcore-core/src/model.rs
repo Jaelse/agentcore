@@ -69,6 +69,50 @@ impl ProviderKind {
     }
 }
 
+/// A model a provider is known to serve, offered when adding an agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct KnownModel {
+    pub id: &'static str,
+    pub description: &'static str,
+}
+
+impl ProviderKind {
+    /// Models offered in the "add agent" dialog. Empty for providers whose
+    /// models change too fast to list (any model name can still be typed).
+    /// Which of them an account can call depends on its region and plan.
+    pub fn known_models(self) -> &'static [KnownModel] {
+        match self {
+            Self::Qwen => &[
+                KnownModel {
+                    id: "qwen3-coder-plus",
+                    description: "Qwen's flagship coding model: agentic coding and tool use, very long context. The best default for opencode.",
+                },
+                KnownModel {
+                    id: "qwen3-coder-flash",
+                    description: "Faster, cheaper coding model for simple edits and quick iterations.",
+                },
+                KnownModel {
+                    id: "qwen3-max",
+                    description: "Qwen's most capable general model: hard reasoning, planning, long documents. Slower and more expensive.",
+                },
+                KnownModel {
+                    id: "qwen-plus",
+                    description: "Balanced general model: good quality for its price, long context.",
+                },
+                KnownModel {
+                    id: "qwen-flash",
+                    description: "Fastest and cheapest general model: simple tasks, summaries, classification.",
+                },
+                KnownModel {
+                    id: "qwen3-coder-480b-a35b-instruct",
+                    description: "Open-weight Qwen3-Coder (480B, 35B active) served by Model Studio: pay per token.",
+                },
+            ],
+            Self::Anthropic | Self::Openai | Self::OpencodeZen | Self::ClaudeSubscription => &[],
+        }
+    }
+}
+
 impl std::str::FromStr for ProviderKind {
     type Err = String;
 

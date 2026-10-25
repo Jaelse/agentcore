@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import type { AgentCheck, AgentEntry, CatalogAgent, Me, ProviderInfo, SystemCard } from "../types";
+import type {
+  AgentCheck,
+  AgentEntry,
+  CatalogAgent,
+  KnownModel,
+  Me,
+  ProviderInfo,
+  ProviderKind,
+  SystemCard,
+} from "../types";
 
 interface Props {
   me: Me;
@@ -35,6 +44,7 @@ export function AgentCatalog({ me, card, providers, onChanged, onError }: Props)
   const [catalog, setCatalog] = useState<CatalogAgent[] | null>(null);
   const [agents, setAgents] = useState<AgentEntry[]>([]);
   const [adding, setAdding] = useState<CatalogAgent | null>(null);
+  const [providerModels, setProviderModels] = useState<Partial<Record<ProviderKind, KnownModel[]>>>({});
   const [checks, setChecks] = useState<Record<string, AgentCheck | "checking">>({});
   const [domain, setDomain] = useState<string>("all");
   const isAdmin = me.role === "admin";
@@ -42,7 +52,10 @@ export function AgentCatalog({ me, card, providers, onChanged, onError }: Props)
   const load = useCallback(() => {
     api
       .agentCatalog()
-      .then((c) => setCatalog(c.agents))
+      .then((c) => {
+        setCatalog(c.agents);
+        setProviderModels(c.provider_models ?? {});
+      })
       .catch(onError);
     api.agentList().then(setAgents).catch(onError);
   }, [onError]);
@@ -263,6 +276,7 @@ export function AgentCatalog({ me, card, providers, onChanged, onError }: Props)
           entry={adding}
           card={card}
           providers={providers}
+          providerModels={providerModels}
           taken={agents.map((a) => a.spec.name)}
           onClose={() => setAdding(null)}
           onAdded={(name) => {
@@ -332,6 +346,7 @@ function AddAgentDialog({
   entry,
   card,
   providers,
+  providerModels,
   taken,
   onClose,
   onAdded,
@@ -340,6 +355,7 @@ function AddAgentDialog({
   entry: CatalogAgent;
   card: SystemCard;
   providers: ProviderInfo[];
+  providerModels: Partial<Record<ProviderKind, KnownModel[]>>;
   taken: string[];
   onClose: () => void;
   onAdded: (name: string) => void;
@@ -354,11 +370,14 @@ function AddAgentDialog({
   // A sign-in that reaches the model provider directly needs none of agentcore's.
   const direct = (entry.options ?? []).some((o) => o.values.some((v) => v.direct && options[o.key] === v.value));
   const [provider, setProvider] = useState(usable[0]?.name ?? "");
-  const [model, setModel] = useState(entry.suggested_models[0] ?? "");
+  const [model, setModel] = useState(
+    (usable[0] && providerModels[usable[0].kind]?.[0]?.id) || entry.suggested_models[0] || "",
+  );
   const [policy, setPolicy] = useState("");
   const [image, setImage] = useState("");
   const [busy, setBusy] = useState(false);
   const chosen = usable.find((p) => p.name === provider);
+  const known = (chosen && providerModels[chosen.kind]) || [];
 
   return (
     <dialog
@@ -441,7 +460,16 @@ function AddAgentDialog({
             {!direct && (
               <label>
                 Model provider
-                <select value={provider} onChange={(e) => setProvider(e.target.value)}>
+                <select
+                  value={provider}
+                  onChange={(e) => {
+                    setProvider(e.target.value);
+                    // Start from the first model the new provider is known for.
+                    const next = usable.find((p) => p.name === e.target.value);
+                    const list = (next && providerModels[next.kind]) || [];
+                    if (list.length && !list.some((m) => m.id === model)) setModel(list[0].id);
+                  }}
+                >
                   {usable.map((p) => (
                     <option key={p.name} value={p.name}>
                       {p.name} ({p.kind})
@@ -476,6 +504,27 @@ function AddAgentDialog({
               </select>
             </label>
           </div>
+          {!direct && known.length > 0 && (
+            <div className="model-list" role="radiogroup" aria-label="Models">
+              <span className="muted small">
+                Models of {chosen?.name} (what your key can use depends on its region and plan; you can also type any
+                other model name above):
+              </span>
+              {known.map((m) => (
+                <button
+                  type="button"
+                  key={m.id}
+                  role="radio"
+                  aria-checked={model === m.id}
+                  className={`model-option ${model === m.id ? "selected" : ""}`}
+                  onClick={() => setModel(m.id)}
+                >
+                  <code>{m.id}</code>
+                  <span className="muted small">{m.description}</span>
+                </button>
+              ))}
+            </div>
+          )}
           {!direct && chosen && chosen.allowed_models.length > 0 && (
             <p className="muted small">This provider allows: {chosen.allowed_models.join(", ")}</p>
           )}
