@@ -496,6 +496,93 @@ pub async fn test_pool_token(
     }))
 }
 
+/// Try a provider's stored API key with one tiny model call, the way the
+/// gateway would send it. Never returns the key. `{"ok", "status", "message"}`.
+pub async fn test_provider(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(name): Path<String>,
+) -> ApiResult<Json<Value>> {
+    use agentcore_core::ProviderKind;
+    caller.require_admin()?;
+    let (provider, key) = state
+        .store
+        .provider_credentials(&name)
+        .await?
+        .ok_or_else(|| {
+            ApiError::new(StatusCode::NOT_FOUND, format!("unknown provider `{name}`"))
+        })?;
+    let default_model = match provider.kind {
+        ProviderKind::Anthropic | ProviderKind::ClaudeSubscription => "claude-haiku-4-5",
+        ProviderKind::Openai => "gpt-5-mini",
+        ProviderKind::OpencodeZen => "big-pickle",
+        ProviderKind::Qwen => "qwen-flash",
+    };
+    let model = provider
+        .allowed_models
+        .iter()
+        .find(|m| !m.contains(['*', '?', '[']))
+        .map_or(default_model, String::as_str);
+    let request = if provider.kind.is_anthropic() {
+        let request = state
+            .http
+            .post(format!("{}/v1/messages", provider.base_url))
+            .header("anthropic-version", "2023-06-01")
+            .json(&json!({
+                "model": model,
+                "max_tokens": 1,
+                "messages": [{ "role": "user", "content": "hi" }],
+            }));
+        if provider.kind == ProviderKind::ClaudeSubscription {
+            request
+                .bearer_auth(&key)
+                .header("anthropic-beta", "oauth-2025-04-20")
+        } else {
+            request.header("x-api-key", &key)
+        }
+    } else {
+        state
+            .http
+            .post(format!("{}/v1/chat/completions", provider.base_url))
+            .bearer_auth(&key)
+            .json(&json!({
+                "model": model,
+                "max_tokens": 1,
+                "messages": [{ "role": "user", "content": "hi" }],
+            }))
+    };
+    let sent = request
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await;
+    Ok(Json(match sent {
+        Err(err) => {
+            json!({ "ok": false, "status": null, "message": format!("could not reach {}: {}", provider.base_url, err.without_url()) })
+        }
+        Ok(resp) => {
+            let status = resp.status();
+            let body: Value = resp.json().await.unwrap_or(Value::Null);
+            let detail = body["error"]["message"]
+                .as_str()
+                .or_else(|| body["message"].as_str())
+                .unwrap_or("");
+            let message = match status.as_u16() {
+                200..=299 => format!("works ({model} answered)"),
+                401 | 403 => format!(
+                    "rejected: {detail}. Check the API key and that the endpoint matches the key's region"
+                ),
+                404 => format!(
+                    "endpoint or model not found: {detail}. Check the endpoint and the model name `{model}`"
+                ),
+                429 => format!("key accepted, but rate- or quota-limited: {detail}"),
+                _ => format!("HTTP {status}: {detail}"),
+            };
+            // A rate limit still proves the key is accepted.
+            json!({ "ok": status.is_success() || status.as_u16() == 429, "status": status.as_u16(), "message": message })
+        }
+    }))
+}
+
 #[derive(serde::Deserialize)]
 pub struct PoolTokenUpdate {
     pub enabled: bool,

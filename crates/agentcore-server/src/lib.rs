@@ -218,6 +218,7 @@ pub fn router(state: AppState) -> Router {
             "/providers/{name}/agents",
             post(catalog::attach_subscription),
         )
+        .route("/providers/{name}/test", post(api::test_provider))
         .route(
             "/providers/{name}/tokens/{id}/test",
             post(api::test_pool_token),

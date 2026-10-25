@@ -226,6 +226,11 @@ export const api = {
       "POST",
       `/providers/${encodeURIComponent(provider)}/tokens/${id}/test`,
     ),
+  testProvider: (provider: string) =>
+    request<{ ok: boolean; status: number | null; message: string }>(
+      "POST",
+      `/providers/${encodeURIComponent(provider)}/test`,
+    ),
   attachAgents: (provider: string) =>
     request<{ provider: string; updated: string[]; skipped: { name: string; reason: string }[] }>(
       "POST",

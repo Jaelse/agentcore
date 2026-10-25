@@ -297,6 +297,19 @@ function ProviderCard({
   const [models, setModels] = useState(p.allowed_models.join(", "));
   const [baseUrl, setBaseUrl] = useState(p.base_url);
   const [busy, setBusy] = useState(false);
+  const [test, setTest] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const runTest = async () => {
+    setBusy(true);
+    setTest(null);
+    try {
+      setTest(await api.testProvider(p.name));
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -319,6 +332,9 @@ function ProviderCard({
         </div>
         {canEdit && (
           <div className="row">
+            <button className="btn ghost" disabled={busy} onClick={() => void runTest()}>
+              Test key
+            </button>
             <button className="btn ghost" disabled={busy} onClick={() => setEditing(!editing)}>
               {editing ? "Cancel" : "Edit"}
             </button>
@@ -363,6 +379,12 @@ function ProviderCard({
           </dd>
         </div>
       </dl>
+      {test && (
+        <div className={`banner small ${test.ok ? "" : "error-text"}`}>
+          {test.ok ? "✓ " : "✗ "}
+          {test.message}
+        </div>
+      )}
       {p.kind === "claude_subscription" && <TokenPool provider={p.name} canEdit={canEdit} onError={onError} />}
       {editing && (
         <form
@@ -416,6 +438,7 @@ function AddProvider({
   const [key, setKey] = useState("");
   const [models, setModels] = useState("");
   const [busy, setBusy] = useState(false);
+  const [added, setAdded] = useState<{ name: string; ok: boolean; message: string } | null>(null);
   const taken = existing.some((p) => p.name === name.trim().toLowerCase());
 
   return (
@@ -425,6 +448,8 @@ function AddProvider({
         e.preventDefault();
         setBusy(true);
         try {
+          setAdded(null);
+          const providerName = name.trim().toLowerCase();
           await api.createProvider({
             name: name.trim(),
             kind,
@@ -437,6 +462,15 @@ function AddProvider({
           setName("");
           setBaseUrl("");
           onAdded();
+          // Check the new key right away so a typo shows up now, not in the first agent run.
+          if (kind !== "claude_subscription") {
+            try {
+              const r = await api.testProvider(providerName);
+              setAdded({ name: providerName, ok: r.ok, message: r.message });
+            } catch {
+              /* the provider is saved; the Test key button can be used later */
+            }
+          }
         } catch (err) {
           onError(err);
         } finally {
@@ -445,6 +479,11 @@ function AddProvider({
       }}
     >
       <h2>Add a provider</h2>
+      {added && (
+        <div className={`banner small ${added.ok ? "" : "error-text"}`}>
+          {added.ok ? "✓ " : "✗ "}“{added.name}” saved. Key test: {added.message}
+        </div>
+      )}
       <div className="grid-2">
         <label>
           Type
