@@ -1010,7 +1010,7 @@ async fn apply_one(state: &AppState, action: &ProposalAction, by: &str) -> Resul
             instructions,
         } => {
             let a = store
-                .update_agent(*agent, None, Some(instructions.clone()), by)
+                .update_agent(*agent, None, Some(instructions.clone()), None, None, by)
                 .await
                 .map_err(e)?;
             notify(
@@ -1046,6 +1046,8 @@ async fn apply_one(state: &AppState, action: &ProposalAction, by: &str) -> Resul
                     AgentInput {
                         name: name.clone(),
                         agent: spec,
+                        provider: None,
+                        model: None,
                         instructions: instructions.clone(),
                     },
                     by,

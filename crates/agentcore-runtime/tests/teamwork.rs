@@ -168,6 +168,8 @@ async fn repository_session_with_role_turns_checks_and_export() {
                 agent: "scripted".into(),
                 task: "Say hello in a file".into(),
                 policy: None,
+                provider: None,
+                model: None,
             },
             Principal::human("alice"),
             SessionOptions {

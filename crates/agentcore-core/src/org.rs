@@ -188,6 +188,12 @@ pub struct OrgAgent {
     pub kind: AgentKind,
     /// Configured agent (`[[agents]]`) this member runs, e.g. `opencode`.
     pub agent: String,
+    /// Model provider this member uses instead of the agent's own.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Model this member uses instead of the agent's own.
+    #[serde(default)]
+    pub model: Option<String>,
     /// Member-specific instructions, added to the department mission.
     #[serde(default)]
     pub instructions: String,

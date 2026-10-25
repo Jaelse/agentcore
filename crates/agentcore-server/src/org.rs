@@ -1275,6 +1275,8 @@ pub async fn start_agent_session(
             agent: agent.agent.clone(),
             task: compose_prompt(org, agent, dept, &start),
             policy: Some(policy),
+            provider: agent.provider.clone(),
+            model: agent.model.clone(),
         },
         principal(&agent.changed_by),
         options,
@@ -1723,6 +1725,31 @@ pub async fn delete_department(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// The provider a department agent was told to use must be a known, enabled
+/// model provider.
+async fn check_provider(state: &AppState, provider: Option<&str>) -> ApiResult<()> {
+    let Some(name) = provider.map(str::trim).filter(|p| !p.is_empty()) else {
+        return Ok(());
+    };
+    let found = state
+        .store
+        .list_providers()
+        .await?
+        .into_iter()
+        .find(|p| p.name == name);
+    match found {
+        Some(p) if p.enabled => Ok(()),
+        Some(_) => Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("model provider `{name}` is disabled"),
+        )),
+        None => Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("unknown model provider `{name}`"),
+        )),
+    }
+}
+
 pub async fn add_agent(
     State(state): State<AppState>,
     caller: Caller,
@@ -1731,6 +1758,7 @@ pub async fn add_agent(
 ) -> ApiResult<impl IntoResponse> {
     caller.require_operator()?;
     check_agent_spec(&state, &input.agent)?;
+    check_provider(&state, input.provider.as_deref()).await?;
     let agent = state.store.add_agent(id, input, &caller.name).await?;
     notify(
         &state.store,
@@ -1746,6 +1774,10 @@ pub struct AgentUpdate {
     pub agent: Option<String>,
     #[serde(default)]
     pub instructions: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 pub async fn update_agent(
@@ -1758,9 +1790,17 @@ pub async fn update_agent(
     if let Some(agent) = &update.agent {
         check_agent_spec(&state, agent)?;
     }
+    check_provider(&state, update.provider.as_deref()).await?;
     let agent = state
         .store
-        .update_agent(id, update.agent, update.instructions, &caller.name)
+        .update_agent(
+            id,
+            update.agent,
+            update.instructions,
+            update.provider,
+            update.model,
+            &caller.name,
+        )
         .await?;
     notify(
         &state.store,
@@ -2352,6 +2392,8 @@ pub async fn build(
                     AgentInput {
                         name: member.name.clone(),
                         agent: agent.clone(),
+                        provider: None,
+                        model: None,
                         instructions: member.instructions.clone(),
                     },
                     &caller.name,

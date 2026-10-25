@@ -104,6 +104,8 @@ fn create(manager: &SessionManager, agent: &str) -> Arc<Session> {
                 agent: agent.into(),
                 task: "the task".into(),
                 policy: None,
+                provider: None,
+                model: None,
             },
             Principal::human("alice"),
             Default::default(),
