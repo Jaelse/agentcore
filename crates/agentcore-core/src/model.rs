@@ -104,8 +104,8 @@ impl ProviderKind {
                     description: "Fastest and cheapest general model: simple tasks, summaries, classification.",
                 },
                 KnownModel {
-                    id: "qwen3-coder-480b-a35b-instruct",
-                    description: "Open-weight Qwen3-Coder (480B, 35B active) served by Model Studio: pay per token.",
+                    id: "qwen-max",
+                    description: "Previous-generation top general model: strong reasoning, shorter context than qwen3-max.",
                 },
             ],
             Self::Anthropic | Self::Openai | Self::OpencodeZen | Self::ClaudeSubscription => &[],

@@ -498,10 +498,12 @@ pub async fn test_pool_token(
 
 /// Try a provider's stored API key with one tiny model call, the way the
 /// gateway would send it. Never returns the key. `{"ok", "status", "message"}`.
+/// `?model=<id>` tries a specific model.
 pub async fn test_provider(
     State(state): State<AppState>,
     caller: Caller,
     Path(name): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> ApiResult<Json<Value>> {
     use agentcore_core::ProviderKind;
     caller.require_admin()?;
@@ -518,11 +520,14 @@ pub async fn test_provider(
         ProviderKind::OpencodeZen => "big-pickle",
         ProviderKind::Qwen => "qwen-flash",
     };
-    let model = provider
-        .allowed_models
-        .iter()
-        .find(|m| !m.contains(['*', '?', '[']))
-        .map_or(default_model, String::as_str);
+    // `?model=` tries that model; otherwise the first allowed one.
+    let model = query.get("model").map(String::as_str).unwrap_or_else(|| {
+        provider
+            .allowed_models
+            .iter()
+            .find(|m| !m.contains(['*', '?', '[']))
+            .map_or(default_model, String::as_str)
+    });
     let request = if provider.kind.is_anthropic() {
         let request = state
             .http
@@ -572,7 +577,7 @@ pub async fn test_provider(
                     "rejected: {detail}. Check the API key and that the endpoint matches the key's region"
                 ),
                 404 => format!(
-                    "endpoint or model not found: {detail}. Check the endpoint and the model name `{model}`"
+                    "endpoint or model not found: {detail}. Check the endpoint, and whether your key's region and plan include `{model}`"
                 ),
                 429 => format!("key accepted, but rate- or quota-limited: {detail}"),
                 _ => format!("HTTP {status}: {detail}"),

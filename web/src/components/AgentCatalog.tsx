@@ -378,6 +378,20 @@ function AddAgentDialog({
   const [busy, setBusy] = useState(false);
   const chosen = usable.find((p) => p.name === provider);
   const known = (chosen && providerModels[chosen.kind]) || [];
+  // Per model: does the provider's key work with it? Filled by "Check my key".
+  const [availability, setAvailability] = useState<Record<string, { ok: boolean; message: string } | "checking">>({});
+  const checkModels = async () => {
+    if (!chosen) return;
+    setAvailability(Object.fromEntries(known.map((m) => [m.id, "checking" as const])));
+    for (const m of known) {
+      try {
+        const r = await api.testProvider(chosen.name, m.id);
+        setAvailability((a) => ({ ...a, [m.id]: { ok: r.ok, message: r.message } }));
+      } catch (err) {
+        setAvailability((a) => ({ ...a, [m.id]: { ok: false, message: String(err) } }));
+      }
+    }
+  };
 
   return (
     <dialog
@@ -464,6 +478,7 @@ function AddAgentDialog({
                   value={provider}
                   onChange={(e) => {
                     setProvider(e.target.value);
+                    setAvailability({});
                     // Start from the first model the new provider is known for.
                     const next = usable.find((p) => p.name === e.target.value);
                     const list = (next && providerModels[next.kind]) || [];
@@ -508,7 +523,10 @@ function AddAgentDialog({
             <div className="model-list" role="radiogroup" aria-label="Models">
               <span className="muted small">
                 Models of {chosen?.name} (what your key can use depends on its region and plan; you can also type any
-                other model name above):
+                other model name above).{" "}
+                <button type="button" className="btn ghost" onClick={() => void checkModels()}>
+                  Check which ones my key can use
+                </button>
               </span>
               {known.map((m) => (
                 <button
@@ -519,7 +537,19 @@ function AddAgentDialog({
                   className={`model-option ${model === m.id ? "selected" : ""}`}
                   onClick={() => setModel(m.id)}
                 >
-                  <code>{m.id}</code>
+                  <span>
+                    <code>{m.id}</code>
+                    {availability[m.id] === "checking" && <span className="muted small"> checking…</span>}
+                    {typeof availability[m.id] === "object" && (
+                      <span
+                        className={`small ${(availability[m.id] as { ok: boolean }).ok ? "" : "error-text"}`}
+                        title={(availability[m.id] as { message: string }).message}
+                      >
+                        {" "}
+                        {(availability[m.id] as { ok: boolean }).ok ? "✓ works with your key" : "✗ not available for your key"}
+                      </span>
+                    )}
+                  </span>
                   <span className="muted small">{m.description}</span>
                 </button>
               ))}

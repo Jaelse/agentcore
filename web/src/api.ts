@@ -227,10 +227,10 @@ export const api = {
       "POST",
       `/providers/${encodeURIComponent(provider)}/tokens/${id}/test`,
     ),
-  testProvider: (provider: string) =>
+  testProvider: (provider: string, model?: string) =>
     request<{ ok: boolean; status: number | null; message: string }>(
       "POST",
-      `/providers/${encodeURIComponent(provider)}/test`,
+      `/providers/${encodeURIComponent(provider)}/test${model ? `?model=${encodeURIComponent(model)}` : ""}`,
     ),
   attachAgents: (provider: string) =>
     request<{ provider: string; updated: string[]; skipped: { name: string; reason: string }[] }>(
