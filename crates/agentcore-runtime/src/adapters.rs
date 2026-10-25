@@ -17,7 +17,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use agentcore_core::agent::AdapterError;
-use agentcore_core::{AgentAdapter, AgentSpec, LaunchContext, LaunchPlan, ProviderKind};
+use agentcore_core::{
+    AgentAdapter, AgentSpec, LaunchContext, LaunchPlan, ModelEndpoint, ProviderKind,
+};
 
 pub struct AdapterRegistry {
     adapters: HashMap<&'static str, Arc<dyn AgentAdapter>>,
@@ -189,8 +191,21 @@ impl OpenCodeAdapter {
     /// opencode only knows the models a custom provider declares, and the
     /// agent's model may be one agentcore has no entry for.
     pub fn config_with_model(ctx: &LaunchContext, model: Option<&str>) -> serde_json::Value {
+        Self::config_for(ctx, model, None)
+    }
+
+    /// [`Self::config_with_model`] for one agent: where the agent's own
+    /// provider (`own`) is of a kind, it is the one configured for that kind,
+    /// not merely the first provider of the kind. Otherwise a second agent
+    /// with its own provider of the same kind would silently use the first's.
+    pub fn config_for(
+        ctx: &LaunchContext,
+        model: Option<&str>,
+        own: Option<&ModelEndpoint>,
+    ) -> serde_json::Value {
+        let pick = |kind: ProviderKind| own.filter(|e| e.kind == kind).or_else(|| ctx.model(kind));
         let mut providers = serde_json::Map::new();
-        if let Some(zen) = ctx.model(ProviderKind::OpencodeZen) {
+        if let Some(zen) = pick(ProviderKind::OpencodeZen) {
             providers.insert(
                 "opencode".into(),
                 serde_json::json!({ "options": {
@@ -200,7 +215,7 @@ impl OpenCodeAdapter {
             );
         }
         for kind in [ProviderKind::Anthropic, ProviderKind::Openai] {
-            if let Some(endpoint) = ctx.model(kind) {
+            if let Some(endpoint) = pick(kind) {
                 providers.insert(
                     kind.as_str().into(),
                     serde_json::json!({ "options": {
@@ -214,7 +229,7 @@ impl OpenCodeAdapter {
         // Qwen (DashScope) speaks the OpenAI chat-completions protocol only,
         // so it goes through opencode's OpenAI-compatible provider, not the
         // built-in `openai` one (which uses the Responses API).
-        if let Some(qwen) = ctx.model(ProviderKind::Qwen) {
+        if let Some(qwen) = pick(ProviderKind::Qwen) {
             let models: serde_json::Map<String, serde_json::Value> = ProviderKind::Qwen
                 .known_models()
                 .iter()
@@ -305,7 +320,7 @@ impl AgentAdapter for OpenCodeAdapter {
         let mut env = expand_env(spec, ctx);
         env.insert(
             "OPENCODE_CONFIG_CONTENT".into(),
-            Self::config_with_model(ctx, spec.model.as_deref()).to_string(),
+            Self::config_for(ctx, spec.model.as_deref(), ctx.endpoint(spec)).to_string(),
         );
         Ok(LaunchPlan {
             program: spec.command.clone().unwrap_or_else(|| "opencode".into()),
@@ -907,6 +922,28 @@ mod tests {
             custom["provider"]["qwen"]["models"]
                 .get("qwen-turbo-latest")
                 .is_some()
+        );
+
+        // Two Qwen providers: each agent must get its own, not the first.
+        let mut two = ctx();
+        let first = agentcore_core::ModelEndpoint {
+            name: "dashscope".into(),
+            kind: ProviderKind::Qwen,
+        };
+        let second = agentcore_core::ModelEndpoint {
+            name: "dashscope-intl".into(),
+            kind: ProviderKind::Qwen,
+        };
+        two.models = vec![first.clone(), second.clone()];
+        let picked = OpenCodeAdapter::config_for(&two, Some("qwen-max"), Some(&second));
+        assert_eq!(
+            picked["provider"]["qwen"]["options"]["baseURL"],
+            "http://gw/llm/x/dashscope-intl/v1"
+        );
+        let default = OpenCodeAdapter::config_for(&two, None, Some(&first));
+        assert_eq!(
+            default["provider"]["qwen"]["options"]["baseURL"],
+            "http://gw/llm/x/dashscope/v1"
         );
 
         let env = ctx().model_env();
