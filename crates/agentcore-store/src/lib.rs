@@ -155,6 +155,15 @@ impl From<SessionRow> for SessionRecord {
     }
 }
 
+/// Result of archiving or restoring a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveOutcome {
+    Done,
+    NotFound,
+    /// Only finished sessions can be archived.
+    NotFinished,
+}
+
 /// Provider as shown to operators. Never contains the API key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderInfo {
@@ -343,16 +352,99 @@ impl Store {
         Ok(())
     }
 
-    pub async fn list_sessions(&self, limit: i64) -> Result<Vec<SessionRecord>> {
+    /// Newest first; `archived` picks the archived or the active sessions.
+    pub async fn list_sessions(&self, limit: i64, archived: bool) -> Result<Vec<SessionRecord>> {
         let rows: Vec<SessionRow> = sqlx::query_as(
             "SELECT id, agent, task, policy, policy_digest, status, created_by, created_at,
                     ended_at, actions, model_calls, audit_path, context, node
-             FROM sessions ORDER BY created_at DESC LIMIT $1",
+             FROM sessions WHERE (archived_at IS NOT NULL) = $2
+             ORDER BY created_at DESC LIMIT $1",
         )
         .bind(limit)
+        .bind(archived)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    pub async fn archived_session_ids(&self) -> Result<Vec<SessionId>> {
+        let rows: Vec<(SessionId,)> =
+            sqlx::query_as("SELECT id FROM sessions WHERE archived_at IS NOT NULL")
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().map(|r| r.0).collect())
+    }
+
+    /// Archive or restore one session. Only finished sessions (stopped,
+    /// completed, failed) can be archived. The audit log is untouched.
+    pub async fn set_session_archived(
+        &self,
+        id: SessionId,
+        archived: bool,
+        actor: &str,
+    ) -> Result<ArchiveOutcome> {
+        let mut tx = self.pool.begin().await?;
+        let status: Option<(String,)> =
+            sqlx::query_as("SELECT status FROM sessions WHERE id = $1 FOR UPDATE")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some((status,)) = status else {
+            return Ok(ArchiveOutcome::NotFound);
+        };
+        if archived && !parse_status(&status).is_terminal() {
+            return Ok(ArchiveOutcome::NotFinished);
+        }
+        sqlx::query("UPDATE sessions SET archived_at = CASE WHEN $2 THEN now() END WHERE id = $1")
+            .bind(id)
+            .bind(archived)
+            .execute(&mut *tx)
+            .await?;
+        let action = if archived {
+            "session.archive"
+        } else {
+            "session.unarchive"
+        };
+        admin_event(
+            &mut tx,
+            actor,
+            action,
+            &id.to_string(),
+            serde_json::json!({}),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(ArchiveOutcome::Done)
+    }
+
+    /// Archive every finished session, optionally only those that ended at
+    /// least `older_than_hours` ago. Returns how many were archived.
+    pub async fn archive_finished_sessions(
+        &self,
+        older_than_hours: Option<i64>,
+        actor: &str,
+    ) -> Result<u64> {
+        let mut tx = self.pool.begin().await?;
+        let done = sqlx::query(
+            "UPDATE sessions SET archived_at = now()
+             WHERE archived_at IS NULL AND status IN ('stopped', 'completed', 'failed')
+               AND ($1::bigint IS NULL
+                    OR COALESCE(ended_at, created_at) <= now() - make_interval(hours => $1::int))",
+        )
+        .bind(older_than_hours)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        admin_event(
+            &mut tx,
+            actor,
+            "session.archive_finished",
+            "sessions",
+            serde_json::json!({ "count": done, "older_than_hours": older_than_hours }),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(done)
     }
 
     pub async fn get_session(&self, id: SessionId) -> Result<Option<SessionRecord>> {

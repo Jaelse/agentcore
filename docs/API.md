@@ -63,7 +63,10 @@ before).
 
 | Method & path | Role | Description |
 |---|---|---|
-| `GET /sessions` | V | All sessions (live and archived), newest first |
+| `GET /sessions` | V | Active sessions (live and finished), newest first. `?archived=true` lists the archived ones instead |
+| `POST /sessions/{id}/archive` | O | Hide a finished (stopped, completed, failed) session from the default list; 409 for a live one. Nothing is deleted: the audit log, recording and model calls stay, and the session still opens by its id |
+| `POST /sessions/{id}/unarchive` | O | Show an archived session in the active list again |
+| `POST /sessions/archive-finished` | O | `{older_than_hours?}`: archive all finished sessions (or those that ended at least that long ago). Returns `{archived: n}` |
 | `POST /sessions` | O | Free task without a project: `{agent, task, policy?}` |
 | `GET /sessions/{id}` | V | `{session, live, policy, approvals, proposal, role}` |
 | `POST /sessions/{id}/stop` | O | Stop now. Body (optional): `{reason}` |

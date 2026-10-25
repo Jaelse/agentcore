@@ -83,31 +83,108 @@ pub async fn system_card(State(state): State<AppState>, _caller: Caller) -> Json
     }))
 }
 
+#[derive(serde::Deserialize, Default)]
+pub struct SessionFilter {
+    /// `true`: only archived sessions. Default: only active ones.
+    #[serde(default)]
+    archived: bool,
+}
+
 pub async fn list_sessions(
     State(state): State<AppState>,
     _caller: Caller,
+    axum::extract::Query(filter): axum::extract::Query<SessionFilter>,
 ) -> ApiResult<Json<Value>> {
-    Ok(Json(json!(all_sessions(&state).await?)))
+    Ok(Json(json!(sessions_in(&state, filter.archived).await?)))
 }
 
-/// Archived sessions come from the database; live ones from memory, which
-/// has fresher state (pending approvals, counters). Newest first.
+/// Active (not archived) sessions, newest first.
 pub(crate) async fn all_sessions(state: &AppState) -> ApiResult<Vec<SessionInfo>> {
+    sessions_in(state, false).await
+}
+
+/// Finished sessions come from the database; live ones from memory, which
+/// has fresher state (pending approvals, counters). Newest first.
+async fn sessions_in(state: &AppState, archived: bool) -> ApiResult<Vec<SessionInfo>> {
     let mut sessions: Vec<SessionInfo> = state
         .store
-        .list_sessions(200)
+        .list_sessions(200, archived)
         .await?
         .into_iter()
         .map(|r| r.info)
         .collect();
+    let archived_ids = state.store.archived_session_ids().await?;
     for live in state.manager.list() {
         match sessions.iter_mut().find(|s| s.id == live.id) {
             Some(slot) => *slot = live,
-            None => sessions.push(live),
+            // Sessions the database does not list yet are active, unless
+            // they were archived while their record is still in memory.
+            None if !archived && !archived_ids.contains(&live.id) => sessions.push(live),
+            None => {}
         }
     }
     sessions.sort_by_key(|s| std::cmp::Reverse(s.created_at));
     Ok(sessions)
+}
+
+pub async fn archive_session(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    set_archived(&state, &caller, id, true).await
+}
+
+pub async fn unarchive_session(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    set_archived(&state, &caller, id, false).await
+}
+
+async fn set_archived(
+    state: &AppState,
+    caller: &Caller,
+    id: Uuid,
+    archived: bool,
+) -> ApiResult<StatusCode> {
+    use agentcore_store::ArchiveOutcome;
+    caller.require_operator()?;
+    match state
+        .store
+        .set_session_archived(id, archived, &caller.name)
+        .await?
+    {
+        ArchiveOutcome::Done => Ok(StatusCode::NO_CONTENT),
+        ArchiveOutcome::NotFound => Err(ApiError::new(StatusCode::NOT_FOUND, "unknown session")),
+        ArchiveOutcome::NotFinished => Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "only finished sessions (stopped, completed or failed) can be archived",
+        )),
+    }
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct ArchiveFinished {
+    /// Only sessions that ended at least this many hours ago.
+    #[serde(default)]
+    older_than_hours: Option<i64>,
+}
+
+/// Archive every finished session: `{older_than_hours?}` -> `{archived}`.
+pub async fn archive_finished(
+    State(state): State<AppState>,
+    caller: Caller,
+    body: Option<Json<ArchiveFinished>>,
+) -> ApiResult<Json<Value>> {
+    caller.require_operator()?;
+    let Json(body) = body.unwrap_or_default();
+    let archived = state
+        .store
+        .archive_finished_sessions(body.older_than_hours, &caller.name)
+        .await?;
+    Ok(Json(json!({ "archived": archived })))
 }
 
 pub async fn create_session(

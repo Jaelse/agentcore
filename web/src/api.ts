@@ -118,7 +118,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 export const api = {
   whoami: () => request<Me>("GET", "/whoami"),
   systemCard: () => request<SystemCard>("GET", "/system-card"),
-  sessions: () => request<SessionInfo[]>("GET", "/sessions"),
+  sessions: (archived = false) => request<SessionInfo[]>("GET", `/sessions${archived ? "?archived=true" : ""}`),
+  archiveSession: (id: string) => request<void>("POST", `/sessions/${id}/archive`),
+  unarchiveSession: (id: string) => request<void>("POST", `/sessions/${id}/unarchive`),
+  archiveFinished: (olderThanHours?: number) =>
+    request<{ archived: number }>("POST", "/sessions/archive-finished", { older_than_hours: olderThanHours ?? null }),
   session: (id: string) =>
     request<{
       session: SessionInfo;

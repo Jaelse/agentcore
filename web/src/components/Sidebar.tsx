@@ -1,12 +1,16 @@
 import { useState } from "react";
 import { api } from "../api";
 import type { Me, SessionInfo, SystemCard } from "../types";
+import { TERMINAL } from "../types";
 import { StatusPill } from "./StatusPill";
 
 interface Props {
   me: Me;
   card: SystemCard;
   sessions: SessionInfo[];
+  showArchived: boolean;
+  onShowArchived: (archived: boolean) => void;
+  onArchivedSome: () => void;
   selected: string | null;
   onSelect: (id: string) => void;
   onCreated: (s: SessionInfo) => void;
@@ -15,7 +19,30 @@ interface Props {
   onOpenSettings: () => void;
 }
 
-export function Sidebar({ me, card, sessions, selected, onSelect, onCreated, onError, providerCount, onOpenSettings }: Props) {
+export function Sidebar({
+  me,
+  card,
+  sessions,
+  showArchived,
+  onShowArchived,
+  onArchivedSome,
+  selected,
+  onSelect,
+  onCreated,
+  onError,
+  providerCount,
+  onOpenSettings,
+}: Props) {
+  const finished = sessions.filter((s) => TERMINAL.includes(s.status)).length;
+  const archiveFinished = async () => {
+    if (!confirm("Archive all finished sessions? They are hidden from this list, not deleted; find them under “Archived”.")) return;
+    try {
+      await api.archiveFinished();
+      onArchivedSome();
+    } catch (err) {
+      onError(err);
+    }
+  };
   return (
     <aside className="sidebar">
       {me.role !== "viewer" && providerCount === 0 && (
@@ -27,8 +54,20 @@ export function Sidebar({ me, card, sessions, selected, onSelect, onCreated, onE
         </div>
       )}
       {me.role !== "viewer" && <NewSession card={card} onCreated={onCreated} onError={onError} />}
-      <h3 className="section-title">Sessions</h3>
-      {sessions.length === 0 && <p className="muted small">No sessions yet.</p>}
+      <h3 className="section-title">{showArchived ? "Archived sessions" : "Sessions"}</h3>
+      <div className="row small">
+        <button className="link" onClick={() => onShowArchived(!showArchived)}>
+          {showArchived ? "← Back to active sessions" : "Show archived"}
+        </button>
+        {!showArchived && me.role !== "viewer" && finished > 0 && (
+          <button className="link" onClick={() => void archiveFinished()}>
+            Archive {finished} finished
+          </button>
+        )}
+      </div>
+      {sessions.length === 0 && (
+        <p className="muted small">{showArchived ? "No archived sessions." : "No sessions yet."}</p>
+      )}
       <ul className="session-list">
         {sessions.map((s) => (
           <li key={s.id}>
