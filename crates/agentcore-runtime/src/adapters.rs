@@ -182,6 +182,13 @@ impl OpenCodeAdapter {
     /// default model. The session token travels in `x-agentcore-token`.
     /// Verified against opencode 1.18.
     pub fn config(ctx: &LaunchContext) -> serde_json::Value {
+        Self::config_with_model(ctx, None)
+    }
+
+    /// [`Self::config`] that also lists `model` under the `qwen` provider:
+    /// opencode only knows the models a custom provider declares, and the
+    /// agent's model may be one agentcore has no entry for.
+    pub fn config_with_model(ctx: &LaunchContext, model: Option<&str>) -> serde_json::Value {
         let mut providers = serde_json::Map::new();
         if let Some(zen) = ctx.model(ProviderKind::OpencodeZen) {
             providers.insert(
@@ -203,6 +210,30 @@ impl OpenCodeAdapter {
                     }}),
                 );
             }
+        }
+        // Qwen (DashScope) speaks the OpenAI chat-completions protocol only,
+        // so it goes through opencode's OpenAI-compatible provider, not the
+        // built-in `openai` one (which uses the Responses API).
+        if let Some(qwen) = ctx.model(ProviderKind::Qwen) {
+            let models: serde_json::Map<String, serde_json::Value> = ProviderKind::Qwen
+                .known_models()
+                .iter()
+                .map(|m| m.id)
+                .chain(model)
+                .map(|id| (id.into(), serde_json::json!({ "name": id })))
+                .collect();
+            providers.insert(
+                "qwen".into(),
+                serde_json::json!({
+                    "npm": "@ai-sdk/openai-compatible",
+                    "name": "Qwen",
+                    "options": {
+                        "baseURL": format!("{}/v1", ctx.model_base_url(&qwen.name)),
+                        "apiKey": ctx.gateway_token,
+                    },
+                    "models": models,
+                }),
+            );
         }
         serde_json::json!({
             "provider": providers,
@@ -274,7 +305,7 @@ impl AgentAdapter for OpenCodeAdapter {
         let mut env = expand_env(spec, ctx);
         env.insert(
             "OPENCODE_CONFIG_CONTENT".into(),
-            Self::config(ctx).to_string(),
+            Self::config_with_model(ctx, spec.model.as_deref()).to_string(),
         );
         Ok(LaunchPlan {
             program: spec.command.clone().unwrap_or_else(|| "opencode".into()),
@@ -859,6 +890,23 @@ mod tests {
         assert!(
             zen.get("apiKey").is_none(),
             "an apiKey would unlock paid models"
+        );
+
+        let mut qwen_ctx = ctx();
+        qwen_ctx.models = vec![agentcore_core::ModelEndpoint {
+            name: "dashscope".into(),
+            kind: ProviderKind::Qwen,
+        }];
+        let qwen = &OpenCodeAdapter::config(&qwen_ctx)["provider"]["qwen"];
+        assert_eq!(qwen["npm"], "@ai-sdk/openai-compatible");
+        assert_eq!(qwen["options"]["baseURL"], "http://gw/llm/x/dashscope/v1");
+        assert_eq!(qwen["options"]["apiKey"], "secret");
+        assert!(qwen["models"].get("qwen3-coder-plus").is_some());
+        let custom = OpenCodeAdapter::config_with_model(&qwen_ctx, Some("qwen-turbo-latest"));
+        assert!(
+            custom["provider"]["qwen"]["models"]
+                .get("qwen-turbo-latest")
+                .is_some()
         );
 
         let env = ctx().model_env();

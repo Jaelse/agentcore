@@ -16,7 +16,11 @@ const Replay = lazy(() => import("./LiveView").then((m) => ({ default: m.Replay 
 interface Props {
   info: SessionInfo;
   me: Me;
+  /** Shown from the archive: offers “Restore” instead of “Archive”. */
+  archived?: boolean;
   onChanged: () => void;
+  /** The session moved to or from the archive; it leaves the current list. */
+  onArchivedChanged?: () => void;
   onError: (err: unknown) => void;
 }
 
@@ -24,7 +28,7 @@ type Tab = "live" | "conversation" | "activity" | "changes" | "output" | "audit"
 
 type Detail = Awaited<ReturnType<typeof api.session>>;
 
-export function SessionView({ info, me, onChanged, onError }: Props) {
+export function SessionView({ info, me, archived = false, onChanged, onArchivedChanged, onError }: Props) {
   const { events, connected } = useEventStream(info.id);
   const { timeline, output, pending } = useSessionModel(events);
   const [tab, setTab] = useState<Tab>(TERMINAL.includes(info.status) ? "conversation" : "live");
@@ -134,6 +138,28 @@ export function SessionView({ info, me, onChanged, onError }: Props) {
             </div>
           </dl>
         </div>
+        {canAct && ended && (
+          <div className="session-actions">
+            <button
+              className="btn"
+              title={
+                archived
+                  ? "Show this session in the active list again"
+                  : "Hide this finished session from the list; nothing is deleted"
+              }
+              onClick={async () => {
+                try {
+                  await (archived ? api.unarchiveSession(info.id) : api.archiveSession(info.id));
+                  onArchivedChanged?.();
+                } catch (err) {
+                  onError(err);
+                }
+              }}
+            >
+              {archived ? "Restore" : "Archive"}
+            </button>
+          </div>
+        )}
         {canAct && !ended && (
           <div className="session-actions">
             {info.status === "awaiting_input" && isRepo && detail?.role?.delivery === "pull_request" && (

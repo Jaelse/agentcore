@@ -1,8 +1,8 @@
 use agentcore_core::{ModelCallOutcome, Principal, ProviderKind, SessionInfo, SessionStatus};
 use agentcore_store::testing::fresh_store;
 use agentcore_store::{
-    BoardConfig, GitHubConfig, GitHubUpdate, ModelCallRecord, NewProvider, ProjectInput,
-    ProviderUpdate, SessionRecord, StoreError,
+    ArchiveOutcome, BoardConfig, GitHubConfig, GitHubUpdate, ModelCallRecord, NewProvider,
+    ProjectInput, ProviderUpdate, SessionRecord, StoreError,
 };
 use chrono::Utc;
 use uuid::Uuid;
@@ -57,7 +57,7 @@ async fn sessions_persist_and_interrupted_ones_fail() {
     let interrupted = store.fail_interrupted_sessions("n1").await.unwrap();
     assert_eq!(interrupted.len(), 1);
     assert_eq!(interrupted[0].info.id, live.info.id);
-    let list = store.list_sessions(10).await.unwrap();
+    let list = store.list_sessions(10, false).await.unwrap();
     assert_eq!(list.len(), 3);
     assert_eq!(
         list.iter().filter(|s| !s.info.status.is_terminal()).count(),
@@ -416,4 +416,80 @@ async fn claude_token_pool_lends_one_token_per_live_session() {
         panic!("expected a token");
     };
     assert_eq!(reused, first);
+}
+
+#[tokio::test]
+async fn finished_sessions_can_be_archived_and_restored() {
+    let Some((store, _)) = fresh_store().await else {
+        return;
+    };
+    let done = session(SessionStatus::Completed);
+    let failed = session(SessionStatus::Failed);
+    let live = session(SessionStatus::Running);
+    for s in [&done, &failed, &live] {
+        store.upsert_session(s).await.unwrap();
+    }
+
+    // Only finished sessions can be archived.
+    assert_eq!(
+        store
+            .set_session_archived(live.info.id, true, "alice")
+            .await
+            .unwrap(),
+        ArchiveOutcome::NotFinished
+    );
+    assert_eq!(
+        store
+            .set_session_archived(Uuid::now_v7(), true, "alice")
+            .await
+            .unwrap(),
+        ArchiveOutcome::NotFound
+    );
+    assert_eq!(
+        store
+            .set_session_archived(done.info.id, true, "alice")
+            .await
+            .unwrap(),
+        ArchiveOutcome::Done
+    );
+    assert_eq!(store.list_sessions(10, false).await.unwrap().len(), 2);
+    let archived = store.list_sessions(10, true).await.unwrap();
+    assert_eq!(archived.len(), 1);
+    assert_eq!(archived[0].info.id, done.info.id);
+    assert_eq!(
+        store.archived_session_ids().await.unwrap(),
+        vec![done.info.id]
+    );
+
+    // A later update from the running node keeps it archived.
+    store.upsert_session(&done).await.unwrap();
+    assert_eq!(store.list_sessions(10, true).await.unwrap().len(), 1);
+
+    // Archive the rest of the finished ones; the live session stays.
+    assert_eq!(
+        store
+            .archive_finished_sessions(None, "alice")
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        store
+            .archive_finished_sessions(None, "alice")
+            .await
+            .unwrap(),
+        0
+    );
+    let active = store.list_sessions(10, false).await.unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].info.id, live.info.id);
+
+    assert_eq!(
+        store
+            .set_session_archived(done.info.id, false, "alice")
+            .await
+            .unwrap(),
+        ArchiveOutcome::Done
+    );
+    assert_eq!(store.list_sessions(10, false).await.unwrap().len(), 2);
 }

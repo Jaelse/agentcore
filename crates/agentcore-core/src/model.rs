@@ -14,6 +14,9 @@ pub enum ProviderKind {
     /// OpenCode Zen, opencode's hosted model service (OpenAI-compatible).
     /// Its free models (e.g. Big Pickle) accept the API key `public`.
     OpencodeZen,
+    /// Alibaba Cloud Model Studio (DashScope) serving Qwen models through its
+    /// OpenAI-compatible endpoint (`Authorization: Bearer`).
+    Qwen,
     /// A Claude Pro/Max/Team/Enterprise subscription, used by Claude Code
     /// only. The "API key" is a long-lived OAuth token from
     /// `claude setup-token`; it is sent as `Authorization: Bearer` with the
@@ -27,6 +30,7 @@ impl ProviderKind {
             Self::Anthropic => "anthropic",
             Self::Openai => "openai",
             Self::OpencodeZen => "opencode_zen",
+            Self::Qwen => "qwen",
             Self::ClaudeSubscription => "claude_subscription",
         }
     }
@@ -36,6 +40,7 @@ impl ProviderKind {
             Self::Anthropic | Self::ClaudeSubscription => "https://api.anthropic.com",
             Self::Openai => "https://api.openai.com",
             Self::OpencodeZen => "https://opencode.ai/zen",
+            Self::Qwen => "https://dashscope-intl.aliyuncs.com/compatible-mode",
         }
     }
 }
@@ -59,7 +64,51 @@ impl ProviderKind {
     pub fn default_api_key(self) -> Option<&'static str> {
         match self {
             Self::OpencodeZen => Some("public"),
-            Self::Anthropic | Self::Openai | Self::ClaudeSubscription => None,
+            Self::Anthropic | Self::Openai | Self::Qwen | Self::ClaudeSubscription => None,
+        }
+    }
+}
+
+/// A model a provider is known to serve, offered when adding an agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct KnownModel {
+    pub id: &'static str,
+    pub description: &'static str,
+}
+
+impl ProviderKind {
+    /// Models offered in the "add agent" dialog. Empty for providers whose
+    /// models change too fast to list (any model name can still be typed).
+    /// Which of them an account can call depends on its region and plan.
+    pub fn known_models(self) -> &'static [KnownModel] {
+        match self {
+            Self::Qwen => &[
+                KnownModel {
+                    id: "qwen3-coder-plus",
+                    description: "Qwen's flagship coding model: agentic coding and tool use, very long context. The best default for opencode.",
+                },
+                KnownModel {
+                    id: "qwen3-coder-flash",
+                    description: "Faster, cheaper coding model for simple edits and quick iterations.",
+                },
+                KnownModel {
+                    id: "qwen3-max",
+                    description: "Qwen's most capable general model: hard reasoning, planning, long documents. Slower and more expensive.",
+                },
+                KnownModel {
+                    id: "qwen-plus",
+                    description: "Balanced general model: good quality for its price, long context.",
+                },
+                KnownModel {
+                    id: "qwen-flash",
+                    description: "Fastest and cheapest general model: simple tasks, summaries, classification.",
+                },
+                KnownModel {
+                    id: "qwen-max",
+                    description: "Previous-generation top general model: strong reasoning, shorter context than qwen3-max.",
+                },
+            ],
+            Self::Anthropic | Self::Openai | Self::OpencodeZen | Self::ClaudeSubscription => &[],
         }
     }
 }
@@ -72,6 +121,7 @@ impl std::str::FromStr for ProviderKind {
             "anthropic" => Ok(Self::Anthropic),
             "openai" => Ok(Self::Openai),
             "opencode_zen" => Ok(Self::OpencodeZen),
+            "qwen" => Ok(Self::Qwen),
             "claude_subscription" => Ok(Self::ClaudeSubscription),
             other => Err(format!("unknown provider kind `{other}`")),
         }

@@ -181,7 +181,10 @@ pub fn router(state: AppState) -> Router {
             "/sessions",
             get(api::list_sessions).post(api::create_session),
         )
+        .route("/sessions/archive-finished", post(api::archive_finished))
         .route("/sessions/{id}", get(api::get_session))
+        .route("/sessions/{id}/archive", post(api::archive_session))
+        .route("/sessions/{id}/unarchive", post(api::unarchive_session))
         .route("/sessions/{id}/stop", post(api::stop_session))
         .route("/sessions/{id}/events", get(api::events))
         .route("/sessions/{id}/stream", get(api::stream))
@@ -218,6 +221,7 @@ pub fn router(state: AppState) -> Router {
             "/providers/{name}/agents",
             post(catalog::attach_subscription),
         )
+        .route("/providers/{name}/test", post(api::test_provider))
         .route(
             "/providers/{name}/tokens/{id}/test",
             post(api::test_pool_token),

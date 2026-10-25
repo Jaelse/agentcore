@@ -595,3 +595,8 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
   .footer { padding-bottom: 10px; }
   .composer { bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 8px); }
 }
+
+.model-list { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 12px; }
+.model-option { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: 8px 12px; border: 1px solid var(--border, #444); border-radius: 8px; background: transparent; color: inherit; cursor: pointer; }
+.model-option:hover { border-color: var(--accent, #6aa9ff); }
+.model-option.selected { border-color: var(--accent, #6aa9ff); box-shadow: inset 0 0 0 1px var(--accent, #6aa9ff); }

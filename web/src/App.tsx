@@ -19,6 +19,7 @@ export default function App() {
   const [needsLogin, setNeedsLogin] = useState(false);
   const [card, setCard] = useState<SystemCard | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [showArchived, setShowArchived] = useState(false);
   const [selected, setSelected] = useState<string | null>(() => location.hash.slice(1) || null);
   const [showCard, setShowCard] = useState(false);
   // A link to a session (#id) opens it; otherwise start on the feed.
@@ -52,8 +53,8 @@ export default function App() {
 
   const refresh = useCallback(() => {
     if (!me) return;
-    api.sessions().then(setSessions).catch(handleError);
-  }, [me, handleError]);
+    api.sessions(showArchived).then(setSessions).catch(handleError);
+  }, [me, handleError, showArchived]);
 
   useInterval(refresh, 2000);
 
@@ -177,6 +178,13 @@ export default function App() {
           me={me}
           card={card}
           sessions={sessions}
+          showArchived={showArchived}
+          onShowArchived={(v) => {
+            setShowArchived(v);
+            setSessions([]);
+            setSelected(null);
+          }}
+          onArchivedSome={refresh}
           selected={selected}
           onSelect={setSelected}
           onCreated={(s) => {
@@ -192,7 +200,18 @@ export default function App() {
             </button>
           )}
           {current ? (
-            <SessionView key={current.id} info={current} me={me} onChanged={refresh} onError={handleError} />
+            <SessionView
+              key={current.id}
+              info={current}
+              me={me}
+              archived={showArchived}
+              onChanged={refresh}
+              onArchivedChanged={() => {
+                setSelected(null);
+                refresh();
+              }}
+              onError={handleError}
+            />
           ) : (
             <div className="empty">
               <h2>No session selected</h2>
