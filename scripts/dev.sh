@@ -54,6 +54,9 @@ sed -e "s|^bind = .*|bind = \"127.0.0.1:$API_PORT\"|" \
     agentcore.dev.toml > "$DEV/agentcore.toml"
 cat >> "$DEV/agentcore.toml" <<TOML
 
+[templates]
+dir = "$PWD/templates"
+
 [[server.operators]]
 name = "dev"
 token_sha256 = "$HASH"
