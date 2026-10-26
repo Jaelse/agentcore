@@ -21,6 +21,7 @@ import { DataSources } from "./DataSources";
 import { Improvements } from "./Improvements";
 import { Spending } from "./Spending";
 import { type AgentChoice, AgentModelPicker, useModelChoices } from "./AgentModelPicker";
+import { OfficeFloor } from "./OfficeFloor";
 import { Outbox } from "./Outbox";
 import { Releases } from "./Releases";
 
@@ -41,6 +42,7 @@ type Selection =
   | { kind: "org" }
   | { kind: "department"; id: string }
   | { kind: "new" }
+  | { kind: "floor" }
   | { kind: "dashboard" }
   | { kind: "improvements" }
   | { kind: "data" }
@@ -107,6 +109,12 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
           <div className="muted small">
             {org.departments.length}/{org.settings.max_departments} departments · every message
           </div>
+        </button>
+        <button className={`session-item ${selection.kind === "floor" ? "active" : ""}`} onClick={() => setSelection({ kind: "floor" })}>
+          <div className="session-item-top">
+            <strong>🏢 Floor plan</strong>
+          </div>
+          <div className="muted small">departments as rooms, agents inside</div>
         </button>
         <button className={`session-item ${selection.kind === "dashboard" ? "active" : ""}`} onClick={() => setSelection({ kind: "dashboard" })}>
           <div className="session-item-top">
@@ -238,6 +246,12 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
             }}
             onCancel={org.departments.length > 0 ? () => setSelection({ kind: "org" }) : undefined}
             onError={onError}
+          />
+        ) : selection.kind === "floor" ? (
+          <OfficeFloor
+            org={org}
+            onOpenDepartment={(id) => setSelection({ kind: "department", id })}
+            onOpenSession={onOpenSession}
           />
         ) : selection.kind === "dashboard" ? (
           <Dashboard

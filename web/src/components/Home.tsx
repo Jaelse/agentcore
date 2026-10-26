@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import { useInterval } from "../hooks";
 import type { FeedItem, FeedKind, Me, OrgOverview } from "../types";
+import { Floor } from "./OfficeFloor";
 
 interface Props {
   me: Me;
@@ -101,9 +102,11 @@ export function Home({ me, onOpenSession, onOpenOrganisation, onError }: Props) 
       ].filter((w) => w.n > 0)
     : [];
 
+  const showOrg = (org?.departments.length ?? 0) > 0;
+
   let lastDay = "";
   return (
-    <main className="main home-main">
+    <main className={`main home-main ${showOrg ? "with-org" : ""}`}>
       <header className="home-head">
         <h1>{org?.profile.company_name ? `${org.profile.company_name}` : "Home"}</h1>
         <p className="muted">
@@ -121,73 +124,89 @@ export function Home({ me, onOpenSession, onOpenOrganisation, onError }: Props) 
         )}
       </header>
 
-      <div className="home-filters" role="tablist" aria-label="Filter the feed">
-        {KINDS.map((k) => (
-          <button
-            key={k.id}
-            role="tab"
-            aria-selected={kind === k.id}
-            className={`tab ${kind === k.id ? "active" : ""}`}
-            onClick={() => setKind(k.id)}
-          >
-            {k.icon && <span aria-hidden>{k.icon} </span>}
-            {k.label}
-          </button>
-        ))}
+      <div className={`home-grid ${showOrg ? "with-org" : ""}`}>
+        {showOrg && org && (
+          <section className="home-org" aria-label="Organisation">
+            <div className="home-org-head">
+              <h2 className="section-title">Organisation</h2>
+              <button className="link small" onClick={onOpenOrganisation}>
+                Open →
+              </button>
+            </div>
+            <Floor org={org} onOpenDepartment={onOpenOrganisation} onOpenSession={onOpenSession} />
+          </section>
+        )}
+
+        <section className="home-feed" aria-label="Feed">
+          <div className="home-filters" role="tablist" aria-label="Filter the feed">
+            {KINDS.map((k) => (
+              <button
+                key={k.id}
+                role="tab"
+                aria-selected={kind === k.id}
+                className={`tab ${kind === k.id ? "active" : ""}`}
+                onClick={() => setKind(k.id)}
+              >
+                {k.icon && <span aria-hidden>{k.icon} </span>}
+                {k.label}
+              </button>
+            ))}
+          </div>
+
+          {feed === null ? (
+            <div className="empty">Loading the feed…</div>
+          ) : feed.items.length === 0 ? (
+            <div className="empty">
+              <h2>Nothing yet</h2>
+              <p>
+                {kind === "all"
+                  ? "Start an agent or set a goal, and what happens will show up here."
+                  : "Nothing of this kind has happened lately."}
+              </p>
+            </div>
+          ) : (
+            <ol className="feed">
+              {feed.items.map((item) => {
+                const label = dayLabel(item.at);
+                const heading = label !== lastDay;
+                lastDay = label;
+                const open = item.session ? () => onOpenSession(item.session!) : onOpenOrganisation;
+                return (
+                  <li key={item.id} className="feed-entry">
+                    {heading && <h2 className="feed-day section-title">{label}</h2>}
+                    <button className={`card feed-item tone-${item.tone}`} onClick={open}>
+                      <span className="feed-icon" aria-hidden>
+                        {ICON[item.kind]}
+                      </span>
+                      <span className="feed-body">
+                        <strong className="feed-title">{item.title}</strong>
+                        {item.detail && <span className="feed-detail">{item.detail}</span>}
+                        <span className="muted small">
+                          {[item.actor, item.department, item.project].filter(Boolean).join(" · ")}
+                          {(item.actor || item.department || item.project) && " · "}
+                          <time dateTime={item.at} title={new Date(item.at).toLocaleString()}>
+                            {relative(item.at)}
+                          </time>
+                        </span>
+                      </span>
+                      {item.tone === "warn" && <span className="tag tone-attention">waiting</span>}
+                      {item.tone === "bad" && <span className="tag tone-bad">problem</span>}
+                    </button>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+
+          {feed?.hasMore && (
+            <div className="home-more">
+              <button className="btn" disabled={loadingMore} onClick={older}>
+                {loadingMore ? "Loading…" : "Show older"}
+              </button>
+            </div>
+          )}
+        </section>
       </div>
-
-      {feed === null ? (
-        <div className="empty">Loading the feed…</div>
-      ) : feed.items.length === 0 ? (
-        <div className="empty">
-          <h2>Nothing yet</h2>
-          <p>
-            {kind === "all"
-              ? "Start an agent or set a goal, and what happens will show up here."
-              : "Nothing of this kind has happened lately."}
-          </p>
-        </div>
-      ) : (
-        <ol className="feed">
-          {feed.items.map((item) => {
-            const label = dayLabel(item.at);
-            const heading = label !== lastDay;
-            lastDay = label;
-            const open = item.session ? () => onOpenSession(item.session!) : onOpenOrganisation;
-            return (
-              <li key={item.id} className="feed-entry">
-                {heading && <h2 className="feed-day section-title">{label}</h2>}
-                <button className={`card feed-item tone-${item.tone}`} onClick={open}>
-                  <span className="feed-icon" aria-hidden>
-                    {ICON[item.kind]}
-                  </span>
-                  <span className="feed-body">
-                    <strong className="feed-title">{item.title}</strong>
-                    {item.detail && <span className="feed-detail">{item.detail}</span>}
-                    <span className="muted small">
-                      {[item.actor, item.department, item.project].filter(Boolean).join(" · ")}
-                      {(item.actor || item.department || item.project) && " · "}
-                      <time dateTime={item.at} title={new Date(item.at).toLocaleString()}>
-                        {relative(item.at)}
-                      </time>
-                    </span>
-                  </span>
-                  {item.tone === "warn" && <span className="tag tone-attention">waiting</span>}
-                  {item.tone === "bad" && <span className="tag tone-bad">problem</span>}
-                </button>
-              </li>
-            );
-          })}
-        </ol>
-      )}
-
-      {feed?.hasMore && (
-        <div className="home-more">
-          <button className="btn" disabled={loadingMore} onClick={older}>
-            {loadingMore ? "Loading…" : "Show older"}
-          </button>
-        </div>
-      )}
     </main>
   );
 }
