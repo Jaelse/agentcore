@@ -45,10 +45,19 @@ const LEVEL_LABEL: Record<Blueprint["level"], string> = {
   complete: "complete",
 };
 
+type Step = "start" | "choose" | "about" | "review";
+
+const STEPS: { id: Step; label: string }[] = [
+  { id: "start", label: "How to start" },
+  { id: "choose", label: "Choose" },
+  { id: "about", label: "Your company" },
+  { id: "review", label: "Review & create" },
+];
+
 /** A guided way to build an organisation from templates, small or big. */
 export function OrgBuilder({ me, card, org, initialMode, initialPick, onDone, onCancel, onError }: Props) {
   const [catalog, setCatalog] = useState<TemplateCatalog | null>(null);
-  const [step, setStep] = useState<"start" | "choose" | "review">(initialMode ? "choose" : "start");
+  const [step, setStep] = useState<Step>(initialMode ? "choose" : "start");
   const [mode, setMode] = useState<BuildMode>(initialMode ?? "small");
   const [company, setCompany] = useState(org.profile.company_name);
   const [about, setAbout] = useState(org.profile.company_about);
@@ -162,10 +171,14 @@ export function OrgBuilder({ me, card, org, initialMode, initialPick, onDone, on
         <div className="session-header-main">
           <h2>{org.departments.length === 0 ? "Build your organisation" : "Grow your organisation"}</h2>
           <ol className="steps">
-            {(["start", "choose", "review"] as const).map((s, i) => (
-              <li key={s} className={step === s ? "active" : ""}>
-                <button className="link" onClick={() => setStep(s)} disabled={s === "review" && departments.length === 0}>
-                  {i + 1}. {s === "start" ? "How to start" : s === "choose" ? "Choose" : "Review & create"}
+            {STEPS.map((s, i) => (
+              <li key={s.id} className={step === s.id ? "active" : ""}>
+                <button
+                  className="link"
+                  onClick={() => setStep(s.id)}
+                  disabled={(s.id === "about" || s.id === "review") && departments.length === 0}
+                >
+                  {i + 1}. {s.label}
                 </button>
               </li>
             ))}
@@ -189,20 +202,6 @@ export function OrgBuilder({ me, card, org, initialMode, initialPick, onDone, on
 
       {step === "start" && (
         <>
-          <section className="card pad project-form">
-            <h3 className="section-title">About your company</h3>
-            <p className="muted small">Every agent gets this as context, and missions mention your company by name.</p>
-            <div className="grid-2">
-              <label>
-                Company name
-                <input value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Acme" />
-              </label>
-              <label>
-                What it does
-                <input value={about} onChange={(e) => setAbout(e.target.value)} placeholder="We build accounting software for small shops." />
-              </label>
-            </div>
-          </section>
           <h3 className="section-title">How do you want to start?</h3>
           <div className="choice-grid">
             {MODES.map((m) => (
@@ -259,8 +258,8 @@ export function OrgBuilder({ me, card, org, initialMode, initialPick, onDone, on
             </section>
           )}
           <div className="row">
-            <button className="btn primary" disabled={!bp} onClick={() => setStep("review")}>
-              Next: review
+            <button className="btn primary" disabled={!bp} onClick={() => setStep("about")}>
+              Next: your company
             </button>
             <button className="link small" onClick={() => setMode("pick")}>
               or pick departments yourself
@@ -313,11 +312,39 @@ export function OrgBuilder({ me, card, org, initialMode, initialPick, onDone, on
           ))}
           <div className="row composer card">
             <span>{picked.length} selected</span>
-            <button className="btn primary" disabled={picked.length === 0} onClick={() => setStep("review")}>
-              Next: review
+            <button className="btn primary" disabled={picked.length === 0} onClick={() => setStep("about")}>
+              Next: your company
             </button>
           </div>
         </>
+      )}
+
+      {step === "about" && (
+        <form
+          className="card pad project-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            setStep("review");
+          }}
+        >
+          <h3 className="section-title">About your company</h3>
+          <p className="muted small">Every agent gets this as context, and missions mention your company by name.</p>
+          <div className="grid-2">
+            <label>
+              Company name
+              <input value={company} onChange={(e) => setCompany(e.target.value)} placeholder="Acme" autoFocus />
+            </label>
+            <label>
+              What it does
+              <input value={about} onChange={(e) => setAbout(e.target.value)} placeholder="We build accounting software for small shops." />
+            </label>
+          </div>
+          <div className="row">
+            <button type="submit" className="btn primary">
+              Next: review
+            </button>
+          </div>
+        </form>
       )}
 
       {step === "review" && (
