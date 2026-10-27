@@ -44,19 +44,12 @@ export function useFloorLayout(ids: string[]) {
   }, [key, stored.order]);
   const hidden = useMemo(() => new Set(stored.hidden.filter((id) => ids.includes(id))), [key, stored.hidden]);
 
-  const move = useCallback(
-    (id: string, to: number) => {
-      const next = order.filter((x) => x !== id);
-      next.splice(Math.max(0, Math.min(to, next.length)), 0, id);
-      update({ order: next, hidden: [...hidden] });
-    },
-    [order, hidden, update],
-  );
-  const moveBefore = useCallback(
+  // Drop `id` where `target` is: it takes the target's place and the rest shift.
+  const moveOnto = useCallback(
     (id: string, target: string) => {
       if (id === target) return;
       const next = order.filter((x) => x !== id);
-      next.splice(next.indexOf(target), 0, id);
+      next.splice(order.indexOf(target), 0, id);
       update({ order: next, hidden: [...hidden] });
     },
     [order, hidden, update],
@@ -72,5 +65,5 @@ export function useFloorLayout(ids: string[]) {
   );
   const reset = useCallback(() => update({ order: [], hidden: [] }), [update]);
 
-  return { order, hidden, move, moveBefore, setHidden, reset };
+  return { order, hidden, moveOnto, setHidden, reset };
 }

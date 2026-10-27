@@ -58,6 +58,60 @@ export function Floor({ org, onOpenDepartment, onOpenSession }: Props) {
   const [dragging, setDragging] = useState<string | null>(null);
   const [over, setOver] = useState<string | null>(null);
 
+  // Pointer events instead of HTML5 drag and drop, so it works with a finger too.
+  const grab = (e: React.PointerEvent<HTMLElement>, id: string) => {
+    e.preventDefault();
+    const handle = e.currentTarget;
+    try {
+      // Keeps the move events coming while the finger leaves the handle.
+      handle.setPointerCapture(e.pointerId);
+    } catch {
+      // Not an active pointer; the drag still follows events on the handle.
+    }
+    setDragging(id);
+    const roomAt = (x: number, y: number) =>
+      document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-room-id]")?.dataset.roomId ?? null;
+    // Dragging near the top or bottom edge scrolls, so far rooms can be reached on a phone.
+    let pointerY = e.clientY;
+    let pointerX = e.clientX;
+    const scroller = (() => {
+      for (let el: HTMLElement | null = handle.parentElement; el; el = el.parentElement) {
+        if (/(auto|scroll)/.test(getComputedStyle(el).overflowY) && el.scrollHeight > el.clientHeight) return el;
+      }
+      return null;
+    })();
+    const tick = () => {
+      const top = scroller ? scroller.getBoundingClientRect().top : 0;
+      const bottom = scroller ? scroller.getBoundingClientRect().bottom : window.innerHeight;
+      const edge = 64;
+      const dy = pointerY < top + edge ? -14 : pointerY > bottom - edge ? 14 : 0;
+      if (dy) {
+        if (scroller) scroller.scrollTop += dy;
+        else window.scrollBy(0, dy);
+        setOver(roomAt(pointerX, pointerY));
+      }
+    };
+    const scrolling = window.setInterval(tick, 16);
+    const move = (ev: PointerEvent) => {
+      pointerX = ev.clientX;
+      pointerY = ev.clientY;
+      setOver(roomAt(pointerX, pointerY));
+    };
+    const end = (ev: PointerEvent) => {
+      window.clearInterval(scrolling);
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", end);
+      handle.removeEventListener("pointercancel", end);
+      const target = ev.type === "pointerup" ? roomAt(ev.clientX, ev.clientY) : null;
+      if (target) layout.moveOnto(id, target);
+      setDragging(null);
+      setOver(null);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", end);
+    handle.addEventListener("pointercancel", end);
+  };
+
   const ordered = layout.order.map((id) => byId.get(id)!);
   const revealAll = arranging || showHidden;
   const shown = ordered.filter((d) => revealAll || !layout.hidden.has(d.id));
@@ -89,9 +143,9 @@ export function Floor({ org, onOpenDepartment, onOpenSession }: Props) {
           </button>
         </div>
       )}
-      {arranging && <p className="muted small">Drag rooms, or use the buttons, to put the ones you care about first. Hidden rooms stay running.</p>}
+      {arranging && <p className="muted small">Drag a room by its handle to put the ones you care about first. Hidden rooms stay running.</p>}
       <div className="floor">
-        {shown.map((d, i) => (
+        {shown.map((d) => (
           <Room
             key={d.id}
             dept={d}
@@ -101,24 +155,10 @@ export function Floor({ org, onOpenDepartment, onOpenSession }: Props) {
             arrange={
               arranging
                 ? {
-                    first: i === 0,
-                    last: i === shown.length - 1,
+                    dragging: dragging === d.id,
                     dropping: over === d.id && dragging !== d.id,
-                    onFront: () => layout.move(d.id, 0),
-                    onEarlier: () => layout.moveBefore(d.id, shown[i - 1].id),
-                    onLater: () => layout.move(d.id, layout.order.indexOf(shown[i + 1].id)),
                     onToggleHidden: () => layout.setHidden(d.id, !layout.hidden.has(d.id)),
-                    onDragStart: () => setDragging(d.id),
-                    onDragOver: () => setOver(d.id),
-                    onDrop: () => {
-                      if (dragging) layout.moveBefore(dragging, d.id);
-                      setDragging(null);
-                      setOver(null);
-                    },
-                    onDragEnd: () => {
-                      setDragging(null);
-                      setOver(null);
-                    },
+                    onGrab: (e) => grab(e, d.id),
                   }
                 : undefined
             }
@@ -130,17 +170,10 @@ export function Floor({ org, onOpenDepartment, onOpenSession }: Props) {
 }
 
 interface Arrange {
-  first: boolean;
-  last: boolean;
+  dragging: boolean;
   dropping: boolean;
-  onFront: () => void;
-  onEarlier: () => void;
-  onLater: () => void;
   onToggleHidden: () => void;
-  onDragStart: () => void;
-  onDragOver: () => void;
-  onDrop: () => void;
-  onDragEnd: () => void;
+  onGrab: (e: React.PointerEvent<HTMLElement>) => void;
 }
 
 function Room({
@@ -161,37 +194,13 @@ function Room({
   const live = dept.agents.filter((a) => a.desired !== "stopped").length;
   return (
     <section
-      className={`room ${dept.state === "paused" ? "paused" : ""} ${hidden ? "is-hidden" : ""} ${arrange ? "arranging" : ""} ${arrange?.dropping ? "drop-target" : ""}`}
-      draggable={!!arrange}
-      onDragStart={arrange?.onDragStart}
-      onDragOver={
-        arrange
-          ? (e) => {
-              e.preventDefault();
-              arrange.onDragOver();
-            }
-          : undefined
-      }
-      onDrop={
-        arrange
-          ? (e) => {
-              e.preventDefault();
-              arrange.onDrop();
-            }
-          : undefined
-      }
-      onDragEnd={arrange?.onDragEnd}
+      data-room-id={dept.id}
+      className={`room ${dept.state === "paused" ? "paused" : ""} ${hidden ? "is-hidden" : ""} ${arrange ? "arranging" : ""} ${arrange?.dropping ? "drop-target" : ""} ${arrange?.dragging ? "dragging" : ""}`}
     >
       {arrange && (
         <div className="room-arrange">
-          <button className="btn ghost small" disabled={arrange.first} onClick={arrange.onFront} title="Move to the front">
-            ⤒ First
-          </button>
-          <button className="btn ghost small" disabled={arrange.first} onClick={arrange.onEarlier} aria-label="Move earlier">
-            ←
-          </button>
-          <button className="btn ghost small" disabled={arrange.last} onClick={arrange.onLater} aria-label="Move later">
-            →
+          <button className="drag-handle" onPointerDown={arrange.onGrab} aria-label={`Drag ${dept.name}`} title="Drag to move">
+            ⠿ Drag
           </button>
           <button className="btn ghost small" onClick={arrange.onToggleHidden}>
             {hidden ? "Show" : "Hide"}
