@@ -21,9 +21,9 @@ pub use action::{Action, ActionKind, ActionOutcome, Verdict};
 pub use agent::{AgentAdapter, AgentSpec, LaunchContext, LaunchPlan};
 pub use event::{Event, EventKind, OutputStream};
 pub use insights::{
-    ActionResult, Budget, BudgetAction, BudgetPeriod, BudgetStatus, Channel, ChannelKind,
-    DataSource, DataSourceKind, ModelPrice, OutboxItem, OutboxStatus, Proposal, ProposalAction,
-    ProposalStatus,
+    ActionResult, Budget, BudgetAction, BudgetPeriod, BudgetStatus, BudgetUnit, Channel,
+    ChannelKind, DataSource, DataSourceKind, DepartmentHours, HoursWindow, ModelPrice, OutboxItem,
+    OutboxStatus, Proposal, ProposalAction, ProposalStatus,
 };
 pub use live::{FileChange, FileChangeKind, LiveFrame, ModelDeltaKind, ProcessInfo};
 pub use model::{KnownModel, ModelCallOutcome, ModelEndpoint, ProviderKind};

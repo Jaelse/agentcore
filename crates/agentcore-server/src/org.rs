@@ -946,11 +946,11 @@ pub fn compose_prompt(
         .collect();
     if !budgets.is_empty() {
         p.push_str(
-            "\n## Budget\n\nModel calls cost money. Work economically: plan before you act, \
+            "\n## Budget\n\nModel calls cost money and tokens. Work economically: plan before you act, \
              avoid repeating work, and stop when a task is done.\n\n",
         );
         for b in budgets {
-            let money = |m| crate::budgets::money(m, start.currency);
+            let amount = |n| crate::budgets::amount(b.budget.unit, n, start.currency);
             p.push_str(&format!(
                 "- {} budget per {}: {} of {} used{}.\n",
                 if b.budget.department_id.is_some() {
@@ -959,8 +959,8 @@ pub fn compose_prompt(
                     "The organisation's"
                 },
                 b.budget.period.as_str(),
-                money(b.spent_micros),
-                money(b.budget.limit_micros),
+                amount(b.spent()),
+                amount(b.budget.limit_micros),
                 if b.budget.action == agentcore_core::BudgetAction::Pause {
                     "; when it is used up, work pauses until the next period"
                 } else {

@@ -15,6 +15,7 @@ pub mod distribution;
 mod error;
 pub mod feed;
 pub mod github;
+pub mod hours;
 pub mod insights;
 pub mod launch;
 pub mod live;
@@ -345,6 +346,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/org/prices/backfill", post(budgets::price_past_calls))
         .route("/org/currency", put(budgets::put_currency))
+        .route("/org/hours", get(hours::list))
+        .route(
+            "/org/departments/{id}/hours",
+            put(hours::put).delete(hours::delete),
+        )
         .route("/org/budgets", post(budgets::create_budget))
         .route(
             "/org/budgets/{id}",

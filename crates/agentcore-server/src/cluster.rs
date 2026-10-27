@@ -115,6 +115,10 @@ async fn heartbeat(state: AppState, cancel: CancellationToken) {
         if let Err(err) = crate::budgets::evaluate(&state).await {
             tracing::warn!(error = %err, "checking budgets failed");
         }
+        // Working hours pause and resume departments; the updates are conditional.
+        if let Err(err) = crate::hours::evaluate(&state).await {
+            tracing::warn!(error = %err, "checking working hours failed");
+        }
         // Any node may move rollouts on; each step is claimed by one node.
         if let Err(err) = crate::releases::evaluate(&state).await {
             tracing::warn!(error = %err, "checking rollouts failed");

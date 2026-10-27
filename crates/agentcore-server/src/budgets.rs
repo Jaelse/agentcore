@@ -11,7 +11,7 @@
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use agentcore_core::{BudgetStatus, DepartmentId};
+use agentcore_core::{BudgetStatus, BudgetUnit, DepartmentId};
 use agentcore_store::{BudgetInput, BudgetUpdate, PriceInput};
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -64,10 +64,20 @@ pub fn money(micros: i64, currency: &str) -> String {
     format!("{:.2} {currency}", micros as f64 / 1e6)
 }
 
+/// An amount in a budget's unit: money or a token count.
+pub fn amount(unit: BudgetUnit, n: i64, currency: &str) -> String {
+    match unit {
+        BudgetUnit::Money => money(n, currency),
+        BudgetUnit::Tokens => format!("{n} tokens"),
+    }
+}
+
 /// Why a model call of work in this department must be refused, if it must.
 pub async fn blocked(state: &AppState, department: Option<DepartmentId>) -> Option<String> {
     let all = statuses(state).await;
-    let hit = all.iter().find(|b| b.blocks() && b.covers(department))?;
+    let Some(hit) = all.iter().find(|b| b.blocks() && b.covers(department)) else {
+        return closed(state, department).await;
+    };
     let currency = state
         .store
         .currency()
@@ -82,10 +92,34 @@ pub async fn blocked(state: &AppState, department: Option<DepartmentId>) -> Opti
         "{scope} {} budget of {} is used up ({} spent); model calls resume at {} or when \
          people raise the budget",
         hit.budget.period.as_str(),
-        money(hit.budget.limit_micros, &currency),
-        money(hit.spent_micros, &currency),
+        amount(hit.budget.unit, hit.budget.limit_micros, &currency),
+        amount(hit.budget.unit, hit.spent(), &currency),
         hit.period_end.format("%Y-%m-%d %H:%M UTC"),
     ))
+}
+
+/// Does a used-up pausing budget cover this department.
+pub async fn budget_blocks(state: &AppState, department: DepartmentId) -> bool {
+    statuses(state)
+        .await
+        .iter()
+        .any(|b| b.blocks() && b.covers(Some(department)))
+}
+
+/// Model calls of a department outside its working hours are refused.
+async fn closed(state: &AppState, department: Option<DepartmentId>) -> Option<String> {
+    let department = department?;
+    match state.store.outside_hours(department).await {
+        Ok(true) => Some(
+            "the department is outside its working hours; model calls resume when they begin"
+                .into(),
+        ),
+        Ok(false) => None,
+        Err(err) => {
+            tracing::warn!(error = %err, "could not check working hours");
+            None
+        }
+    }
 }
 
 /// Check every budget (each node, on its heartbeat; claims make each step
@@ -152,7 +186,7 @@ async fn record(state: &AppState, b: &BudgetStatus, kind: &str) {
             agent: None,
             session: None,
             kind,
-            value: Some(b.spent_micros),
+            value: Some(b.spent()),
             detail: Some(&detail),
         })
         .await;
@@ -178,6 +212,7 @@ pub async fn spending(
         "currency": state.store.currency().await?,
         "prices": state.store.list_prices().await?,
         "budgets": state.store.budget_statuses().await?,
+        "hours": state.store.list_hours().await?,
         "unpriced_calls": state.store.unpriced_calls(since).await?,
         "days": days,
     })))

@@ -20,7 +20,7 @@ that share one PostgreSQL database.
 | Goals and check-ins | Work continues for days: agents sleep when idle, check-ins wake them, sessions continue from notes | [Goals, check-ins and agents that keep going](#goals-check-ins-and-agents-that-keep-going) |
 | Business data | Read-only tables, databases and APIs per department | [Business data](#business-data) |
 | Dashboard and retrospective | Metrics, signals of waste, and improvements people apply | [Metrics, the retrospective and improvements](#metrics-the-retrospective-and-improvements) |
-| Prices and budgets | Spend in money; budgets warn or pause the work | [Spending and budgets](#spending-and-budgets) |
+| Prices, budgets and working hours | Spend in money or tokens; budgets warn or pause the work; departments work at set hours | [Spending and budgets](#spending-and-budgets) |
 | The outbox | Email, Slack and webhooks, every message approved by a person | [Talking to the outside world](#talking-to-the-outside-world) |
 
 A step-by-step walkthrough of running an app this way is in the
@@ -574,8 +574,14 @@ existed can be priced afterwards (*Price them with the current prices*).
 The currency is a label set once (default `USD`).
 
 **Budgets.** A budget limits the spending of the whole organisation or one
-department per calendar day, week (from Monday) or month, in UTC. Each
-scope has at most one budget per period; setting it again replaces it.
+department per calendar day, week (from Monday) or month, in UTC. A budget
+counts **money** (the default) or **tokens** (input plus output, whatever the
+model costs, so it works without prices). Each scope has at most one budget
+per period and unit; setting it again replaces it. A scope can have a money
+and a token budget at once: whichever runs out first applies. For a token
+budget `limit_micros` is a token count. Admins can change a budget's limit,
+warning level and action at any time (*change limit*, *only warn* / *pause
+when used up*); a raised limit resumes what the budget paused at once.
 
 | | `warn` | `pause` |
 |---|---|---|
@@ -596,6 +602,19 @@ day, department and agent on the dashboard, and the retrospective sees them
 too: it can propose a `set_budget` change (admin to apply), and signals warn
 when a budget is nearly or fully used, or when tokens are used without
 prices.
+
+**Working hours.** *Spending → Working hours* sets when each department
+works: one or more windows of weekdays and a start and end time (`HH:MM`) in
+a timezone (an IANA name such as `Europe/Berlin`). An end before the start
+runs past midnight into the next day. Without a schedule, or with it turned
+off, a department works at any time. Each node checks the schedules on its
+heartbeat: when the hours end the department is **paused** (marked as paused
+by the hours) and the model gateway **refuses** its calls with `403`; when
+they begin it is resumed. The hours never resume a department a person or a
+budget paused, and a used-up budget keeps a department paused until it has
+room again. The schedule is enforced on every heartbeat, so a department
+resumed by hand outside its hours is paused again: change the hours or turn
+them off instead.
 
 ## Talking to the outside world
 
@@ -1029,11 +1048,13 @@ an admin.
 | `POST /org/outbox/{id}/changes` · `reject` | Send back `{"text"}` (the agent revises) or reject with a reason. |
 | `GET`/`POST /org/channels` · `PUT`/`DELETE /org/channels/{id}` | Channels (no secrets); create `{"name", "kind", "description", "config", "secret"?, "departments", "requires_approval", "max_per_day", "disclosure"?}`; change; delete (admin). |
 | `POST /org/channels/{id}/test` | Send a test message now (admin), `{"to": [...]}` for email. |
-| `GET /org/spending?days=` | Currency, prices, budgets with their usage this period, calls without a price. |
+| `GET /org/spending?days=` | Currency, prices, budgets with their usage this period (`spent_micros`, `spent_tokens`), working hours, calls without a price. |
+| `GET /org/hours` | Every working-hours schedule, with `open_now`. |
+| `PUT`/`DELETE /org/departments/{id}/hours` | Set `{"enabled"?, "timezone", "windows": [{"days": [1..7], "start": "09:00", "end": "17:00"}]}` (days 1 = Monday ... 7 = Sunday); remove the schedule (resumes what the hours paused). Admin. |
 | `PUT /org/prices` · `DELETE /org/prices?provider=&model=` | Set `{"provider", "model", "input_per_mtok", "output_per_mtok"}`; delete (admin). |
 | `POST /org/prices/backfill` | Price recorded calls that have no price yet (admin). |
 | `PUT /org/currency` | `{"currency": "EUR"}` (admin). |
-| `POST /org/budgets` · `PUT`/`DELETE /org/budgets/{id}` | Set `{"department_id"?, "period", "limit_micros", "action", "warn_percent"?}` (replaces the one for that scope and period); change `limit_micros`, `action`, `warn_percent`; delete (resumes what it paused). Admin. |
+| `POST /org/budgets` · `PUT`/`DELETE /org/budgets/{id}` | Set `{"department_id"?, "period", "unit"? ("money" default, or "tokens"), "limit_micros", "action", "warn_percent"?}` (replaces the one for that scope, period and unit); change `limit_micros`, `action`, `warn_percent`; delete (resumes what it paused). Admin. |
 | `GET`/`POST /org/proposals?status=` | Proposals; a person writes one: `{"title", "problem", "evidence", "solution", "actions"}` (operators). |
 | `GET`/`PUT /org/proposals/{id}` | One proposal; a person changes it (`title`, `problem`, `evidence`, `solution`, `actions`, `note`) as a new revision. |
 | `POST /org/proposals/{id}/apply` | Apply `{"revision"}` (operators; admin-only changes need an admin; `409` if it was revised or decided). |

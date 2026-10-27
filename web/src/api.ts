@@ -46,6 +46,9 @@ import type {
   ModelPrice,
   BudgetPeriod,
   BudgetAction,
+  BudgetUnit,
+  HoursWindow,
+  DepartmentHours,
   Channel,
   ChannelKind,
   OutboxItem,
@@ -370,11 +373,14 @@ export const api = {
     request<void>("DELETE", `/org/prices?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}`),
   pricePastCalls: () => request<{ priced: number }>("POST", "/org/prices/backfill"),
   setCurrency: (currency: string) => request<{ currency: string }>("PUT", "/org/currency", { currency }),
-  createBudget: (body: { department_id: string | null; period: BudgetPeriod; limit_micros: number; action: BudgetAction; warn_percent: number }) =>
+  createBudget: (body: { department_id: string | null; period: BudgetPeriod; unit: BudgetUnit; limit_micros: number; action: BudgetAction; warn_percent: number }) =>
     request<unknown>("POST", "/org/budgets", body),
   updateBudget: (id: string, body: Partial<{ limit_micros: number; action: BudgetAction; warn_percent: number }>) =>
     request<unknown>("PUT", `/org/budgets/${id}`, body),
   deleteBudget: (id: string) => request<void>("DELETE", `/org/budgets/${id}`),
+  setHours: (department: string, body: { enabled: boolean; timezone: string; windows: HoursWindow[] }) =>
+    request<DepartmentHours>("PUT", `/org/departments/${department}/hours`, body),
+  deleteHours: (department: string) => request<void>("DELETE", `/org/departments/${department}/hours`),
   outbox: () => request<OutboxItem[]>("GET", "/org/outbox"),
   editOutbox: (id: string, body: Partial<{ recipients: string[]; subject: string; body: string; note: string }>) =>
     request<OutboxItem>("PUT", `/org/outbox/${id}`, body),
