@@ -41,3 +41,10 @@ Every PR bumps the version, and every merged PR is released.
    `.github/workflows/release.yml` then builds and publishes the GitHub release.
    It fails if the tag does not match `Cargo.toml`. A tag with a suffix such as
    `-beta.10` is published as a pre-release.
+
+## UI changes
+
+Whenever a change touches the web UI, show the user screenshots of it before
+calling it done: run the app, capture the affected screens (at desktop width,
+and at phone width if the layout changes there), and send them with the result.
+Type-checking and a successful build are not a substitute for looking at it.
