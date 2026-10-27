@@ -608,7 +608,7 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
 .model-option.selected { border-color: var(--accent, #6aa9ff); box-shadow: inset 0 0 0 1px var(--accent, #6aa9ff); }
 
 /* Floor plan: departments as rooms, agents as desks */
-.floor { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 16px; align-items: start; }
+.floor { position: relative; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 16px; align-items: start; }
 .room { background: var(--surface); border: 2px solid var(--border); border-radius: var(--radius); padding: 12px; display: flex; flex-direction: column; gap: 10px; box-shadow: var(--shadow); }
 .room.paused { border-style: dashed; border-color: var(--attention); }
 .room-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
@@ -636,7 +636,8 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
 .floor-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
 .floor-toolbar .spacer { flex: 1; }
 .room.is-hidden { opacity: 0.5; border-style: dotted; }
-.room.drop-target { border-color: var(--accent, #4c8dff); }
 .room-arrange { display: flex; justify-content: space-between; gap: 8px; }
 .drag-handle { flex: 1; min-height: 40px; touch-action: none; cursor: grab; user-select: none; -webkit-user-select: none; border: 1px dashed var(--border); border-radius: 8px; background: var(--bg); color: var(--muted, inherit); font: inherit; }
-.room.dragging { opacity: 0.4; }
+/* Lifted off the floor while dragged; it follows the pointer through an inline transform. */
+.room.dragging { scale: 1.03; box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35); cursor: grabbing; will-change: transform; }
+.room.dragging .drag-handle { cursor: grabbing; }
