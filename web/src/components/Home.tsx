@@ -165,7 +165,7 @@ export function Home({ me, onOpenSession, onOpenOrganisation, onError }: Props) 
               </p>
             </div>
           ) : (
-            <ol className="feed">
+            <ol className="home-feed-list">
               {feed.items.map((item) => {
                 const label = dayLabel(item.at);
                 const heading = label !== lastDay;
