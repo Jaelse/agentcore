@@ -404,7 +404,7 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
 .goal:first-child { border-top: none; }
 
 /* Dashboard and charts */
-.dashboard {
+.dashboard, .home-metrics {
   --viz-series: #2a78d6;
   --viz-grid: #e7e6e2;
   --sev-good: #0ca30c;
@@ -413,7 +413,7 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
   --sev-critical: #d03b3b;
 }
 @media (prefers-color-scheme: dark) {
-  .dashboard { --viz-series: #3987e5; --viz-grid: #383835; }
+  .dashboard, .home-metrics { --viz-series: #3987e5; --viz-grid: #383835; }
 }
 .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 10px; }
 .stat-tile { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; display: grid; gap: 2px; align-content: start; min-width: 0; }
