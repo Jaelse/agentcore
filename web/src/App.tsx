@@ -3,7 +3,7 @@ import { ApiError, api, getToken, setToken } from "./api";
 import { useInterval } from "./hooks";
 import type { Me, SessionInfo, SystemCard } from "./types";
 import { Login } from "./components/Login";
-import { TopBar, type View } from "./components/TopBar";
+import { TopBar } from "./components/TopBar";
 import { Sidebar } from "./components/Sidebar";
 import { SessionView } from "./components/SessionView";
 import { SystemCardDialog } from "./components/SystemCardDialog";
@@ -13,6 +13,7 @@ import { Organisation } from "./components/Organisation";
 import { Home } from "./components/Home";
 import { BottomNav } from "./components/BottomNav";
 import { MoreMenu } from "./components/MoreMenu";
+import { useRoute } from "./route";
 
 export default function App() {
   const [me, setMe] = useState<Me | null>(null);
@@ -20,10 +21,14 @@ export default function App() {
   const [card, setCard] = useState<SystemCard | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [showArchived, setShowArchived] = useState(false);
-  const [selected, setSelected] = useState<string | null>(() => location.hash.slice(1) || null);
+  const { route, navigate } = useRoute();
+  const view = route.view;
+  const selected = route.sessionId;
+  const setSelected = useCallback(
+    (id: string | null) => navigate("sessions", id),
+    [navigate],
+  );
   const [showCard, setShowCard] = useState(false);
-  // A link to a session (#id) opens it; otherwise start on the feed.
-  const [view, setView] = useState<View>(() => (location.hash.slice(1) ? "sessions" : "home"));
   const [providerCount, setProviderCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -67,10 +72,6 @@ export default function App() {
   }, [me, view]);
   useEffect(refresh, [refresh]);
 
-  useEffect(() => {
-    history.replaceState(null, "", selected ? `#${selected}` : location.pathname);
-  }, [selected]);
-
   if (needsLogin) {
     return (
       <Login
@@ -109,7 +110,7 @@ export default function App() {
         }}
         onShowCard={() => setShowCard(true)}
         view={view}
-        onView={setView}
+        onView={navigate}
         onSignOut={signOut}
       />
       {error && (
@@ -124,18 +125,17 @@ export default function App() {
         <Home
           me={me}
           onOpenSession={(id) => {
-            setSelected(id);
-            setView("sessions");
+            navigate("sessions", id);
             refresh();
           }}
-          onOpenOrganisation={() => setView("org")}
+          onOpenOrganisation={() => navigate("organisations")}
           onError={handleError}
         />
       ) : view === "more" ? (
         <MoreMenu
           me={me}
           card={card}
-          onView={setView}
+          onView={navigate}
           onShowCard={() => setShowCard(true)}
           onSignOut={signOut}
         />
@@ -148,13 +148,12 @@ export default function App() {
             onError={handleError}
           />
         </main>
-      ) : view === "org" ? (
+      ) : view === "organisations" ? (
         <Organisation
           me={me}
           card={card}
           onOpenSession={(id) => {
-            setSelected(id);
-            setView("sessions");
+            navigate("sessions", id);
             refresh();
           }}
           onError={handleError}
@@ -164,8 +163,7 @@ export default function App() {
           me={me}
           card={card}
           onStarted={(s) => {
-            setSelected(s.id);
-            setView("sessions");
+            navigate("sessions", s.id);
             refresh();
           }}
           onError={handleError}
@@ -174,7 +172,7 @@ export default function App() {
       <div className={`layout ${current ? "has-session" : ""}`}>
         <Sidebar
           providerCount={providerCount}
-          onOpenSettings={() => setView("settings")}
+          onOpenSettings={() => navigate("settings")}
           me={me}
           card={card}
           sessions={sessions}
@@ -233,7 +231,7 @@ export default function App() {
         onView={(v) => {
           // Tapping the Sessions tab again leaves the open session, like a feed tab scrolling to top.
           if (v === "sessions" && view === "sessions") setSelected(null);
-          setView(v);
+          else navigate(v);
         }}
       />
       {showCard && <SystemCardDialog card={card} onClose={() => setShowCard(false)} />}

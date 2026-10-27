@@ -54,7 +54,7 @@ type Selection =
 /** Departments (rooms) of agents, how they talk, and control at every level. */
 export function Organisation({ me, card, onOpenSession, onError }: Props) {
   const [org, setOrg] = useState<OrgOverview | null>(null);
-  const [selection, setSelection] = useState<Selection>({ kind: "org" });
+  const [selection, setSelection] = useState<Selection>({ kind: "floor" });
   const [tick, setTick] = useState(0);
   const canOperate = me.role !== "viewer";
   const isAdmin = me.role === "admin";
@@ -101,6 +101,12 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
   return (
     <div className="layout">
       <aside className="sidebar">
+        <button className={`session-item ${selection.kind === "floor" ? "active" : ""}`} onClick={() => setSelection({ kind: "floor" })}>
+          <div className="session-item-top">
+            <strong>🏢 Organisation floor</strong>
+          </div>
+          <div className="muted small">departments as rooms, agents inside</div>
+        </button>
         <button className={`session-item ${selection.kind === "org" ? "active" : ""}`} onClick={() => setSelection({ kind: "org" })}>
           <div className="session-item-top">
             <strong>Whole organisation</strong>
@@ -109,12 +115,6 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
           <div className="muted small">
             {org.departments.length}/{org.settings.max_departments} departments · every message
           </div>
-        </button>
-        <button className={`session-item ${selection.kind === "floor" ? "active" : ""}`} onClick={() => setSelection({ kind: "floor" })}>
-          <div className="session-item-top">
-            <strong>🏢 Floor plan</strong>
-          </div>
-          <div className="muted small">departments as rooms, agents inside</div>
         </button>
         <button className={`session-item ${selection.kind === "dashboard" ? "active" : ""}`} onClick={() => setSelection({ kind: "dashboard" })}>
           <div className="session-item-top">

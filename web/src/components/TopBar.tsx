@@ -1,7 +1,9 @@
 import { useState } from "react";
 import type { Me, SystemCard } from "../types";
 
-export type View = "home" | "sessions" | "org" | "projects" | "settings" | "more";
+import type { View } from "../route";
+
+export type { View };
 
 interface Props {
   me: Me;
@@ -33,7 +35,7 @@ export function TopBar({ me, card, liveSessions, onStopAll, onShowCard, onSignOu
           <button className={`nav-item ${view === "sessions" ? "active" : ""}`} onClick={() => onView("sessions")}>
             Sessions
           </button>
-          <button className={`nav-item ${view === "org" ? "active" : ""}`} onClick={() => onView("org")}>
+          <button className={`nav-item ${view === "organisations" ? "active" : ""}`} onClick={() => onView("organisations")}>
             Organisation
           </button>
           <button className={`nav-item ${view === "projects" ? "active" : ""}`} onClick={() => onView("projects")}>
