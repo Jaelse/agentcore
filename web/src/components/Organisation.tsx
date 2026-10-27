@@ -261,6 +261,7 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
             act={act}
             onOpenDepartment={(id) => setSelection({ kind: "department", id })}
             onOpenImprovements={() => setSelection({ kind: "improvements" })}
+            onOpenSession={onOpenSession}
             onError={onError}
           />
         ) : selection.kind === "improvements" ? (

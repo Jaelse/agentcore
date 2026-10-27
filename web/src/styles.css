@@ -506,6 +506,10 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
 .feed-title { overflow-wrap: anywhere; }
 .feed-detail { color: var(--muted); overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .home-more { display: flex; justify-content: center; margin-top: 16px; }
+/* Tokens, agent-hours and budget burn above the org view. */
+.home-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 20px; }
+.home-burn { font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.home-burn:hover { background: var(--surface-2); }
 /* The org view across the whole width, the feed under it. */
 .home-main.with-org { max-width: none; }
 /* minmax(0, …) so the filter tabs scroll inside their row instead of widening the page. */

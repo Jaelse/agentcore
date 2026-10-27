@@ -749,9 +749,32 @@ pub struct Metrics {
     pub daily: Vec<DayMetrics>,
     pub departments: Vec<DepartmentMetrics>,
     pub agents: Vec<AgentMetrics>,
+    /// The most recent sessions of department agents, each with its tokens.
+    pub agent_sessions: Vec<AgentSessionMetrics>,
     pub goals: Vec<GoalMetrics>,
     pub proposals: ProposalCounts,
 }
+
+/// One session of a department agent and what its model calls used.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct AgentSessionMetrics {
+    pub id: Uuid,
+    pub agent_id: Option<Uuid>,
+    pub agent_name: Option<String>,
+    pub department_id: Option<Uuid>,
+    pub task: String,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+    pub ended_at: Option<DateTime<Utc>>,
+    pub model_calls: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub tokens: i64,
+    pub cost_micros: i64,
+}
+
+/// Sessions listed per agent breakdown.
+const AGENT_SESSIONS_LIMIT: i64 = 200;
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct DayMetrics {
@@ -966,6 +989,33 @@ impl Store {
         .fetch_all(self.pool())
         .await?;
 
+        // Tokens count calls made in the window, like the other measures.
+        let agent_sessions: Vec<AgentSessionMetrics> =
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "WITH s AS ({ORG_SESSIONS})
+             SELECT s.id, a.id AS agent_id, a.name AS agent_name, a.department_id,
+                 x.task, s.status, s.created_at, s.ended_at,
+                 COALESCE(u.model_calls, 0) AS model_calls,
+                 COALESCE(u.input_tokens, 0) AS input_tokens,
+                 COALESCE(u.output_tokens, 0) AS output_tokens,
+                 COALESCE(u.input_tokens, 0) + COALESCE(u.output_tokens, 0) AS tokens,
+                 COALESCE(u.cost_micros, 0) AS cost_micros
+             FROM s
+             JOIN sessions x ON x.id = s.id
+             LEFT JOIN org_agents a ON a.id::text = s.agent
+             LEFT JOIN LATERAL (
+                 SELECT count(*)::bigint AS model_calls,
+                     COALESCE(sum(c.input_tokens), 0)::bigint AS input_tokens,
+                     COALESCE(sum(c.output_tokens), 0)::bigint AS output_tokens,
+                     COALESCE(sum(c.cost_micros), 0)::bigint AS cost_micros
+                 FROM model_calls c WHERE c.session_id = s.id AND c.started_at >= $1
+             ) u ON true
+             ORDER BY s.created_at DESC LIMIT {AGENT_SESSIONS_LIMIT}"
+            )))
+            .bind(since)
+            .fetch_all(self.pool())
+            .await?;
+
         let goals: Vec<GoalMetrics> = sqlx::query_as(
             "SELECT g.id, g.title, g.status, g.department_id, g.created_at, g.progress_at,
                  (SELECT count(*) FROM org_activity a WHERE a.kind = 'progress'
@@ -993,6 +1043,7 @@ impl Store {
             daily,
             departments,
             agents,
+            agent_sessions,
             goals,
             proposals,
         })

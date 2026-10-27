@@ -732,6 +732,22 @@ export interface AgentMetrics {
   last_active: string | null;
 }
 
+export interface AgentSessionMetrics {
+  id: string;
+  agent_id: string | null;
+  agent_name: string | null;
+  department_id: string | null;
+  task: string;
+  status: string;
+  created_at: string;
+  ended_at: string | null;
+  model_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  tokens: number;
+  cost_micros: number;
+}
+
 export interface Signal {
   severity: "high" | "medium" | "low";
   kind: string;
@@ -750,6 +766,7 @@ export interface OrgMetrics {
     daily: DayMetrics[];
     departments: DepartmentMetrics[];
     agents: AgentMetrics[];
+    agent_sessions: AgentSessionMetrics[];
     goals: { id: string; title: string; status: string; department_id: string | null; created_at: string; progress_at: string | null; progress_reports: number }[];
     proposals: { open: number; changes_requested: number; applied: number; rejected: number; failed: number };
   };
