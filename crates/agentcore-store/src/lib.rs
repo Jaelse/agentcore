@@ -36,8 +36,9 @@ pub use agents::InstalledAgent;
 pub use crypto::{Cipher, MASTER_KEY_ENV};
 pub use hours::HoursInput;
 pub use insights::{
-    Activity, AgentMetrics, DataSourceInput, DataSourceUpdate, DayMetrics, DepartmentMetrics,
-    GoalMetrics, MAX_TABLE_BYTES, Metrics, NewProposal, ProposalCounts, ProposalRevision,
+    Activity, AgentMetrics, AgentSessionMetrics, DataSourceInput, DataSourceUpdate, DayMetrics,
+    DepartmentMetrics, GoalMetrics, MAX_TABLE_BYTES, Metrics, NewProposal, ProposalCounts,
+    ProposalRevision,
 };
 pub use launch::{
     LaunchEvent, LaunchStats, MAX_SOURCES, NewSubscriber, Segment, SourceStats, Subscriber,

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import { useInterval } from "../hooks";
 import type { FeedItem, FeedKind, Me, OrgOverview } from "../types";
+import { HomeMetrics } from "./HomeMetrics";
 import { Floor } from "./OfficeFloor";
 
 interface Props {
@@ -123,6 +124,8 @@ export function Home({ me, onOpenSession, onOpenOrganisation, onError }: Props) 
           </div>
         )}
       </header>
+
+      {showOrg && <HomeMetrics onOpen={onOpenOrganisation} onError={onError} />}
 
       <div className={`home-grid ${showOrg ? "with-org" : ""}`}>
         {showOrg && org && (

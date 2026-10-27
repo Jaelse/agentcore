@@ -2050,6 +2050,7 @@ mod tests {
             daily: vec![],
             departments: vec![idle.clone(), busy],
             agents: vec![agent],
+            agent_sessions: vec![],
             goals: vec![goal],
             proposals: ProposalCounts::default(),
         };
