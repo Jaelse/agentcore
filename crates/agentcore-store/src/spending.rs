@@ -1,6 +1,8 @@
 //! What model calls cost, and budgets.
 
-use agentcore_core::{Budget, BudgetAction, BudgetPeriod, BudgetStatus, DepartmentId, ModelPrice};
+use agentcore_core::{
+    Budget, BudgetAction, BudgetPeriod, BudgetStatus, BudgetUnit, DepartmentId, ModelPrice,
+};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::json;
@@ -43,6 +45,10 @@ pub struct BudgetInput {
     #[serde(default)]
     pub department_id: Option<DepartmentId>,
     pub period: BudgetPeriod,
+    /// What the budget counts; money by default.
+    #[serde(default)]
+    pub unit: BudgetUnit,
+    /// Millionths of the currency (money) or tokens (tokens).
     pub limit_micros: i64,
     pub action: BudgetAction,
     #[serde(default = "default_warn")]
@@ -65,6 +71,7 @@ struct BudgetRow {
     id: Uuid,
     department_id: Option<Uuid>,
     period: String,
+    unit: String,
     limit_micros: i64,
     action: String,
     warn_percent: i32,
@@ -80,6 +87,7 @@ impl TryFrom<BudgetRow> for Budget {
             id: r.id,
             department_id: r.department_id,
             period: r.period.parse().map_err(StoreError::Invalid)?,
+            unit: r.unit.parse().map_err(StoreError::Invalid)?,
             limit_micros: r.limit_micros,
             action: r.action.parse().map_err(StoreError::Invalid)?,
             warn_percent: r.warn_percent.clamp(1, 100) as u32,
@@ -90,7 +98,7 @@ impl TryFrom<BudgetRow> for Budget {
 }
 
 const BUDGET_COLUMNS: &str =
-    "id, department_id, period, limit_micros, action, warn_percent, updated_at, updated_by";
+    "id, department_id, period, unit, limit_micros, action, warn_percent, updated_at, updated_by";
 
 /// Model calls in a scope since a time: `$1` department (NULL = all calls),
 /// `$2` since.
@@ -298,10 +306,10 @@ impl Store {
         check_budget(input.limit_micros, input.warn_percent)?;
         let mut tx = self.pool().begin().await?;
         let id: Uuid = sqlx::query_scalar(
-            "INSERT INTO budgets (id, department_id, period, limit_micros, action, warn_percent,
-                 updated_by)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
-             ON CONFLICT (COALESCE(department_id, '00000000-0000-0000-0000-000000000000'::uuid), period)
+            "INSERT INTO budgets (id, department_id, period, unit, limit_micros, action,
+                 warn_percent, updated_by)
+             VALUES ($1, $2, $3, $8, $4, $5, $6, $7)
+             ON CONFLICT (COALESCE(department_id, '00000000-0000-0000-0000-000000000000'::uuid), period, unit)
              DO UPDATE SET limit_micros = EXCLUDED.limit_micros, action = EXCLUDED.action,
                  warn_percent = EXCLUDED.warn_percent, warned_period = NULL,
                  updated_at = now(), updated_by = EXCLUDED.updated_by
@@ -314,6 +322,7 @@ impl Store {
         .bind(input.action.as_str())
         .bind(input.warn_percent as i32)
         .bind(actor)
+        .bind(input.unit.as_str())
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| match &e {
@@ -329,7 +338,7 @@ impl Store {
             &id.to_string(),
             json!({
                 "department": input.department_id, "period": input.period.as_str(),
-                "limit_micros": input.limit_micros, "action": input.action.as_str(),
+                "unit": input.unit.as_str(), "limit_micros": input.limit_micros, "action": input.action.as_str(),
             }),
         )
         .await?;
@@ -395,6 +404,7 @@ impl Store {
             period_start: DateTime<Utc>,
             period_end: DateTime<Utc>,
             spent_micros: i64,
+            spent_tokens: i64,
             paused_departments: Vec<Uuid>,
             exhausted_period: Option<DateTime<Utc>>,
         }
@@ -410,8 +420,15 @@ impl Store {
                      AND (b.department_id IS NULL OR EXISTS (
                           SELECT 1 FROM sessions s WHERE s.id = c.session_id
                              AND s.context->>'department_id' = b.department_id::text))
-                 ) AS spent_micros
-             FROM b ORDER BY b.department_id NULLS FIRST, b.period"
+                 ) AS spent_micros,
+                 (SELECT COALESCE(sum(COALESCE(c.input_tokens, 0) + COALESCE(c.output_tokens, 0)), 0)::bigint
+                    FROM model_calls c
+                   WHERE c.started_at >= b.period_start
+                     AND (b.department_id IS NULL OR EXISTS (
+                          SELECT 1 FROM sessions s WHERE s.id = c.session_id
+                             AND s.context->>'department_id' = b.department_id::text))
+                 ) AS spent_tokens
+             FROM b ORDER BY b.department_id NULLS FIRST, b.period, b.unit"
         )))
         .fetch_all(self.pool())
         .await?;
@@ -422,6 +439,7 @@ impl Store {
                     period_start: r.period_start,
                     period_end: r.period_end,
                     spent_micros: r.spent_micros,
+                    spent_tokens: r.spent_tokens,
                     paused_departments: r.paused_departments,
                     exhausted_period: r.exhausted_period,
                 })

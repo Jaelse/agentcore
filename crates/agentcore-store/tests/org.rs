@@ -706,3 +706,123 @@ async fn proposals_data_sources_and_metrics() {
     assert_eq!(m.agents.len(), 2, "worker and communicator");
     assert_eq!(m.proposals.applied, 1);
 }
+
+#[tokio::test]
+async fn working_hours_pause_and_resume_only_what_they_paused() {
+    use agentcore_core::{BudgetAction, BudgetPeriod, BudgetUnit, HoursWindow};
+    use agentcore_store::{BudgetInput, HoursInput};
+
+    let Some((store, _)) = fresh_store().await else {
+        return;
+    };
+    let ops = store.create_department(dept("Ops"), "alice").await.unwrap();
+
+    // A token budget sits next to a money budget for the same scope and period.
+    let tokens = store
+        .set_budget(
+            BudgetInput {
+                department_id: Some(ops.id),
+                period: BudgetPeriod::Day,
+                unit: BudgetUnit::Tokens,
+                limit_micros: 1_000,
+                action: BudgetAction::Pause,
+                warn_percent: 80,
+            },
+            "alice",
+        )
+        .await
+        .unwrap();
+    let money = store
+        .set_budget(
+            BudgetInput {
+                department_id: Some(ops.id),
+                period: BudgetPeriod::Day,
+                unit: BudgetUnit::Money,
+                limit_micros: 5_000_000,
+                action: BudgetAction::Warn,
+                warn_percent: 80,
+            },
+            "alice",
+        )
+        .await
+        .unwrap();
+    assert_ne!(tokens.id, money.id);
+    let statuses = store.budget_statuses().await.unwrap();
+    assert_eq!(statuses.len(), 2);
+    assert!(
+        statuses
+            .iter()
+            .all(|s| s.spent_tokens == 0 && !s.exhausted())
+    );
+
+    // Hours: no window is refused, a bad zone is refused.
+    let window = HoursWindow {
+        days: vec![1, 2, 3, 4, 5, 6, 7],
+        start: "00:00".into(),
+        end: "23:59".into(),
+    };
+    assert!(matches!(
+        store
+            .set_hours(
+                ops.id,
+                HoursInput {
+                    enabled: true,
+                    timezone: "UTC".into(),
+                    windows: vec![]
+                },
+                "alice"
+            )
+            .await,
+        Err(StoreError::Invalid(_))
+    ));
+    assert!(matches!(
+        store
+            .set_hours(
+                ops.id,
+                HoursInput {
+                    enabled: true,
+                    timezone: "Mars/Olympus".into(),
+                    windows: vec![window.clone()]
+                },
+                "alice"
+            )
+            .await,
+        Err(StoreError::Invalid(_))
+    ));
+    let hours = store
+        .set_hours(
+            ops.id,
+            HoursInput {
+                enabled: true,
+                timezone: "Europe/Berlin".into(),
+                windows: vec![window],
+            },
+            "alice",
+        )
+        .await
+        .unwrap();
+    assert!(hours.is_open(store.local_now(&hours.timezone).await.unwrap()));
+    assert!(!store.outside_hours(ops.id).await.unwrap());
+
+    // The hours pause the department and resume it again; a person's pause
+    // is left alone.
+    assert!(store.pause_for_hours(ops.id).await.unwrap());
+    assert!(!store.pause_for_hours(ops.id).await.unwrap());
+    assert_eq!(
+        store.get_department(ops.id).await.unwrap().state,
+        DepartmentState::Paused
+    );
+    assert!(store.resume_for_hours(ops.id).await.unwrap());
+    assert_eq!(
+        store.get_department(ops.id).await.unwrap().state,
+        DepartmentState::Active
+    );
+    store
+        .set_department_state(Some(ops.id), DepartmentState::Paused, "alice")
+        .await
+        .unwrap();
+    assert!(!store.resume_for_hours(ops.id).await.unwrap());
+
+    store.delete_hours(ops.id, "alice").await.unwrap();
+    assert!(store.get_hours(ops.id).await.unwrap().is_none());
+}

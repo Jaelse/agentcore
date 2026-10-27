@@ -344,14 +344,48 @@ impl std::str::FromStr for BudgetAction {
     }
 }
 
-/// A spending limit on model calls for the organisation (no department)
-/// or one department, per calendar period (UTC).
+/// What a budget counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BudgetUnit {
+    /// What calls cost, in the organisation's currency.
+    #[default]
+    Money,
+    /// Input plus output tokens, whatever the model costs.
+    Tokens,
+}
+
+impl BudgetUnit {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Money => "money",
+            Self::Tokens => "tokens",
+        }
+    }
+}
+
+impl std::str::FromStr for BudgetUnit {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "money" => Ok(Self::Money),
+            "tokens" => Ok(Self::Tokens),
+            other => Err(format!("unknown budget unit `{other}`")),
+        }
+    }
+}
+
+/// A limit on model calls for the organisation (no department) or one
+/// department, per calendar period (UTC): in money or in tokens.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Budget {
     pub id: Uuid,
     pub department_id: Option<DepartmentId>,
     pub period: BudgetPeriod,
-    /// In millionths of the organisation's currency.
+    pub unit: BudgetUnit,
+    /// The limit: millionths of the organisation's currency for a money
+    /// budget, tokens for a token budget.
     pub limit_micros: i64,
     pub action: BudgetAction,
     pub warn_percent: u32,
@@ -366,7 +400,10 @@ pub struct BudgetStatus {
     pub budget: Budget,
     pub period_start: DateTime<Utc>,
     pub period_end: DateTime<Utc>,
+    /// What the period's calls cost (micros), whatever the unit.
     pub spent_micros: i64,
+    /// Input plus output tokens of the period's calls, whatever the unit.
+    pub spent_tokens: i64,
     /// Departments this budget paused and will resume next period.
     pub paused_departments: Vec<DepartmentId>,
     /// Start of the period in which it ran out (until released).
@@ -374,12 +411,20 @@ pub struct BudgetStatus {
 }
 
 impl BudgetStatus {
+    /// What the period used, in the budget's unit.
+    pub fn spent(&self) -> i64 {
+        match self.budget.unit {
+            BudgetUnit::Money => self.spent_micros,
+            BudgetUnit::Tokens => self.spent_tokens,
+        }
+    }
+
     pub fn used(&self) -> f64 {
-        self.spent_micros as f64 / self.budget.limit_micros.max(1) as f64
+        self.spent() as f64 / self.budget.limit_micros.max(1) as f64
     }
 
     pub fn exhausted(&self) -> bool {
-        self.spent_micros >= self.budget.limit_micros
+        self.spent() >= self.budget.limit_micros
     }
 
     pub fn warning(&self) -> bool {
@@ -395,6 +440,76 @@ impl BudgetStatus {
     /// to everything).
     pub fn covers(&self, department: Option<DepartmentId>) -> bool {
         self.budget.department_id.is_none() || self.budget.department_id == department
+    }
+}
+
+/// One stretch of a department's working week.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HoursWindow {
+    /// ISO weekdays: 1 = Monday ... 7 = Sunday.
+    pub days: Vec<u32>,
+    /// `HH:MM`, local time.
+    pub start: String,
+    /// `HH:MM`, local time. Not after `start` means it ends the next day.
+    pub end: String,
+}
+
+impl HoursWindow {
+    fn times(&self) -> Result<(chrono::NaiveTime, chrono::NaiveTime), String> {
+        let parse = |s: &str| {
+            chrono::NaiveTime::parse_from_str(s, "%H:%M")
+                .map_err(|_| format!("`{s}` is not a time like 09:00"))
+        };
+        Ok((parse(&self.start)?, parse(&self.end)?))
+    }
+
+    pub fn check(&self) -> Result<(), String> {
+        if self.days.is_empty() || self.days.iter().any(|d| !(1..=7).contains(d)) {
+            return Err("a window needs weekdays from 1 (Monday) to 7 (Sunday)".into());
+        }
+        let (start, end) = self.times()?;
+        if start == end {
+            return Err("a window cannot start and end at the same time".into());
+        }
+        Ok(())
+    }
+
+    /// Is this local moment inside the window.
+    fn contains(&self, local: chrono::NaiveDateTime) -> bool {
+        use chrono::{Datelike, Timelike};
+        let Ok((start, end)) = self.times() else {
+            return false;
+        };
+        let day = local.weekday().number_from_monday();
+        let yesterday = if day == 1 { 7 } else { day - 1 };
+        let t = local.time().with_nanosecond(0).unwrap_or(local.time());
+        if start < end {
+            self.days.contains(&day) && t >= start && t < end
+        } else {
+            // Past midnight: the evening of a listed day, or the morning after it.
+            (self.days.contains(&day) && t >= start) || (self.days.contains(&yesterday) && t < end)
+        }
+    }
+}
+
+/// When a department works. Outside its windows the department is paused
+/// and its model calls are refused.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DepartmentHours {
+    pub department_id: DepartmentId,
+    /// Off: the department works at any time.
+    pub enabled: bool,
+    /// IANA name such as `Europe/Berlin`.
+    pub timezone: String,
+    pub windows: Vec<HoursWindow>,
+    pub updated_at: DateTime<Utc>,
+    pub updated_by: String,
+}
+
+impl DepartmentHours {
+    /// May the department work at this local moment.
+    pub fn is_open(&self, local: chrono::NaiveDateTime) -> bool {
+        !self.enabled || self.windows.iter().any(|w| w.contains(local))
     }
 }
 
@@ -545,5 +660,76 @@ mod tests {
             .is_err(),
             "unknown fields are refused"
         );
+    }
+}
+
+#[cfg(test)]
+mod hours_tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    fn at(y: i32, m: u32, d: u32, h: u32, min: u32) -> chrono::NaiveDateTime {
+        NaiveDate::from_ymd_opt(y, m, d)
+            .unwrap()
+            .and_hms_opt(h, min, 0)
+            .unwrap()
+    }
+
+    fn hours(enabled: bool, windows: Vec<HoursWindow>) -> DepartmentHours {
+        DepartmentHours {
+            department_id: Uuid::nil(),
+            enabled,
+            timezone: "UTC".into(),
+            windows,
+            updated_at: Utc::now(),
+            updated_by: "t".into(),
+        }
+    }
+
+    fn window(days: &[u32], start: &str, end: &str) -> HoursWindow {
+        HoursWindow {
+            days: days.to_vec(),
+            start: start.into(),
+            end: end.into(),
+        }
+    }
+
+    #[test]
+    fn office_hours() {
+        let h = hours(true, vec![window(&[1, 2, 3, 4, 5], "09:00", "17:00")]);
+        // 2026-10-26 is a Monday, 2026-10-31 a Saturday.
+        assert!(h.is_open(at(2026, 10, 26, 9, 0)));
+        assert!(h.is_open(at(2026, 10, 26, 16, 59)));
+        assert!(!h.is_open(at(2026, 10, 26, 17, 0)));
+        assert!(!h.is_open(at(2026, 10, 26, 8, 59)));
+        assert!(!h.is_open(at(2026, 10, 31, 12, 0)));
+    }
+
+    #[test]
+    fn night_shift_runs_past_midnight() {
+        let h = hours(true, vec![window(&[5], "22:00", "06:00")]);
+        // Friday 2026-10-30 evening, and Saturday morning.
+        assert!(h.is_open(at(2026, 10, 30, 23, 0)));
+        assert!(h.is_open(at(2026, 10, 31, 5, 59)));
+        assert!(!h.is_open(at(2026, 10, 31, 6, 0)));
+        assert!(!h.is_open(at(2026, 10, 31, 23, 0)));
+        // Sunday night into Monday needs day 7.
+        let sun = hours(true, vec![window(&[7], "22:00", "06:00")]);
+        assert!(sun.is_open(at(2026, 11, 2, 1, 0)));
+    }
+
+    #[test]
+    fn off_means_always_open() {
+        assert!(hours(false, vec![]).is_open(at(2026, 10, 31, 3, 0)));
+        assert!(!hours(true, vec![]).is_open(at(2026, 10, 26, 10, 0)));
+    }
+
+    #[test]
+    fn windows_are_checked() {
+        assert!(window(&[1], "09:00", "17:00").check().is_ok());
+        assert!(window(&[], "09:00", "17:00").check().is_err());
+        assert!(window(&[8], "09:00", "17:00").check().is_err());
+        assert!(window(&[1], "9am", "17:00").check().is_err());
+        assert!(window(&[1], "09:00", "09:00").check().is_err());
     }
 }

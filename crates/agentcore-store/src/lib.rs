@@ -8,6 +8,7 @@
 
 mod agents;
 mod crypto;
+mod hours;
 mod insights;
 mod launch;
 mod org;
@@ -33,6 +34,7 @@ use uuid::Uuid;
 
 pub use agents::InstalledAgent;
 pub use crypto::{Cipher, MASTER_KEY_ENV};
+pub use hours::HoursInput;
 pub use insights::{
     Activity, AgentMetrics, DataSourceInput, DataSourceUpdate, DayMetrics, DepartmentMetrics,
     GoalMetrics, MAX_TABLE_BYTES, Metrics, NewProposal, ProposalCounts, ProposalRevision,

@@ -760,11 +760,14 @@ export interface OrgMetrics {
 
 export type BudgetPeriod = "day" | "week" | "month";
 export type BudgetAction = "warn" | "pause";
+export type BudgetUnit = "money" | "tokens";
 
 export interface BudgetStatus {
   id: string;
   department_id: string | null;
   period: BudgetPeriod;
+  /** What the budget counts; limit_micros is money in micros, or a token count. */
+  unit: BudgetUnit;
   limit_micros: number;
   action: BudgetAction;
   warn_percent: number;
@@ -773,8 +776,25 @@ export interface BudgetStatus {
   period_start: string;
   period_end: string;
   spent_micros: number;
+  spent_tokens: number;
   paused_departments: string[];
   exhausted_period: string | null;
+}
+
+/** ISO weekdays: 1 = Monday ... 7 = Sunday; times are `HH:MM` local. */
+export interface HoursWindow {
+  days: number[];
+  start: string;
+  end: string;
+}
+
+export interface DepartmentHours {
+  department_id: string;
+  enabled: boolean;
+  timezone: string;
+  windows: HoursWindow[];
+  updated_at: string;
+  updated_by: string;
 }
 
 export interface ModelPrice {
@@ -790,6 +810,7 @@ export interface Spending {
   currency: string;
   prices: ModelPrice[];
   budgets: BudgetStatus[];
+  hours: DepartmentHours[];
   unpriced_calls: number;
   days: number;
 }

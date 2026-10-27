@@ -214,7 +214,7 @@ organisation working without a person writing to it; see
 The home feed (`GET /feed`), metrics (`GET /org/metrics?days=`), improvement proposals
 (`/org/proposals`, apply / change / send back / reject, `/org/auto-apply`),
 business data sources (`/org/data-sources`), and prices and budgets
-(`/org/spending`, `/org/prices`, `/org/budgets`, `/org/currency`), and the
+(`/org/spending`, `/org/prices`, `/org/budgets`, `/org/hours`, `/org/currency`), and the
 outbox and channels (`/org/outbox`, `/org/channels`): see
 [Releases and distribution](RELEASES.md#api) for `/releases` and the
 update-client endpoints under `/dist`;

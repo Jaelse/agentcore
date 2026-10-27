@@ -578,7 +578,12 @@ pub fn signals(
             goal_id: None,
         });
     }
-    let money = |micros: i64| crate::budgets::money(micros, currency);
+    let amount = |b: &agentcore_core::BudgetStatus| {
+        crate::budgets::amount(b.budget.unit, b.spent(), currency)
+    };
+    let limit = |b: &agentcore_core::BudgetStatus| {
+        crate::budgets::amount(b.budget.unit, b.budget.limit_micros, currency)
+    };
     for b in budgets {
         let scope = b
             .budget
@@ -592,8 +597,8 @@ pub fn signals(
                 kind: "budget_used_up",
                 title: format!(
                     "{scope} used up its {period} budget ({} of {})",
-                    money(b.spent_micros),
-                    money(b.budget.limit_micros)
+                    amount(b),
+                    limit(b)
                 ),
                 detail: if b.blocks() {
                     format!(
@@ -620,8 +625,8 @@ pub fn signals(
                 ),
                 detail: format!(
                     "{} of {}; the period ends {}.",
-                    money(b.spent_micros),
-                    money(b.budget.limit_micros),
+                    amount(b),
+                    limit(b),
                     b.period_end.format("%Y-%m-%d %H:%M UTC")
                 ),
                 suggestion: "Pause what is least important, or make check-ins less frequent."
@@ -1240,6 +1245,7 @@ async fn apply_one(state: &AppState, action: &ProposalAction, by: &str) -> Resul
                     agentcore_store::BudgetInput {
                         department_id: *department,
                         period: *period,
+                        unit: agentcore_core::BudgetUnit::Money,
                         limit_micros: (limit * 1e6).round() as i64,
                         action: *action,
                         warn_percent: 80,
