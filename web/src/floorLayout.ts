@@ -17,6 +17,14 @@ function load(): Stored {
   return { order: [], hidden: [] };
 }
 
+/** Drop `id` where `target` is: it takes the target's place and the rest shift. */
+export function moveOnto(order: string[], id: string, target: string): string[] {
+  if (id === target) return order;
+  const next = order.filter((x) => x !== id);
+  next.splice(order.indexOf(target), 0, id);
+  return next;
+}
+
 /**
  * The user's own arrangement of departments on the floor: order and which are
  * hidden. Kept per browser, because it is a view preference, not organisation data.
@@ -44,16 +52,7 @@ export function useFloorLayout(ids: string[]) {
   }, [key, stored.order]);
   const hidden = useMemo(() => new Set(stored.hidden.filter((id) => ids.includes(id))), [key, stored.hidden]);
 
-  // Drop `id` where `target` is: it takes the target's place and the rest shift.
-  const moveOnto = useCallback(
-    (id: string, target: string) => {
-      if (id === target) return;
-      const next = order.filter((x) => x !== id);
-      next.splice(order.indexOf(target), 0, id);
-      update({ order: next, hidden: [...hidden] });
-    },
-    [order, hidden, update],
-  );
+  const setOrder = useCallback((next: string[]) => update({ order: next, hidden: [...hidden] }), [hidden, update]);
   const setHidden = useCallback(
     (id: string, value: boolean) => {
       const next = new Set(hidden);
@@ -65,5 +64,5 @@ export function useFloorLayout(ids: string[]) {
   );
   const reset = useCallback(() => update({ order: [], hidden: [] }), [update]);
 
-  return { order, hidden, moveOnto, setHidden, reset };
+  return { order, hidden, setOrder, setHidden, reset };
 }
