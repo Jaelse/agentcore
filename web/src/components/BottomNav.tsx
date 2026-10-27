@@ -19,7 +19,7 @@ const icons: Record<string, string> = {
 const tabs: { id: View; label: string; icon: keyof typeof icons; also?: View[] }[] = [
   { id: "home", label: "Home", icon: "home" },
   { id: "sessions", label: "Sessions", icon: "sessions" },
-  { id: "org", label: "Org", icon: "org" },
+  { id: "organisations", label: "Org", icon: "org" },
   { id: "more", label: "Settings", icon: "more", also: ["settings", "projects"] },
 ];
 
