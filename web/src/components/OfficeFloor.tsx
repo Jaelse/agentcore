@@ -32,7 +32,7 @@ export function OfficeFloor({ org, onOpenDepartment, onOpenSession }: Props) {
     <div className="session">
       <section className="card session-header">
         <div className="session-header-main">
-          <h2>Floor plan</h2>
+          <h2>Organisation floor</h2>
           <p className="muted">
             Every department is a room, every agent sits inside it. Click a room to open the department, or an
             agent to watch its session. Communicators sit by the door: they are how rooms talk to each other.
