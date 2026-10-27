@@ -631,3 +631,11 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
 .desk.mood-off .kitten { filter: grayscale(1) opacity(0.5); }
 @keyframes hop { 50% { transform: translateY(-3px); } }
 @keyframes zzz { from { transform: translate(0, 4px); opacity: 1; } to { transform: translate(6px, -8px); opacity: 0; } }
+
+/* Arranging the floor */
+.floor-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.floor-toolbar .spacer { flex: 1; }
+.room.arranging { cursor: grab; }
+.room.is-hidden { opacity: 0.5; border-style: dotted; }
+.room.drop-target { border-color: var(--accent, #4c8dff); }
+.room-arrange { display: flex; gap: 4px; flex-wrap: wrap; }
