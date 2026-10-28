@@ -338,6 +338,11 @@ a.kanban-title:hover { text-decoration: underline; }
 .file-list, .proc-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; max-height: 260px; overflow: auto; }
 .file-list li, .proc-list li { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
 .file-list code, .proc-list code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.work-items { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 10px; max-height: 360px; overflow: auto; }
+.work-items li { display: grid; gap: 2px; min-width: 0; }
+.work-item-title { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; min-width: 0; }
+.work-item-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.work-item-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .file-kind { font-family: ui-monospace, monospace; font-weight: 800; width: 1ch; }
 .file-created .file-kind { color: var(--ok); }
 .file-modified .file-kind { color: var(--attention); }

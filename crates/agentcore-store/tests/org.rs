@@ -826,3 +826,221 @@ async fn working_hours_pause_and_resume_only_what_they_paused() {
     store.delete_hours(ops.id, "alice").await.unwrap();
     assert!(store.get_hours(ops.id).await.unwrap().is_none());
 }
+
+fn work(dept: Uuid, project: Uuid, branch: &str) -> agentcore_store::NewWorkItem {
+    agentcore_store::NewWorkItem {
+        department_id: dept,
+        project_id: project,
+        title: format!("work on {branch}"),
+        branch: branch.into(),
+        base_branch: "main".into(),
+    }
+}
+
+#[tokio::test]
+async fn work_items_are_borrowed_by_one_session_at_a_time() {
+    let Some((store, _)) = fresh_store().await else {
+        return;
+    };
+    let project = store
+        .save_project(
+            None,
+            agentcore_store::ProjectInput {
+                name: "Demo".into(),
+                repository: "acme/demo".into(),
+                default_branch: "main".into(),
+                agent: "opencode".into(),
+                role: "developer".into(),
+                board: None,
+                notes: String::new(),
+            },
+            "root",
+        )
+        .await
+        .unwrap();
+    let eng = store.create_department(dept("Eng"), "root").await.unwrap();
+    let ana = store
+        .add_agent(eng.id, worker("ana"), "root")
+        .await
+        .unwrap();
+    let ben = store
+        .add_agent(eng.id, worker("ben"), "root")
+        .await
+        .unwrap();
+    node(&store, "n1", 5).await;
+    node(&store, "n2", 5).await;
+
+    // A worker without work gets a new item, held by its session.
+    let lease = Uuid::now_v7();
+    let first = store
+        .acquire_work_item(ana.id, "n1", lease, work(eng.id, project.id, "agent/a1"))
+        .await
+        .unwrap();
+    assert!(!first.resumed);
+    let item = first.item.clone();
+    assert_eq!(item.assignee, Some(ana.id));
+    assert_eq!(item.branch, "agent/a1");
+    let held = item.lease.clone().unwrap();
+    assert_eq!((held.node.as_str(), held.generation), ("n1", 1));
+    let s1 = Uuid::now_v7();
+    assert!(store.bind_work_lease(lease, s1).await.unwrap());
+    assert_eq!(
+        store.work_item_of_session(s1).await.unwrap().unwrap().id,
+        item.id
+    );
+    // Checkpoints count while the lease is held.
+    assert!(store.checkpoint_work_item(item.id, 1, "c1").await.unwrap());
+    // While it is held, a second session of the same worker gets a new item
+    // rather than the same one.
+    let other = store
+        .acquire_work_item(
+            ana.id,
+            "n2",
+            Uuid::now_v7(),
+            work(eng.id, project.id, "agent/a2"),
+        )
+        .await
+        .unwrap();
+    assert_ne!(other.item.id, item.id);
+    store
+        .drop_work_lease(other.item.lease.unwrap().id)
+        .await
+        .unwrap();
+    store
+        .close_work_item(other.item.id, None, "duplicate", "root")
+        .await
+        .unwrap();
+    // Nobody else may close or hand over a held item.
+    assert!(matches!(
+        store.close_work_item(item.id, None, "no", "root").await,
+        Err(StoreError::Busy(_))
+    ));
+    assert!(matches!(
+        store.assign_work_item(item.id, ben.id, "root").await,
+        Err(StoreError::Busy(_))
+    ));
+
+    // The session ends: the item stays with ana, free, at its checkpoint.
+    let released = store
+        .release_work_item(s1, "its session ended (stopped)")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(released.lease.is_none());
+    assert_eq!(released.head_commit.as_deref(), Some("c1"));
+    // The old session's generation no longer writes.
+    assert!(
+        !store
+            .checkpoint_work_item(item.id, 1, "stale")
+            .await
+            .unwrap()
+    );
+
+    // Her next session carries it on, under a new generation.
+    let lease2 = Uuid::now_v7();
+    let again = store
+        .acquire_work_item(ana.id, "n2", lease2, work(eng.id, project.id, "agent/a3"))
+        .await
+        .unwrap();
+    assert!(again.resumed);
+    assert_eq!(again.item.id, item.id);
+    assert_eq!(again.item.branch, "agent/a1", "the item keeps its branch");
+    assert_eq!(again.item.head_commit.as_deref(), Some("c1"));
+    assert_eq!(
+        again.item.note.as_deref(),
+        Some("its session ended (stopped)")
+    );
+    assert_eq!(again.item.lease.as_ref().unwrap().generation, 2);
+    store.bind_work_lease(lease2, Uuid::now_v7()).await.unwrap();
+    assert!(store.has_open_work_items(ana.id).await.unwrap());
+    assert!(!store.has_open_work_items(ben.id).await.unwrap());
+
+    // Node n2 stops responding: its lease is released, the work stays.
+    sqlx::query("UPDATE nodes SET last_seen = now() - interval '1 hour' WHERE name = 'n2'")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    let expired = store.expire_work_leases_on_dead_nodes(30).await.unwrap();
+    assert_eq!(expired.len(), 1);
+    assert_eq!(
+        expired[0].note.as_deref(),
+        Some("its session was lost with node n2")
+    );
+    assert!(
+        !store
+            .checkpoint_work_item(item.id, 2, "late")
+            .await
+            .unwrap()
+    );
+
+    // Work items only go to workers of the item's own department.
+    let ops = store.create_department(dept("Ops"), "root").await.unwrap();
+    let olga = store
+        .add_agent(ops.id, worker("olga"), "root")
+        .await
+        .unwrap();
+    assert!(matches!(
+        store.assign_work_item(item.id, olga.id, "root").await,
+        Err(StoreError::Invalid(_))
+    ));
+    // A person hands it to ben; it is his next work.
+    let handed = store
+        .assign_work_item(item.id, ben.id, "root")
+        .await
+        .unwrap();
+    assert_eq!(handed.assignee, Some(ben.id));
+    let bens = store
+        .acquire_work_item(
+            ben.id,
+            "n1",
+            Uuid::now_v7(),
+            work(eng.id, project.id, "agent/b1"),
+        )
+        .await
+        .unwrap();
+    assert!(bens.resumed);
+    assert_eq!(bens.item.id, item.id);
+    assert_eq!(bens.item.lease.as_ref().unwrap().generation, 3);
+    assert!(
+        store
+            .release_work_item(Uuid::nil(), "nothing")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let lease3 = bens.item.lease.clone().unwrap();
+    // The holder delivers it, then closes it.
+    assert!(
+        store
+            .work_item_delivered(item.id, lease3.generation, "c2", 12, "https://pr/12")
+            .await
+            .unwrap()
+    );
+    let closed = store
+        .close_work_item(item.id, Some(lease3.generation), "merged", "Eng/ben")
+        .await
+        .unwrap();
+    assert_eq!(closed.state, agentcore_core::WorkItemState::Closed);
+    assert_eq!(closed.pull_request_number, Some(12));
+    assert!(closed.lease.is_none());
+    assert!(matches!(
+        store.assign_work_item(item.id, ben.id, "root").await,
+        Err(StoreError::Invalid(_))
+    ));
+    // Open items are listed per department; closed ones on request.
+    assert!(
+        store
+            .list_work_items(Some(eng.id), false)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .list_work_items(Some(eng.id), true)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+}

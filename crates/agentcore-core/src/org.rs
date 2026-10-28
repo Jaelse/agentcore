@@ -435,6 +435,76 @@ pub struct OrgSchedule {
     pub created_by: String,
 }
 
+/// Work a department does on its repository. The department owns it (its
+/// branch, last checkpoint and pull request); a session borrows it through a
+/// lease, and any worker can carry it on from the last checkpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkItem {
+    pub id: Uuid,
+    pub department_id: DepartmentId,
+    pub project_id: Uuid,
+    pub title: String,
+    /// Branch on GitHub that holds the work between sessions.
+    pub branch: String,
+    pub base_branch: String,
+    /// Last checkpoint pushed to `branch` (`None`: nothing pushed yet).
+    pub head_commit: Option<String>,
+    pub checkpoint_at: Option<DateTime<Utc>>,
+    pub state: WorkItemState,
+    /// The worker that carries it on.
+    pub assignee: Option<OrgAgentId>,
+    /// The session working on it now, if any.
+    pub lease: Option<WorkLease>,
+    pub pull_request_number: Option<u64>,
+    pub pull_request_url: Option<String>,
+    /// What last happened to it, e.g. "lost with node n2".
+    pub note: Option<String>,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub closed_at: Option<DateTime<Utc>>,
+    pub closed_by: Option<String>,
+}
+
+/// Who holds a work item. Checkpoints carry the generation: a session whose
+/// lease was taken away cannot write any more.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkLease {
+    pub id: Uuid,
+    pub session_id: Option<SessionId>,
+    pub node: String,
+    pub generation: i64,
+    pub since: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkItemState {
+    Open,
+    Closed,
+}
+
+impl WorkItemState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Closed => "closed",
+        }
+    }
+}
+
+impl std::str::FromStr for WorkItemState {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "open" => Ok(Self::Open),
+            "closed" => Ok(Self::Closed),
+            other => Err(format!("unknown work item state `{other}`")),
+        }
+    }
+}
+
 /// A node of the cluster (one agentcore process, usually one VM).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeInfo {

@@ -2,7 +2,7 @@
 # Everything else is denied, even if a tool were offered by mistake.
 
 name = "communicator"
-description = "Only organisation messaging: talk to the own department and to other departments' communicators."
+description = "Only organisation messaging: talk to the own department and to other departments' communicators, and hand work items to the own department's workers."
 default = "deny"
 
 [limits]
@@ -15,7 +15,7 @@ max_output_bytes = 65536
 
 [[rules]]
 id = "allow-messaging"
-description = "Read the inbox, see colleagues, talk inside the department and to other departments."
+description = "Read the inbox, see colleagues, talk inside the department and to other departments, and hand the department's work items to its workers."
 effect = "allow"
 kinds = ["tool_call"]
-tools = ["team_list_colleagues", "team_read_messages", "team_send_message", "team_send_to_department"]
+tools = ["team_list_colleagues", "team_read_messages", "team_send_message", "team_send_to_department", "team_list_work_items", "team_assign_work_item"]

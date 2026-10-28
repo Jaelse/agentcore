@@ -53,6 +53,8 @@ const HISTORY_LIMIT: usize = 10_000;
 const MAX_LINE: usize = 8 * 1024;
 const EXEC_TIMEOUT: Duration = Duration::from_secs(300);
 const GIT_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long the end hook may take before the system ends a session.
+const END_HOOK_TIMEOUT: Duration = Duration::from_secs(180);
 const MAX_PATCH: usize = 2 * 1024 * 1024;
 const MAX_BUNDLE: usize = 512 * 1024 * 1024;
 const BUNDLE_REL: &str = ".git/agentcore-delivery.bundle";
@@ -97,6 +99,7 @@ pub struct Session {
     role: Option<Arc<Role>>,
     workspace: Option<Arc<dyn WorkspaceSetup>>,
     tools: Option<Arc<dyn ToolHandler>>,
+    end_hook: Option<Arc<dyn crate::EndHook>>,
     work_item: Option<agentcore_roles::WorkItem>,
     hide_sandbox_tools: bool,
     agent_label: String,
@@ -174,6 +177,7 @@ impl Session {
             role: options.role,
             workspace: options.workspace,
             tools: options.tools,
+            end_hook: options.end_hook,
             work_item: options.work_item,
             hide_sandbox_tools: options.hide_sandbox_tools,
             agent_label,
@@ -513,6 +517,17 @@ impl Session {
 
     fn sandbox(&self) -> Option<Arc<dyn Sandbox>> {
         lock(&self.sandbox).clone()
+    }
+
+    /// Run the end hook (if any) before the system ends the session.
+    async fn before_end(&self) {
+        if let Some(hook) = self.end_hook.clone()
+            && tokio::time::timeout(END_HOOK_TIMEOUT, hook.before_end(self))
+                .await
+                .is_err()
+        {
+            tracing::warn!(session = %self.id, "end hook timed out");
+        }
     }
 
     /// Stop the session immediately: kill everything in the sandbox and deny
@@ -902,11 +917,13 @@ impl Session {
                 () = self.cancel.cancelled() => return Ok((SessionStatus::Stopped, None, None)),
                 () = idle => {
                     let reason = IDLE_REASON;
+                    self.before_end().await;
                     self.stop(Principal::System, reason).await;
                     return Ok((SessionStatus::Stopped, None, Some(reason.into())));
                 }
                 () = overall => {
                     let reason = TIME_BUDGET_REASON;
+                    self.before_end().await;
                     self.stop(Principal::System, reason).await;
                     return Ok((SessionStatus::Stopped, None, Some(reason.into())));
                 }
@@ -1297,6 +1314,26 @@ impl Session {
     /// inside the sandbox. agentcore fetches from the bundle into its own
     /// repository on the host and never runs git in the agent's checkout.
     pub async fn export_bundle(&self) -> Result<(Vec<u8>, String), RuntimeError> {
+        self.bundle_since(None).await?.ok_or_else(|| {
+            RuntimeError::Workspace("the agent has not committed anything yet".into())
+        })
+    }
+
+    /// Like [`Session::export_bundle`] for checkpoints: `None` when the agent
+    /// has committed nothing, or nothing since `known` (the last checkpoint).
+    /// The bundle still holds everything since the base commit, so it can be
+    /// fetched into a fresh mirror.
+    pub async fn checkpoint_bundle(
+        &self,
+        known: Option<&str>,
+    ) -> Result<Option<(Vec<u8>, String)>, RuntimeError> {
+        self.bundle_since(known).await
+    }
+
+    async fn bundle_since(
+        &self,
+        known: Option<&str>,
+    ) -> Result<Option<(Vec<u8>, String)>, RuntimeError> {
         let _guard = self.busy.lock().await;
         if self.status() != SessionStatus::AwaitingInput || self.turn_active.load(Ordering::SeqCst)
         {
@@ -1309,10 +1346,8 @@ impl Session {
             .sh(&format!("{GIT} rev-parse HEAD"), &[], GIT_TIMEOUT, 1024)
             .await?;
         let head = head.stdout.trim().to_string();
-        if head.is_empty() || head == base {
-            return Err(RuntimeError::Workspace(
-                "the agent has not committed anything yet".into(),
-            ));
+        if head.is_empty() || head == base || known == Some(head.as_str()) {
+            return Ok(None);
         }
         // Relative path: commands run in the workspace on every backend.
         let script = format!("rm -f \"$2\" && {GIT} bundle create \"$2\" \"$1..HEAD\" 2>&1");
@@ -1335,7 +1370,7 @@ impl Session {
                 "the change set is too large to deliver".into(),
             ));
         }
-        Ok((bytes, head))
+        Ok(Some((bytes, head)))
     }
 
     async fn call_tool(&self, tool: &str, arguments: &serde_json::Value) -> ActionOutcome {

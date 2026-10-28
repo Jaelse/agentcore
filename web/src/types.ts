@@ -183,6 +183,28 @@ export interface OrgMessage {
   recipients: string[];
 }
 
+/** Work a department does on its repository: the department keeps it
+ * (branch, last checkpoint, pull request); a session borrows it. */
+export interface WorkItem {
+  id: string;
+  department_id: string;
+  title: string;
+  state: "open" | "closed";
+  branch: string;
+  base_branch: string;
+  assignee: string | null;
+  assignee_id: string | null;
+  in_session: { session_id: string | null; node: string; since: string } | null;
+  last_checkpoint: string | null;
+  checkpoint_at: string | null;
+  pull_request: string | null;
+  note: string | null;
+  created_at: string;
+  updated_at: string;
+  closed_at: string | null;
+  closed_by: string | null;
+}
+
 export interface DepartmentFile {
   path: string;
   size: number;

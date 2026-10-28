@@ -19,12 +19,12 @@ use agentcore_core::org::{
 };
 use agentcore_core::{
     AgentKind, DeliveredMessage, Department, DepartmentId, DepartmentState, Desired, OrgAgent,
-    OrgAgentId, OrgMessage, OrgProfile, OrgSettings, Principal, SessionContext,
+    OrgAgentId, OrgMessage, OrgProfile, OrgSettings, Principal, SessionContext, WorkItem,
 };
 use agentcore_runtime::{CreateSession, Session, SessionOptions, ToolHandler};
 use agentcore_store::{
-    AgentInput, AgentScope, COMMUNICATOR_NAME, DepartmentInput, GoalInput, GoalUpdate,
-    MessageFilter, NewMessage, ScheduleInput, ScheduleUpdate, Store, StoreError,
+    Acquired, AgentInput, AgentScope, COMMUNICATOR_NAME, DepartmentInput, GoalInput, GoalUpdate,
+    MessageFilter, NewMessage, NewWorkItem, ScheduleInput, ScheduleUpdate, Store, StoreError,
 };
 use async_trait::async_trait;
 use axum::Json;
@@ -297,19 +297,34 @@ pub struct TeamTools {
     agent: OrgAgentId,
     kind: AgentKind,
     files: bool,
+    /// The work item this session holds (workers on a repository).
+    work: Option<WorkRef>,
     /// The project and sandbox access this session was set up with, to tell
     /// the agent when the department has changed since.
     project_at_start: Option<Uuid>,
     sandbox_at_start: bool,
 }
 
+/// A work item and the generation of the lease a session holds on it.
+#[derive(Debug, Clone, Copy)]
+pub struct WorkRef {
+    pub id: Uuid,
+    pub generation: i64,
+}
+
 impl TeamTools {
-    pub fn new(store: Store, agent: &OrgAgent, department: &Department) -> Self {
+    pub fn new(
+        store: Store,
+        agent: &OrgAgent,
+        department: &Department,
+        work: Option<WorkRef>,
+    ) -> Self {
         Self {
             store,
             agent: agent.id,
             kind: agent.kind,
             files: agent.kind == AgentKind::Worker && department.grants(TOOL_FILES),
+            work,
             project_at_start: department.project_id,
             sandbox_at_start: department.grants(TOOL_SANDBOX),
         }
@@ -484,6 +499,91 @@ impl TeamTools {
         }))
     }
 
+    /// The work item this session holds, as it is now.
+    async fn work_item(&self, args: &Value) -> Result<Value, String> {
+        let work = self.work.ok_or("you hold no work item in this session")?;
+        if let Some(title) = args.get("title").and_then(Value::as_str) {
+            let renamed = self
+                .store
+                .rename_work_item(work.id, work.generation, title)
+                .await
+                .map_err(|e| e.to_string())?;
+            if !renamed {
+                return Err("this session no longer holds its work item".into());
+            }
+            notify(&self.store, json!({ "kind": "work_items" })).await;
+        }
+        let item = self
+            .store
+            .get_work_item(work.id)
+            .await
+            .map_err(|e| e.to_string())?;
+        let (org, _) = self.me().await?;
+        Ok(work_item_json(&org, &item))
+    }
+
+    async fn finish_work_item(&self, args: &Value) -> Result<Value, String> {
+        let work = self.work.ok_or("you hold no work item in this session")?;
+        let summary = text_arg(args, "summary")?;
+        let (org, me) = self.me().await?;
+        let item = self
+            .store
+            .close_work_item(
+                work.id,
+                Some(work.generation),
+                summary.trim(),
+                &org.label(&me),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        notify(&self.store, json!({ "kind": "work_items" })).await;
+        Ok(json!({
+            "closed": item.title,
+            "note": "Closed. Nothing on this branch is saved from now on; your next session \
+                     starts a new work item from the base branch.",
+        }))
+    }
+
+    async fn list_work_items(&self) -> Result<Value, String> {
+        let (org, me) = self.me().await?;
+        let items = self
+            .store
+            .list_work_items(Some(me.department_id), false)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(json!({
+            "work_items": items.iter().map(|i| work_item_json(&org, i)).collect::<Vec<_>>(),
+        }))
+    }
+
+    async fn assign_work_item(&self, args: &Value) -> Result<Value, String> {
+        let key = text_arg(args, "item")?;
+        let to = text_arg(args, "to")?;
+        let (org, me) = self.me().await?;
+        let items = self
+            .store
+            .list_work_items(Some(me.department_id), false)
+            .await
+            .map_err(|e| e.to_string())?;
+        let key = key.trim();
+        let item = items
+            .iter()
+            .find(|i| i.id.to_string() == key || i.title.eq_ignore_ascii_case(key))
+            .ok_or_else(|| format!("no open work item `{key}` (see team_list_work_items)"))?;
+        let worker = org
+            .members(me.department_id)
+            .find(|a| a.kind == AgentKind::Worker && a.name == to.trim())
+            .ok_or_else(|| format!("there is no worker `{to}` in your department"))?;
+        let item = self
+            .store
+            .assign_work_item(item.id, worker.id, &org.label(&me))
+            .await
+            .map_err(|e| e.to_string())?;
+        tell_assignee(&self.store, &Sender::Agent(me.id), worker.id, &item).await;
+        notify(&self.store, json!({ "kind": "work_items" })).await;
+        Ok(json!({ "assigned": item.title, "to": worker.name }))
+    }
+
     async fn department(&self) -> Result<DepartmentId, String> {
         Ok(self
             .store
@@ -499,6 +599,52 @@ pub(crate) fn text_arg(args: &Value, key: &str) -> Result<String, String> {
         .and_then(Value::as_str)
         .map(String::from)
         .ok_or_else(|| format!("missing string argument `{key}`"))
+}
+
+/// A work item as agents and people see it.
+pub fn work_item_json(org: &Org, item: &WorkItem) -> Value {
+    let assignee = item
+        .assignee
+        .and_then(|id| org.agent(id))
+        .map(|a| a.name.clone());
+    json!({
+        "id": item.id,
+        "title": item.title,
+        "state": item.state,
+        "branch": item.branch,
+        "base_branch": item.base_branch,
+        "assignee": assignee,
+        "assignee_id": item.assignee,
+        "in_session": item.lease.as_ref().map(|l| json!({
+            "session_id": l.session_id, "node": l.node, "since": l.since,
+        })),
+        "last_checkpoint": item.head_commit,
+        "checkpoint_at": item.checkpoint_at,
+        "pull_request": item.pull_request_url,
+        "note": item.note,
+        "created_at": item.created_at,
+        "updated_at": item.updated_at,
+        "closed_at": item.closed_at,
+        "closed_by": item.closed_by,
+    })
+}
+
+/// Tell a worker it was given a work item (it carries it on next session).
+pub(crate) async fn tell_assignee(
+    store: &Store,
+    from: &Sender,
+    worker: OrgAgentId,
+    item: &WorkItem,
+) {
+    let text = format!(
+        "You were given the work item \"{}\" (branch `{}`). You carry it on in your next \
+         session, from its last checkpoint. If you are working on another item, finish that \
+         first (deliver it, then `team_finish_work_item`).",
+        item.title, item.branch
+    );
+    if let Err(err) = send(store, from, Recipient::Agent(worker), &text).await {
+        tracing::warn!(error = %err, "could not tell the worker about its work item");
+    }
 }
 
 /// Normalise a department file path: relative, no `..`, no empty segments.
@@ -570,7 +716,40 @@ impl ToolHandler for TeamTools {
                 &["goal", "text"],
             ));
         }
+        if self.work.is_some() {
+            tools.push(def(
+                "team_work_item",
+                "Your work item: your department's record of the work on your branch (title, \
+                 branch, last checkpoint, pull request). Pass `title` to name it after what you \
+                 are doing, so colleagues and people can follow it.",
+                json!({ "title": { "type": "string", "description": "New title (optional)" } }),
+                &[],
+            ));
+            tools.push(def(
+                "team_finish_work_item",
+                "Close your work item when it is done (delivered, or not needed any more). \
+                 Nothing on your branch is saved after that, and your next session starts a new \
+                 work item from the base branch. `summary`: what happened.",
+                json!({ "summary": text }),
+                &["summary"],
+            ));
+        }
         if self.kind == AgentKind::Communicator {
+            tools.push(def(
+                "team_list_work_items",
+                "Your department's open work items: who carries each on, whether a session \
+                 works on it now, its last checkpoint and pull request.",
+                json!({}),
+                &[],
+            ));
+            tools.push(def(
+                "team_assign_work_item",
+                "Hand a work item (id or title) to a worker of your department (`to`: its \
+                 name). The worker carries it on in its next session. An item a session works \
+                 on now cannot be handed over.",
+                json!({ "item": text, "to": text }),
+                &["item", "to"],
+            ));
             tools.push(def(
                 "team_send_to_department",
                 "Send a message to another department (its communicator receives it), or to \
@@ -620,6 +799,10 @@ impl ToolHandler for TeamTools {
             "team_send_message" => self.send_message(arguments).await,
             "team_read_messages" => self.read_messages().await,
             "team_send_to_department" => self.send_to_department(arguments).await,
+            "team_work_item" => self.work_item(arguments).await,
+            "team_finish_work_item" => self.finish_work_item(arguments).await,
+            "team_list_work_items" => self.list_work_items().await,
+            "team_assign_work_item" => self.assign_work_item(arguments).await,
             "team_list_goals" => {
                 let goals = self.store.list_goals().await.map_err(|e| e.to_string())?;
                 Ok(json!({ "goals": goals.iter().map(|g| json!({
@@ -722,6 +905,21 @@ pub struct RepoInfo {
     pub delivers: bool,
     /// GitHub tools the worker has.
     pub tools: Vec<String>,
+    /// The work item the checkout belongs to.
+    pub work: Option<WorkPrompt>,
+}
+
+/// The work item a worker's checkout belongs to, as told in its prompt.
+pub struct WorkPrompt {
+    pub title: String,
+    /// The last checkpoint the checkout continues from (a resumed item).
+    pub resumed_from: Option<String>,
+    pub checkpoint_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// What happened to the previous session, for a resumed item.
+    pub note: Option<String>,
+    pub pull_request: Option<String>,
+    /// How often committed work is saved.
+    pub checkpoint_secs: u64,
 }
 
 /// Extra context for an agent's first prompt.
@@ -834,6 +1032,42 @@ pub fn compose_prompt(
                         "It is checked out in your sandbox at /workspace, on your own branch \
                          `{branch}`. Commit your work there.\n"
                     ));
+                }
+                if let Some(work) = &repo.work {
+                    p.push_str(&format!(
+                        "\n### Your work item\n\nThe branch belongs to your department's work \
+                         item \"{}\": the department keeps it, not your sandbox. While you wait \
+                         for input, your **committed** work is saved to the branch on GitHub \
+                         (every {} seconds when something changed), and once more when your \
+                         session reaches its time limit; uncommitted changes are not saved, so \
+                         commit often. If \
+                         this session ends for any reason, you (or a colleague) carry the item \
+                         on from the last save. `team_work_item` shows it and renames it after \
+                         what you are doing; when it is delivered and done, close it with \
+                         `team_finish_work_item` and your next session starts a new one.\n",
+                        work.title, work.checkpoint_secs
+                    ));
+                    if let Some(head) = &work.resumed_from {
+                        p.push_str(&format!(
+                            "\nYou are **carrying this item on**: the checkout continues from \
+                             its last save, commit `{}`{}. Look at what is there (`git log`, \
+                             your notes) before you change anything.{}\n",
+                            &head[..head.len().min(12)],
+                            work.checkpoint_at
+                                .map(|t| format!(" ({})", t.format("%Y-%m-%d %H:%M UTC")))
+                                .unwrap_or_default(),
+                            work.note
+                                .as_ref()
+                                .map(|n| format!(" Last time: {n}."))
+                                .unwrap_or_default(),
+                        ));
+                    }
+                    if let Some(pr) = &work.pull_request {
+                        p.push_str(&format!(
+                            "It was delivered as {pr}; delivering again updates that pull \
+                             request (for example to address review comments).\n"
+                        ));
+                    }
                 }
                 if repo.delivers {
                     p.push_str(
@@ -1088,10 +1322,15 @@ pub fn compose_prompt(
         p.push_str(&format!(
             "\n## You are continuing\n\n{why} This is a fresh session: your earlier sandbox is \
              gone{}. Start by reading your notes",
-            if repo.and_then(|r| r.work_branch.as_ref()).is_some() {
-                " and you have a fresh checkout (deliver work before a session ends)"
-            } else {
-                ""
+            match repo.and_then(|r| r.work.as_ref()) {
+                Some(w) if w.resumed_from.is_some() => {
+                    ", but your work item's branch is checked out again from its last save"
+                }
+                Some(_) => " and you have a fresh checkout",
+                None if repo.and_then(|r| r.work_branch.as_ref()).is_some() => {
+                    " and you have a fresh checkout (deliver work before a session ends)"
+                }
+                None => "",
             }
         ));
         p.push_str(
@@ -1113,6 +1352,11 @@ pub fn compose_prompt(
 }
 
 /// Start the session of a department agent on this node.
+///
+/// Workers of a department linked to a project get the repository. With
+/// sandbox access they work on one of the department's work items: the one
+/// they carry on (checked out from its last checkpoint), else a new one. The
+/// session holds the item's lease until it ends.
 pub async fn start_agent_session(
     state: &AppState,
     org: &Org,
@@ -1120,6 +1364,76 @@ pub async fn start_agent_session(
     dept: &Department,
     models: Vec<agentcore_core::ModelEndpoint>,
     continuing: Option<&str>,
+) -> Result<Arc<Session>, ApiError> {
+    let linked = match (agent.kind, dept.project_id) {
+        (AgentKind::Worker, Some(project_id)) => {
+            let project = state.project(project_id).await?;
+            let role = state.role(dept.role.as_deref().unwrap_or(&project.role))?;
+            Some((project, role))
+        }
+        _ => None,
+    };
+    let mut work = None;
+    if let Some((project, role)) = &linked
+        && dept.grants(TOOL_SANDBOX)
+    {
+        let hint = Uuid::now_v7().simple().to_string();
+        let branch = role.branch_name(
+            None,
+            &format!("{} {} {}", dept.name, agent.name, &hint[hint.len() - 6..]),
+            &hint,
+        );
+        let lease = Uuid::now_v7();
+        let acquired = state
+            .store
+            .acquire_work_item(
+                agent.id,
+                &state.node,
+                lease,
+                NewWorkItem {
+                    department_id: dept.id,
+                    project_id: project.id,
+                    title: format!("{}'s work in {}", agent.name, dept.name),
+                    branch,
+                    base_branch: project.default_branch.clone(),
+                },
+            )
+            .await?;
+        notify(&state.store, json!({ "kind": "work_items" })).await;
+        work = Some((lease, acquired));
+    }
+    let result = build_agent_session(
+        state,
+        org,
+        agent,
+        dept,
+        models,
+        continuing,
+        linked,
+        work.as_ref().map(|(_, a)| a),
+    )
+    .await;
+    if let Some((lease, _)) = work {
+        match &result {
+            Ok(session) => {
+                state.store.bind_work_lease(lease, session.id()).await?;
+            }
+            Err(_) => state.store.drop_work_lease(lease).await?,
+        }
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn build_agent_session(
+    state: &AppState,
+    org: &Org,
+    agent: &OrgAgent,
+    dept: &Department,
+    models: Vec<agentcore_core::ModelEndpoint>,
+    continuing: Option<&str>,
+    linked: Option<(agentcore_store::Project, Arc<agentcore_roles::Role>)>,
+    work: Option<&Acquired>,
 ) -> Result<Arc<Session>, ApiError> {
     let policy = match agent.kind {
         AgentKind::Worker => dept.policy.clone(),
@@ -1139,8 +1453,17 @@ pub async fn start_agent_session(
         agent_label: Some(label),
         ..Default::default()
     };
-    let mut tools: Vec<Arc<dyn ToolHandler>> =
-        vec![Arc::new(TeamTools::new(state.store.clone(), agent, dept))];
+    let mut tools: Vec<Arc<dyn ToolHandler>> = vec![Arc::new(TeamTools::new(
+        state.store.clone(),
+        agent,
+        dept,
+        work.and_then(|w| {
+            w.item.lease.as_ref().map(|l| WorkRef {
+                id: w.item.id,
+                generation: l.generation,
+            })
+        }),
+    ))];
     let (data_sources, channels, products, announces) = match agent.kind {
         AgentKind::Worker => (
             state.store.data_sources_for(dept.id).await?,
@@ -1195,14 +1518,10 @@ pub async fn start_agent_session(
     let mut mirror_cell = None;
 
     // Workers of a department linked to a project get the repository: a
-    // checkout on their own branch (with sandbox access), GitHub tools for
-    // their role, the role's playbook and the team's conventions, and
-    // delivery as a pull request.
-    if agent.kind == AgentKind::Worker
-        && let Some(project_id) = dept.project_id
-    {
-        let project = state.project(project_id).await?;
-        let role = state.role(dept.role.as_deref().unwrap_or(&project.role))?;
+    // checkout of their work item's branch (with sandbox access), GitHub
+    // tools for their role, the role's playbook and the team's conventions,
+    // and delivery as a pull request.
+    if let Some((project, role)) = linked {
         let (gh, config, token) = state.require_github().await?;
         let github = crate::teamwork::GitHubTools::new(Some(gh), &project, &role);
         let github_tools: Vec<String> = github
@@ -1217,15 +1536,16 @@ pub async fn start_agent_session(
         context.repository = Some(project.repository());
         context.base_branch = Some(project.default_branch.clone());
         let mut work_branch = None;
-        if dept.grants(TOOL_SANDBOX) {
-            let hint = Uuid::now_v7().simple().to_string();
-            let branch = role.branch_name(
-                None,
-                &format!("{} {} {}", dept.name, agent.name, &hint[hint.len() - 6..]),
-                &hint,
+        if let Some(work) = work {
+            let item = &work.item;
+            let branch = item.branch.clone();
+            let (setup, cell) = crate::teamwork::repository_setup(
+                &project,
+                &config,
+                &token,
+                branch.clone(),
+                item.head_commit.is_some(),
             );
-            let (setup, cell) =
-                crate::teamwork::repository_setup(&project, &config, &token, branch.clone());
             options.workspace = Some(setup);
             options.work_item = Some(agentcore_roles::WorkItem {
                 repository: Some(project.repository()),
@@ -1235,6 +1555,8 @@ pub async fn start_agent_session(
                 project_notes: project.notes.clone(),
             });
             context.work_branch = Some(branch.clone());
+            context.work_item_id = Some(item.id);
+            options.end_hook = Some(crate::work_items::end_hook(state));
             work_branch = Some(branch);
             mirror_cell = Some(cell);
         } else {
@@ -1250,6 +1572,14 @@ pub async fn start_agent_session(
                 && role.delivery.kind == agentcore_roles::DeliveryKind::PullRequest,
             work_branch,
             tools: github_tools,
+            work: work.map(|w| WorkPrompt {
+                title: w.item.title.clone(),
+                resumed_from: w.item.head_commit.clone().filter(|_| w.resumed),
+                checkpoint_at: w.item.checkpoint_at,
+                note: w.item.note.clone().filter(|_| w.resumed),
+                pull_request: w.item.pull_request_url.clone(),
+                checkpoint_secs: state.config.cluster.checkpoint_secs,
+            }),
         });
         options.role = Some(role);
     }

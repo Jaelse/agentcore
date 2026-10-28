@@ -206,6 +206,11 @@ growth path), `GET /org/suggestions` (what to add next) and
   "raise_limits": false, "dry_run": false }
 ```
 
+Work items (`GET /org/work-items`, `POST /org/work-items/{id}/assign`,
+`POST /org/work-items/{id}/close`) are the work departments do on their
+repository; see
+[Work items](MULTI_AGENT.md#work-items-the-department-keeps-the-work).
+
 Goals (`/org/goals`) and scheduled check-ins
 (`/org/departments/{id}/checkins`, `/org/checkins/{id}`) keep an
 organisation working without a person writing to it; see

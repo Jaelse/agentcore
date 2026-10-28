@@ -787,3 +787,436 @@ async fn departments_work_on_a_linked_repository() {
     http("POST", &format!("{base}/stop-all"), "admin", None).await;
     cluster.cancel();
 }
+
+#[tokio::test]
+async fn department_work_items_survive_sessions() {
+    let Some((_, db)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let bare = remote(dir.path());
+    let log: Log = Arc::default();
+    let api = mock_github(log.clone()).await;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut config: Config = toml::from_str("").unwrap();
+    config.server.bind = addr;
+    config.server.operators = vec![Operator {
+        name: "root".into(),
+        token_sha256: hash_token("admin"),
+        role: Role::Admin,
+    }];
+    config.database.url = Some(db);
+    config.secrets.master_key_file = Some(dir.path().join("master.key"));
+    config.storage.data_dir = dir.path().join("data");
+    config.storage.audit_fsync = false;
+    config.policies.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../policies").into();
+    config.roles.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../roles").into();
+    config.templates.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../templates").into();
+    config.cluster.node_name = Some("n1".into());
+    config.cluster.reconcile_millis = 200;
+    config.cluster.checkpoint_secs = 1;
+    config.sandbox = SandboxConfig {
+        backend: BackendKind::Process,
+        ..Default::default()
+    };
+    config.sandbox.process.allow_insecure = true;
+    config.agents = vec![AgentSpec {
+        name: "dept-agent".into(),
+        adapter: "command".into(),
+        command: Some("sh".into()),
+        args: vec!["-c".into(), DEPARTMENT_AGENT.into(), "{task}".into()],
+        follow_up_args: vec!["-c".into(), DEPARTMENT_AGENT.into(), "{task}".into()],
+        tty: Some(false),
+        ..Default::default()
+    }];
+    let state = AppState::new(config).await.unwrap();
+    let cluster = agentcore_server::cluster::start(&state).await.unwrap();
+    let app = router(state.clone());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let base = format!("http://{addr}/api/v1");
+    let call = |method: &'static str, path: String, body: Option<Value>| {
+        let base = base.clone();
+        async move { http(method, &format!("{base}{path}"), "admin", body).await }
+    };
+
+    let github = json!({ "token": "ghp_test_token", "api_url": api, "web_url": format!("file://{}", dir.path().join("remotes").display()),
+                         "commit_name": "agentcore[bot]", "commit_email": "bot@example.com" });
+    assert_eq!(
+        call("PUT", "/integrations/github".into(), Some(github))
+            .await
+            .0,
+        200
+    );
+    let (code, project) = call("POST", "/projects".into(), Some(json!({
+        "name": "Demo", "repository": "acme/demo", "default_branch": "main", "agent": "dept-agent",
+        "role": "developer",
+    }))).await;
+    assert_eq!(code, 201, "{project}");
+    let (code, dept) = call(
+        "POST",
+        "/org/departments".into(),
+        Some(json!({
+            "name": "Eng", "tools": ["sandbox", "files"], "communicator_agent": "dept-agent",
+            "project_id": project["id"], "role": "developer",
+        })),
+    )
+    .await;
+    assert_eq!(code, 201, "{dept}");
+    let dept_id = dept["id"].as_str().unwrap().to_string();
+    let (code, dev) = call(
+        "POST",
+        format!("/org/departments/{dept_id}/agents"),
+        Some(json!({ "name": "dev", "agent": "dept-agent" })),
+    )
+    .await;
+    assert_eq!(code, 201, "{dev}");
+    let dev_id = dev["id"].as_str().unwrap().to_string();
+
+    let waiting_session = |not: Option<String>| {
+        let dev_id = dev_id.clone();
+        async move {
+            for _ in 0..400 {
+                let (_, org) = call("GET", "/org".into(), None).await;
+                let agent = org["departments"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|d| d["agents"].as_array().unwrap().clone())
+                    .find(|a| a["id"] == dev_id.as_str())
+                    .unwrap();
+                if agent["status"] == "awaiting_input"
+                    && let Some(sid) = agent["session_id"].as_str()
+                    && not.as_deref() != Some(sid)
+                {
+                    return sid.to_string();
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            panic!("dev did not start");
+        }
+    };
+    let items = || {
+        let dept_id = dept_id.clone();
+        async move {
+            let (code, items) = call(
+                "GET",
+                format!("/org/work-items?department={dept_id}&closed=true"),
+                None,
+            )
+            .await;
+            assert_eq!(code, 200, "{items}");
+            items.as_array().unwrap().clone()
+        }
+    };
+    let checkpoint = |head: String| async move {
+        for _ in 0..200 {
+            let list = items().await;
+            if list.len() == 1 && list[0]["last_checkpoint"] == head.as_str() {
+                return list[0].clone();
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("no checkpoint at {head}: {:?}", items().await);
+    };
+
+    // First session: a new work item; its commit is saved on GitHub.
+    call("POST", format!("/org/agents/{dev_id}/start"), None).await;
+    let s1 = waiting_session(None).await;
+    let (_, info) = call("GET", format!("/sessions/{s1}"), None).await;
+    let ctx = info["session"]["context"].clone();
+    let branch = ctx["work_branch"].as_str().unwrap().to_string();
+    let item_id = ctx["work_item_id"].as_str().unwrap().to_string();
+    let head = |bare: &Path| git(bare, &["rev-parse", &format!("refs/heads/{branch}")]);
+    let mut first = String::new();
+    for _ in 0..200 {
+        if let Ok(out) = std::process::Command::new("git")
+            .args(["rev-parse", &format!("refs/heads/{branch}")])
+            .current_dir(&bare)
+            .output()
+            && out.status.success()
+        {
+            first = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!first.is_empty(), "the work was not saved on GitHub");
+    let item = checkpoint(first.clone()).await;
+    assert_eq!(item["id"], item_id.as_str());
+    assert_eq!(item["assignee"], "dev");
+    assert_eq!(item["in_session"]["session_id"], s1.as_str());
+
+    // The session ends: the work stays with the department.
+    call("POST", format!("/org/agents/{dev_id}/stop"), None).await;
+    for _ in 0..200 {
+        if items().await[0]["in_session"].is_null() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let item = &items().await[0];
+    assert!(item["in_session"].is_null(), "{item}");
+    assert!(
+        item["note"]
+            .as_str()
+            .unwrap()
+            .starts_with("its session ended")
+    );
+
+    // The next session carries the same item on from its checkpoint.
+    call("POST", format!("/org/agents/{dev_id}/start"), None).await;
+    let s2 = waiting_session(Some(s1.clone())).await;
+    let (_, info) = call("GET", format!("/sessions/{s2}"), None).await;
+    assert_eq!(info["session"]["context"]["work_branch"], branch.as_str());
+    assert_eq!(info["session"]["context"]["work_item_id"], item_id.as_str());
+    let prompt = std::fs::read_to_string(
+        dir.path()
+            .join("data/workspaces")
+            .join(format!("{s2}.home"))
+            .join("prompt.txt"),
+    )
+    .unwrap();
+    assert!(prompt.contains("### Your work item"), "{prompt}");
+    assert!(prompt.contains("carrying this item on"), "{prompt}");
+    assert!(prompt.contains(&first[..12]), "{prompt}");
+    // Its second commit builds on the first one.
+    let mut second = String::new();
+    for _ in 0..200 {
+        second = head(&bare);
+        if second != first {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_ne!(second, first);
+    assert_eq!(
+        git(&bare, &["rev-parse", &format!("{second}^")]),
+        first,
+        "the second session continued the first one's branch"
+    );
+    checkpoint(second.clone()).await;
+
+    // Delivery opens the pull request from the item's branch.
+    let (code, delivered) = call("POST", format!("/sessions/{s2}/deliver"), Some(json!({}))).await;
+    assert_eq!(code, 200, "{delivered}");
+    assert_eq!(delivered["branch"], branch.as_str());
+    let item = &items().await[0];
+    assert!(item["pull_request"].as_str().is_some(), "{item}");
+
+    // People cannot close an item a session works on; once it ended, they can.
+    let (code, err) = call("POST", format!("/org/work-items/{item_id}/close"), None).await;
+    assert_eq!(code, 409, "{err}");
+    call("POST", format!("/org/agents/{dev_id}/stop"), None).await;
+    let mut closed = Value::Null;
+    for _ in 0..200 {
+        let (code, body) = call(
+            "POST",
+            format!("/org/work-items/{item_id}/close"),
+            Some(json!({ "note": "merged" })),
+        )
+        .await;
+        if code == 200 {
+            closed = body;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(closed["state"], "closed", "{closed}");
+    assert_eq!(closed["note"], "merged");
+
+    http("POST", &format!("{base}/stop-all"), "admin", None).await;
+    cluster.cancel();
+}
+
+/// A node of a work-items cluster sharing one database and one "GitHub".
+async fn work_node(
+    dir: &Path,
+    db: &str,
+    name: &str,
+) -> (AppState, tokio_util::sync::CancellationToken, String) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut config: Config = toml::from_str("").unwrap();
+    config.server.bind = addr;
+    config.server.operators = vec![Operator {
+        name: "root".into(),
+        token_sha256: hash_token("admin"),
+        role: Role::Admin,
+    }];
+    config.database.url = Some(db.into());
+    config.secrets.master_key_file = Some(dir.join("master.key"));
+    config.storage.data_dir = dir.join(format!("data-{name}"));
+    config.storage.audit_fsync = false;
+    config.policies.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../policies").into();
+    config.roles.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../roles").into();
+    config.templates.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../templates").into();
+    config.cluster.node_name = Some(name.into());
+    config.cluster.max_agents = 1;
+    config.cluster.reconcile_millis = 200;
+    config.cluster.heartbeat_secs = 1;
+    config.cluster.node_timeout_secs = 2;
+    config.cluster.checkpoint_secs = 1;
+    config.sandbox = SandboxConfig {
+        backend: BackendKind::Process,
+        ..Default::default()
+    };
+    config.sandbox.process.allow_insecure = true;
+    config.agents = vec![AgentSpec {
+        name: "dept-agent".into(),
+        adapter: "command".into(),
+        command: Some("sh".into()),
+        args: vec!["-c".into(), DEPARTMENT_AGENT.into(), "{task}".into()],
+        follow_up_args: vec!["-c".into(), DEPARTMENT_AGENT.into(), "{task}".into()],
+        tty: Some(false),
+        ..Default::default()
+    }];
+    let state = AppState::new(config).await.unwrap();
+    let cluster = agentcore_server::cluster::start(&state).await.unwrap();
+    let app = router(state.clone());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (state, cluster, format!("http://{addr}/api/v1"))
+}
+
+#[tokio::test]
+async fn lost_work_is_carried_on_by_another_node() {
+    let Some((_, db)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let bare = remote(dir.path());
+    let api = mock_github(Log::default()).await;
+    let (s1, c1, n1) = work_node(dir.path(), &db, "n1").await;
+    let call = |base: &str, method: &'static str, path: String, body: Option<Value>| {
+        let url = format!("{base}{path}");
+        async move { http(method, &url, "admin", body).await }
+    };
+    let github = json!({ "token": "ghp_test_token", "api_url": api, "web_url": format!("file://{}", dir.path().join("remotes").display()),
+                         "commit_name": "agentcore[bot]", "commit_email": "bot@example.com" });
+    assert_eq!(
+        call(&n1, "PUT", "/integrations/github".into(), Some(github))
+            .await
+            .0,
+        200
+    );
+    let (_, project) = call(&n1, "POST", "/projects".into(), Some(json!({
+        "name": "Demo", "repository": "acme/demo", "default_branch": "main", "agent": "dept-agent",
+        "role": "developer",
+    }))).await;
+    let (_, dept) = call(
+        &n1,
+        "POST",
+        "/org/departments".into(),
+        Some(json!({
+            "name": "Eng", "tools": ["sandbox"], "communicator_agent": "dept-agent",
+            "project_id": project["id"], "role": "developer",
+        })),
+    )
+    .await;
+    let dept_id = dept["id"].as_str().unwrap().to_string();
+    let (_, dev) = call(
+        &n1,
+        "POST",
+        format!("/org/departments/{dept_id}/agents"),
+        Some(json!({ "name": "dev", "agent": "dept-agent" })),
+    )
+    .await;
+    let dev_id = dev["id"].as_str().unwrap().to_string();
+    // Only n1 runs for now: the worker lands there.
+    call(&n1, "POST", format!("/org/agents/{dev_id}/start"), None).await;
+    let agent_on = |base: String, node: &'static str| {
+        let dev_id = dev_id.clone();
+        async move {
+            for _ in 0..400 {
+                let (_, org) = http("GET", &format!("{base}/org"), "admin", None).await;
+                let a = org["departments"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|d| d["agents"].as_array().unwrap().clone())
+                    .find(|a| a["id"] == dev_id.as_str())
+                    .unwrap();
+                if a["node"] == node && a["status"] == "awaiting_input" {
+                    return a["session_id"].as_str().unwrap().to_string();
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            panic!("dev is not working on {node}");
+        }
+    };
+    let old = agent_on(n1.clone(), "n1").await;
+    let (_, info) = call(&n1, "GET", format!("/sessions/{old}"), None).await;
+    let branch = info["session"]["context"]["work_branch"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut saved = String::new();
+    for _ in 0..200 {
+        let (_, items) = call(&n1, "GET", "/org/work-items".into(), None).await;
+        if let Some(head) = items[0]["last_checkpoint"].as_str() {
+            saved = head.to_string();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        saved,
+        git(&bare, &["rev-parse", &format!("refs/heads/{branch}")])
+    );
+
+    // n2 joins; n1 goes silent (its session lives on, as in a network split).
+    let (s2, c2, n2) = work_node(dir.path(), &db, "n2").await;
+    c1.cancel();
+    let new = agent_on(n2.clone(), "n2").await;
+    assert_ne!(new, old);
+    let (_, info) = call(&n2, "GET", format!("/sessions/{new}"), None).await;
+    assert_eq!(info["session"]["context"]["work_branch"], branch.as_str());
+    let prompt = std::fs::read_to_string(
+        dir.path()
+            .join("data-n2/workspaces")
+            .join(format!("{new}.home"))
+            .join("prompt.txt"),
+    )
+    .unwrap();
+    assert!(prompt.contains("carrying this item on"), "{prompt}");
+    assert!(prompt.contains("lost with node n1"), "{prompt}");
+    // The new session's commit builds on what n1 saved.
+    let mut head = saved.clone();
+    for _ in 0..200 {
+        head = git(&bare, &["rev-parse", &format!("refs/heads/{branch}")]);
+        if head != saved {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(git(&bare, &["rev-parse", &format!("{head}^")]), saved);
+
+    // The session left behind on n1 can no longer deliver over it.
+    let stale = s1.manager.get(old.parse().unwrap()).unwrap();
+    assert!(
+        agentcore_server::work_items::checkpoint(&s1, &stale)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let (code, err) = http(
+        "POST",
+        &format!("{n1}/sessions/{old}/deliver"),
+        "admin",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(code, 409, "{err}");
+    assert_eq!(
+        git(&bare, &["rev-parse", &format!("refs/heads/{branch}")]),
+        head
+    );
+
+    for s in [&s1, &s2] {
+        s.manager
+            .stop_all(agentcore_core::Principal::System, "test over")
+            .await;
+    }
+    c2.cancel();
+}

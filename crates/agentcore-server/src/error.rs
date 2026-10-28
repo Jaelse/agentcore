@@ -64,7 +64,7 @@ impl From<agentcore_store::StoreError> for ApiError {
         let status = match &err {
             E::Invalid(_) => StatusCode::BAD_REQUEST,
             E::NotFound(_) => StatusCode::NOT_FOUND,
-            E::Conflict(_) | E::Limit(_) => StatusCode::CONFLICT,
+            E::Conflict(_) | E::Limit(_) | E::Busy(_) => StatusCode::CONFLICT,
             E::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };

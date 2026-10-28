@@ -34,6 +34,14 @@ pub trait ToolHandler: Send + Sync {
     async fn call(&self, tool: &str, arguments: &Value) -> Result<Value, String>;
 }
 
+/// Called when the system is about to end a session that waits for input
+/// (idle, or out of time), while its sandbox still runs: the last chance to
+/// save work. Bounded by a timeout; a person's STOP does not wait for it.
+#[async_trait]
+pub trait EndHook: Send + Sync {
+    async fn before_end(&self, session: &crate::Session);
+}
+
 /// Everything beyond agent + task that shapes a session.
 #[derive(Clone, Default)]
 pub struct SessionOptions {
@@ -52,6 +60,7 @@ pub struct SessionOptions {
     /// How the agent is named in the audit trail (default: the agent spec
     /// name), e.g. `Research/analyst`.
     pub agent_label: Option<String>,
+    pub end_hook: Option<Arc<dyn EndHook>>,
 }
 
 /// Git configuration forced on every git command agentcore runs, so nothing
