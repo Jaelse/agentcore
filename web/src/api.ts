@@ -60,6 +60,7 @@ import type {
   LaunchStats,
   FeedKind,
   FeedPage,
+  WorkItem,
 } from "./types";
 
 const TOKEN_KEY = "agentcore.token";
@@ -449,6 +450,11 @@ export const api = {
   },
   postMessage: (to: MessageTo, text: string) => request<OrgMessage>("POST", "/org/messages", { to, text }),
   departmentFiles: (id: string) => request<DepartmentFile[]>("GET", `/org/departments/${id}/files`),
+  workItems: (department: string, closed = false) =>
+    request<WorkItem[]>("GET", `/org/work-items?department=${department}${closed ? "&closed=true" : ""}`),
+  assignWorkItem: (id: string, agent: string) =>
+    request<WorkItem>("POST", `/org/work-items/${id}/assign`, { agent }),
+  closeWorkItem: (id: string, note?: string) => request<WorkItem>("POST", `/org/work-items/${id}/close`, { note }),
   departmentFile: (id: string, path: string) =>
     request<{ path: string; content: string }>(
       "GET",

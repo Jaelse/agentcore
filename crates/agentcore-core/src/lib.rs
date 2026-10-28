@@ -30,7 +30,7 @@ pub use model::{KnownModel, ModelCallOutcome, ModelEndpoint, ProviderKind};
 pub use org::{
     AgentKind, DeliveredMessage, Department, DepartmentId, DepartmentState, Desired, GoalStatus,
     MessageScope, NodeInfo, OrgAgent, OrgAgentId, OrgGoal, OrgMessage, OrgProfile, OrgSchedule,
-    OrgSettings,
+    OrgSettings, WorkItem, WorkItemState, WorkLease,
 };
 pub use principal::Principal;
 pub use releases::{

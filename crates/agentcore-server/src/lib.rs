@@ -28,6 +28,7 @@ pub mod sessions;
 pub mod signing;
 pub mod teamwork;
 pub mod templates;
+pub mod work_items;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -279,6 +280,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/org/departments/{id}/agents", post(org::add_agent))
         .route("/org/departments/{id}/files", get(org::list_files))
+        .route("/org/work-items", get(work_items::list))
+        .route("/org/work-items/{id}/assign", post(work_items::assign))
+        .route("/org/work-items/{id}/close", post(work_items::close))
         .route(
             "/org/departments/{id}/checkins",
             get(org::list_check_ins).post(org::create_check_in),

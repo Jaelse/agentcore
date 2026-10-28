@@ -67,6 +67,7 @@ pub async fn start(state: &AppState) -> anyhow::Result<CancellationToken> {
     tokio::spawn(heartbeat(state.clone(), cancel.clone()));
     tokio::spawn(listen(state.clone(), cancel.clone()));
     tokio::spawn(reconciler(state.clone(), cancel.clone()));
+    tokio::spawn(checkpointer(state.clone(), cancel.clone()));
     Ok(cancel)
 }
 
@@ -98,7 +99,7 @@ async fn heartbeat(state: AppState, cancel: CancellationToken) {
             .fail_agents_on_dead_nodes(cluster.node_timeout_secs)
             .await
         {
-            Ok(lost) if !lost.is_empty() => {
+            Ok(lost) => {
                 for agent in &lost {
                     tracing::warn!(
                         agent = %agent.name,
@@ -106,9 +107,13 @@ async fn heartbeat(state: AppState, cancel: CancellationToken) {
                         "agent lost with its node"
                     );
                 }
-                org::notify(&state.store, json!({ "kind": "agents" })).await;
+                if let Err(err) = resume_lost(&state, &lost).await {
+                    tracing::warn!(error = %err, "resuming lost work failed");
+                }
+                if !lost.is_empty() {
+                    org::notify(&state.store, json!({ "kind": "agents" })).await;
+                }
             }
-            Ok(_) => {}
             Err(err) => tracing::warn!(error = %err, "checking for lost nodes failed"),
         }
         // Any node may check budgets; each step is claimed by one node.
@@ -126,6 +131,65 @@ async fn heartbeat(state: AppState, cancel: CancellationToken) {
         // Any node may send due check-ins; each is claimed by exactly one.
         if let Err(err) = run_check_ins(&state).await {
             tracing::warn!(error = %err, "sending check-ins failed");
+        }
+    }
+}
+
+/// Release the work items held on lost nodes, and place the workers that
+/// were lost with them on a live node again: their work is in the
+/// department (the item's last checkpoint), not in the lost sandbox.
+async fn resume_lost(state: &AppState, lost: &[OrgAgent]) -> anyhow::Result<()> {
+    let cluster = &state.config.cluster;
+    let expired = state
+        .store
+        .expire_work_leases_on_dead_nodes(cluster.node_timeout_secs)
+        .await?;
+    if !expired.is_empty() {
+        org::notify(&state.store, json!({ "kind": "work_items" })).await;
+    }
+    for agent in lost.iter().filter(|a| a.kind == AgentKind::Worker) {
+        if !state.store.has_open_work_items(agent.id).await? {
+            continue;
+        }
+        match state
+            .store
+            .start_agent(agent.id, cluster.node_timeout_secs, "agentcore")
+            .await
+        {
+            Ok(Some(placed)) => tracing::info!(
+                agent = %agent.name,
+                node = placed.node.as_deref().unwrap_or("?"),
+                "carrying on lost work on another node"
+            ),
+            Ok(None) => {}
+            Err(err) => {
+                tracing::warn!(agent = %agent.name, error = %err, "could not place lost work")
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The session is over: its work item (if any) is free to carry on.
+async fn release_work(state: &AppState, session: Uuid, why: &str) -> anyhow::Result<bool> {
+    let released = state.store.release_work_item(session, why).await?;
+    if released.is_some() {
+        org::notify(&state.store, json!({ "kind": "work_items" })).await;
+    }
+    Ok(released.is_some())
+}
+
+async fn checkpointer(state: AppState, cancel: CancellationToken) {
+    let every = Duration::from_secs(state.config.cluster.checkpoint_secs.max(1));
+    let mut tick = tokio::time::interval(every);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {}
+            () = cancel.cancelled() => return,
+        }
+        if let Err(err) = crate::work_items::checkpoint_node(&state).await {
+            tracing::warn!(error = %err, "checkpoint pass failed");
         }
     }
 }
@@ -293,6 +357,12 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
                             "the department's repository changed",
                         )
                         .await;
+                    release_work(
+                        state,
+                        id,
+                        "its session ended: the department's repository changed",
+                    )
+                    .await?;
                     let models = endpoints(store, &mut models).await?;
                     start_agent(
                         state,
@@ -343,6 +413,12 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
                 // stopped now.
                 let status = status_str(session.status());
                 let wanted = agent.desired == Desired::Running;
+                release_work(
+                    state,
+                    session.id(),
+                    &format!("its session ended ({status})"),
+                )
+                .await?;
                 match session.end_cause() {
                     Some(EndCause::TimeBudget) if wanted => {
                         if dept.state == DepartmentState::Active
@@ -384,7 +460,29 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
             None => match agent.session_id {
                 // Its session is not in this process: the node restarted.
                 Some(id) => {
-                    if agent.desired != Desired::Stopped
+                    let released =
+                        release_work(state, id, "interrupted: its node restarted").await?;
+                    if released
+                        && agent.kind == AgentKind::Worker
+                        && agent.desired != Desired::Stopped
+                        && dept.state == DepartmentState::Active
+                        && dept.blocked().is_none()
+                    {
+                        // Its work is in the department: carry it on.
+                        let models = endpoints(store, &mut models).await?;
+                        start_agent(
+                            state,
+                            &org,
+                            agent,
+                            models,
+                            Some(
+                                "Your previous session was interrupted when its node \
+                                 restarted.",
+                            ),
+                        )
+                        .await?;
+                        changed = true;
+                    } else if agent.desired != Desired::Stopped
                         || !matches!(
                             agent.status.as_deref(),
                             Some("stopped" | "completed" | "failed")

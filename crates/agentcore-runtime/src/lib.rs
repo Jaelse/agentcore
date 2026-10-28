@@ -20,7 +20,7 @@ pub use adapters::AdapterRegistry;
 pub use approvals::{ApprovalDecision, PendingApproval};
 pub use manager::{CreateSession, RuntimeConfig, SessionManager};
 pub use session::{EndCause, IDLE_REASON, Session, TIME_BUDGET_REASON};
-pub use work::{PreparedWorkspace, SessionOptions, ToolHandler, WorkspaceSetup};
+pub use work::{EndHook, PreparedWorkspace, SessionOptions, ToolHandler, WorkspaceSetup};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {

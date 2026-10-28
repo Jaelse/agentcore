@@ -20,6 +20,7 @@ mod teamwork;
 #[doc(hidden)]
 pub mod testing;
 mod token_pool;
+mod work_items;
 
 use std::path::PathBuf;
 
@@ -61,6 +62,7 @@ pub use teamwork::{
     BoardColumns, BoardConfig, GitHubConfig, GitHubConnection, GitHubUpdate, Project, ProjectInput,
 };
 pub use token_pool::{Lease, NewPoolToken, PoolToken};
+pub use work_items::{Acquired, NewWorkItem};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -84,6 +86,9 @@ pub enum StoreError {
     /// No node can take the work right now.
     #[error("{0}")]
     Unavailable(String),
+    /// Something else holds it right now (e.g. a session holds a work item).
+    #[error("{0}")]
+    Busy(String),
 }
 
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;

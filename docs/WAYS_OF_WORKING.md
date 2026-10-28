@@ -196,9 +196,15 @@ issue:
   department its next step; agents sleep in between and continue from their
   notes (`notes/<agent>.md` in the department files), so keep the playbook's
   "report what you did" step: it is what the next session starts from.
-* **Delivery before the session ends.** Each session gets a fresh checkout
-  on a new branch; work that is not delivered as a pull request before the
-  session's time limit is lost. Keep tasks small enough for one session.
+* **The department keeps the work.** Each piece of work is a
+  [work item](MULTI_AGENT.md#work-items-the-department-keeps-the-work) on
+  its own branch: committed work is saved to GitHub as the agent goes, and
+  when a session ends (time limit, sleep, a node restart or a lost node) the
+  worker, or a colleague it is handed to, carries the item on from the last
+  save. Cards stay *In Progress* across sessions; addressing review comments
+  later updates the same pull request. Agents close an item once it is
+  delivered and done; people can hand items over or close them in the
+  department room.
 * **People decide at the edges.** Pull requests are still reviewed on
   GitHub; messages to customers go through the outbox; changes to how the
   organisation works come as proposals from the retrospective. The

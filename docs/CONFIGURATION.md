@@ -150,8 +150,9 @@ quickly agents are started, paused, put to sleep and woken.
 | `internal_url` | the gateway URL | How other nodes reach this node's API (private network); session requests are forwarded here |
 | `max_agents` | `20` | Department agents this node runs at the same time |
 | `heartbeat_secs` | `5` | How often the node reports that it is alive, checks budgets and sends due check-ins |
-| `node_timeout_secs` | `30` | A node silent for longer is considered lost; its agents are marked stopped |
+| `node_timeout_secs` | `30` | A node silent for longer is considered lost; its agents are marked stopped, and workers with work items are placed on a live node to carry them on |
 | `reconcile_millis` | `2000` | Period of the reconcile pass (it also runs on every change notification): start, pause, stop, deliver messages, sleep, wake, continue |
+| `checkpoint_secs` | `60` | How often the node saves the committed work of department [work items](MULTI_AGENT.md#work-items-the-department-keeps-the-work) to their branches on GitHub (only when it changed and the agent waits for input) |
 
 Every node needs the same `[[server.operators]]`, `[[agents]]`, policies and
 master key.

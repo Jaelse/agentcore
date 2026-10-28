@@ -13,6 +13,7 @@ import type {
   Suggestion,
   SystemCard,
   TeamRole,
+  WorkItem,
 } from "../types";
 import { type BuildMode, OrgBuilder } from "./OrgBuilder";
 import { CheckIns, Goals } from "./Rhythm";
@@ -654,6 +655,9 @@ function DepartmentRoom({
         <Feed org={org} dept={dept} tick={tick} canPost={canOperate} onError={onError} />
         <div className="side-stack">
           <CheckIns dept={dept} org={org} canEdit={canOperate} act={act} />
+          {dept.project_id && dept.tools.includes("sandbox") && (
+            <WorkItems dept={dept} tick={tick} canOperate={canOperate} act={act} onOpenSession={onOpenSession} onError={onError} />
+          )}
           {dept.tools.includes("files") && <Files dept={dept} tick={tick} onError={onError} />}
         </div>
       </div>
@@ -1094,6 +1098,112 @@ function Files({ dept, tick, onError }: { dept: Department; tick: number; onErro
         ))}
       </ul>
       {open && <pre className="mono-pre bubble-body">{open.content}</pre>}
+    </section>
+  );
+}
+
+/** The department's work on its repository. Each item lives on its own
+ * branch; a session borrows it and carries it on from the last checkpoint. */
+function WorkItems({
+  dept,
+  tick,
+  canOperate,
+  act,
+  onOpenSession,
+  onError,
+}: {
+  dept: Department;
+  tick: number;
+  canOperate: boolean;
+  act: (fn: () => Promise<unknown>) => Promise<void>;
+  onOpenSession: (id: string) => void;
+  onError: (e: unknown) => void;
+}) {
+  const [items, setItems] = useState<WorkItem[]>([]);
+  const [showClosed, setShowClosed] = useState(false);
+  useEffect(() => {
+    api.workItems(dept.id, showClosed).then(setItems).catch(onError);
+  }, [dept.id, tick, showClosed, onError]);
+  const workers = dept.agents.filter((a) => a.kind === "worker");
+  return (
+    <section className="card side-panel">
+      <h3 className="section-title">Work items</h3>
+      <p className="muted small">
+        The department keeps this work. Committed work is saved to each item's branch; when a session ends, its worker
+        (or the one it is handed to) carries the item on from there.
+      </p>
+      {items.length === 0 && <p className="muted small">No work yet.</p>}
+      <ul className="work-items">
+        {items.map((i) => (
+          <li key={i.id} className={i.state === "closed" ? "muted" : ""}>
+            <div className="work-item-title">
+              <strong>{i.title}</strong>
+              {i.state === "closed" ? (
+                <span className="pill">closed</span>
+              ) : i.in_session ? (
+                <span className="pill status-running">in a session</span>
+              ) : (
+                <span className="pill">waiting</span>
+              )}
+            </div>
+            <div className="muted small mono">{i.branch}</div>
+            <div className="muted small">
+              {i.assignee ?? "nobody"}
+              {i.last_checkpoint
+                ? ` · saved ${i.last_checkpoint.slice(0, 8)}${i.checkpoint_at ? ` at ${new Date(i.checkpoint_at).toLocaleString()}` : ""}`
+                : " · nothing saved yet"}
+              {i.in_session && ` · on ${i.in_session.node}`}
+            </div>
+            {i.note && <div className="muted small">{i.note}</div>}
+            <div className="work-item-actions">
+              {i.pull_request && (
+                <a className="link small" href={i.pull_request} target="_blank" rel="noreferrer">
+                  pull request
+                </a>
+              )}
+              {i.in_session?.session_id && (
+                <button className="link small" onClick={() => onOpenSession(i.in_session!.session_id!)}>
+                  open session
+                </button>
+              )}
+              {canOperate && i.state === "open" && !i.in_session && (
+                <>
+                  <select
+                    className="small"
+                    value=""
+                    aria-label={`Hand ${i.title} to`}
+                    onChange={(e) => {
+                      const agent = e.target.value;
+                      if (agent) void act(() => api.assignWorkItem(i.id, agent));
+                    }}
+                  >
+                    <option value="">hand to…</option>
+                    {workers
+                      .filter((w) => w.id !== i.assignee_id)
+                      .map((w) => (
+                        <option key={w.id} value={w.id}>
+                          {w.name}
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    className="link small"
+                    onClick={() => {
+                      if (confirm(`Close "${i.title}"? Nobody carries it on any more; its branch stays on GitHub.`))
+                        void act(() => api.closeWorkItem(i.id));
+                    }}
+                  >
+                    close
+                  </button>
+                </>
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
+      <label className="small muted">
+        <input type="checkbox" checked={showClosed} onChange={(e) => setShowClosed(e.target.checked)} /> show closed
+      </label>
     </section>
   );
 }

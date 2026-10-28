@@ -420,6 +420,86 @@ async fn git(
     Err(format!("git {}: {err}", args.first().unwrap_or(&"")))
 }
 
+/// Land a bundle of the agent's commits in agentcore's mirror and push
+/// `branch` (and only it) to GitHub. With `expected`, the push only replaces
+/// what the branch is expected to be on GitHub (`None`: it must not exist
+/// yet), so a session that lost its work item cannot overwrite newer work.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn push_work(
+    config: &GitHubConfig,
+    token: &str,
+    project: &Project,
+    mirror: &Path,
+    branch: &str,
+    bundle: &[u8],
+    head: &str,
+    expected: Option<Option<&str>>,
+) -> ApiResult<()> {
+    let bundle_path = mirror.with_extension("bundle");
+    tokio::fs::write(&bundle_path, bundle)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mirror_s = mirror.to_string_lossy().into_owned();
+    let refspec = format!("+HEAD:refs/heads/{branch}");
+    let fetched = git(
+        &[
+            "--git-dir",
+            &mirror_s,
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            &bundle_path.to_string_lossy(),
+            &refspec,
+        ],
+        None,
+        None,
+    )
+    .await;
+    let _ = tokio::fs::remove_file(&bundle_path).await;
+    fetched.map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let fetched_head = git(
+        &[
+            "--git-dir",
+            &mirror_s,
+            "rev-parse",
+            &format!("refs/heads/{branch}"),
+        ],
+        None,
+        None,
+    )
+    .await
+    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    if fetched_head != head {
+        return Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "bundle head mismatch",
+        ));
+    }
+    let url = clone_url(config, &project.repo_owner, &project.repo_name);
+    let lease =
+        expected.map(|e| format!("--force-with-lease=refs/heads/{branch}:{}", e.unwrap_or("")));
+    let refspec = format!("+refs/heads/{branch}:refs/heads/{branch}");
+    let mut args = vec!["--git-dir", &mirror_s, "push", "--quiet"];
+    if let Some(lease) = &lease {
+        args.push(lease);
+    }
+    args.extend([url.as_str(), refspec.as_str()]);
+    git(&args, None, Some((config, token))).await.map_err(|e| {
+        if lease.is_some() && (e.contains("stale info") || e.contains("rejected")) {
+            ApiError::new(
+                StatusCode::CONFLICT,
+                format!(
+                    "the branch `{branch}` changed on GitHub since this work item's last \
+                     checkpoint; not overwriting it: {e}"
+                ),
+            )
+        } else {
+            ApiError::new(StatusCode::BAD_GATEWAY, e)
+        }
+    })?;
+    Ok(())
+}
+
 fn clone_url(cfg: &GitHubConfig, owner: &str, repo: &str) -> String {
     format!("{}/{owner}/{repo}.git", cfg.web_url.trim_end_matches('/'))
 }
@@ -433,6 +513,9 @@ struct GitRepoSetup {
     repo: String,
     branch: String,
     work_branch: String,
+    /// `work_branch` exists on GitHub (a department work item carried on
+    /// from its last checkpoint): check it out instead of starting it.
+    resume: bool,
     mirror: PathBuf,
 }
 
@@ -464,6 +547,31 @@ impl WorkspaceSetup for GitRepoSetup {
             Some((&self.config, &self.token)),
         )
         .await?;
+        if self.resume {
+            let refspec = format!("+refs/heads/{0}:refs/heads/{0}", self.work_branch);
+            git(
+                &[
+                    "--git-dir",
+                    &mirror,
+                    "fetch",
+                    "--quiet",
+                    "--no-tags",
+                    "--depth",
+                    "200",
+                    &url,
+                    &refspec,
+                ],
+                None,
+                Some((&self.config, &self.token)),
+            )
+            .await
+            .map_err(|e| {
+                format!(
+                    "could not fetch the work item's branch `{}` (was it deleted on GitHub?): {e}",
+                    self.work_branch
+                )
+            })?;
+        }
         let workspace = dir.to_string_lossy().into_owned();
         git(
             &[
@@ -492,13 +600,30 @@ impl WorkspaceSetup for GitRepoSetup {
             None,
         )
         .await?;
-        git(
-            &["checkout", "--quiet", "-b", &self.work_branch],
-            Some(dir),
-            None,
-        )
-        .await?;
-        let base = git(&["rev-parse", "HEAD"], Some(dir), None).await?;
+        let base = if self.resume {
+            // Carry on from the last checkpoint; the base stays where the
+            // work forked off, so changes and delivery cover all of it.
+            let tracking = format!("refs/remotes/origin/{}", self.work_branch);
+            git(
+                &["checkout", "--quiet", "-b", &self.work_branch, &tracking],
+                Some(dir),
+                None,
+            )
+            .await?;
+            let upstream = format!("refs/remotes/origin/{}", self.branch);
+            match git(&["merge-base", "HEAD", &upstream], Some(dir), None).await {
+                Ok(base) => base,
+                Err(_) => git(&["rev-parse", &upstream], Some(dir), None).await?,
+            }
+        } else {
+            git(
+                &["checkout", "--quiet", "-b", &self.work_branch],
+                Some(dir),
+                None,
+            )
+            .await?;
+            git(&["rev-parse", "HEAD"], Some(dir), None).await?
+        };
         Ok(PreparedWorkspace {
             repository: format!("{}/{}", self.owner, self.repo),
             branch: self.branch.clone(),
@@ -645,6 +770,7 @@ pub async fn start_session(
             repo: project.repo_name.clone(),
             branch: project.default_branch.clone(),
             work_branch,
+            resume: false,
             mirror: PathBuf::new(),
         },
     };
@@ -739,6 +865,7 @@ impl GitRepoSetup {
             repo: self.repo.clone(),
             branch: self.branch.clone(),
             work_branch: self.work_branch.clone(),
+            resume: self.resume,
             mirror: self.mirror.clone(),
         }
     }
@@ -807,66 +934,39 @@ async fn deliver(
     }
     let (gh, config, token) = state.require_github().await?;
 
-    // 2. Commits leave the sandbox as a bundle and land in agentcore's mirror.
+    // 2. Commits leave the sandbox as a bundle and land in agentcore's
+    //    mirror; 3. the agent's branch (and only it) is pushed. A department
+    //    work item is pushed only while this session holds its lease, and
+    //    only over its last checkpoint.
+    let _push = crate::work_items::PUSHES.lock().await;
     let (bundle, head) = session.export_bundle().await?;
-    let mirror = state.mirror_path(session.id());
-    let bundle_path = mirror.with_extension("bundle");
-    tokio::fs::write(&bundle_path, &bundle)
-        .await
-        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let mirror_s = mirror.to_string_lossy().into_owned();
-    let refspec = format!("+HEAD:refs/heads/{branch}");
-    let fetched = git(
-        &[
-            "--git-dir",
-            &mirror_s,
-            "fetch",
-            "--quiet",
-            "--no-tags",
-            &bundle_path.to_string_lossy(),
-            &refspec,
-        ],
-        None,
-        None,
+    let item = match ctx.work_item_id {
+        Some(_) => Some(
+            state
+                .store
+                .work_item_of_session(session.id())
+                .await?
+                .ok_or_else(|| {
+                    ApiError::new(
+                        StatusCode::CONFLICT,
+                        "this session no longer holds its work item (it was released)",
+                    )
+                })?,
+        ),
+        None => None,
+    };
+    let expected = item.as_ref().map(|i| i.head_commit.as_deref());
+    push_work(
+        &config,
+        &token,
+        &project,
+        &state.mirror_path(session.id()),
+        &branch,
+        &bundle,
+        &head,
+        expected,
     )
-    .await;
-    let _ = tokio::fs::remove_file(&bundle_path).await;
-    fetched.map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    let fetched_head = git(
-        &[
-            "--git-dir",
-            &mirror_s,
-            "rev-parse",
-            &format!("refs/heads/{branch}"),
-        ],
-        None,
-        None,
-    )
-    .await
-    .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    if fetched_head != head {
-        return Err(ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "bundle head mismatch",
-        ));
-    }
-
-    // 3. Push the agent's branch (and only it).
-    let url = clone_url(&config, &project.repo_owner, &project.repo_name);
-    git(
-        &[
-            "--git-dir",
-            &mirror_s,
-            "push",
-            "--quiet",
-            &url,
-            &format!("+refs/heads/{branch}:refs/heads/{branch}"),
-        ],
-        None,
-        Some((&config, &token)),
-    )
-    .await
-    .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, e))?;
+    .await?;
 
     // 4. Pull request with issue link and AI disclosure.
     let mut full_body = body.trim().to_string();
@@ -907,6 +1007,15 @@ async fn deliver(
         Some(format!("🤖 Pull request #{pr_number} is ready for review.")),
     )
     .await;
+    if let Some(item) = &item
+        && let Some(lease) = &item.lease
+    {
+        state
+            .store
+            .work_item_delivered(item.id, lease.generation, &head, pr_number, &pr_url)
+            .await?;
+        crate::org::notify(&state.store, json!({ "kind": "work_items" })).await;
+    }
     session.record_delivery(
         caller.principal(),
         branch.clone(),
@@ -1166,13 +1275,15 @@ pub async fn deliver_session(
 }
 
 /// A workspace setup that clones `project` into the session's workspace on
-/// `work_branch`. Set the returned cell to the session's mirror path right
-/// after the session is created.
+/// `work_branch` (a new branch, or with `resume` the branch as it is on
+/// GitHub). Set the returned cell to the session's mirror path right after
+/// the session is created.
 pub(crate) fn repository_setup(
     project: &Project,
     config: &GitHubConfig,
     token: &str,
     work_branch: String,
+    resume: bool,
 ) -> (Arc<dyn WorkspaceSetup>, Arc<std::sync::OnceLock<PathBuf>>) {
     let cell: Arc<std::sync::OnceLock<PathBuf>> = Arc::default();
     let setup = LazyMirrorSetup {
@@ -1184,6 +1295,7 @@ pub(crate) fn repository_setup(
             repo: project.repo_name.clone(),
             branch: project.default_branch.clone(),
             work_branch,
+            resume,
             mirror: PathBuf::new(),
         },
     };

@@ -56,6 +56,9 @@ pub struct ClusterConfig {
     pub node_timeout_secs: u64,
     /// Interval of the reconcile pass (it also runs on every notification).
     pub reconcile_millis: u64,
+    /// How often a node saves the committed work of department work items
+    /// to GitHub (when it changed and the agent waits for input).
+    pub checkpoint_secs: u64,
 }
 
 impl Default for ClusterConfig {
@@ -67,6 +70,7 @@ impl Default for ClusterConfig {
             heartbeat_secs: 5,
             node_timeout_secs: 30,
             reconcile_millis: 2000,
+            checkpoint_secs: 60,
         }
     }
 }

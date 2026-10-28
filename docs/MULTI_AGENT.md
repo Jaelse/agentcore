@@ -17,6 +17,7 @@ that share one PostgreSQL database.
 |---|---|---|
 | Templates and growth paths | Start with one department or a whole company, grow step by step | [Building an organisation](#building-an-organisation) |
 | A linked repository | Departments work on a GitHub project and deliver pull requests | [Working on a repository](#working-on-a-repository) |
+| Work items | The department keeps the work: saved to GitHub as it goes, carried on by any worker on any node when a session ends | [Work items](#work-items-the-department-keeps-the-work) |
 | Goals and check-ins | Work continues for days: agents sleep when idle, check-ins wake them, sessions continue from notes | [Goals, check-ins and agents that keep going](#goals-check-ins-and-agents-that-keep-going) |
 | Business data | Read-only tables, databases and APIs per department | [Business data](#business-data) |
 | Dashboard and retrospective | Metrics, signals of waste, and improvements people apply | [Metrics, the retrospective and improvements](#metrics-the-retrospective-and-improvements) |
@@ -79,10 +80,11 @@ flowchart TB
 | Concept | What it is |
 |---|---|
 | **Organisation** | Every department on this agentcore installation, across all nodes. |
-| **Department** (room) | A group of agents with a mission, its own data (department files, sandbox workspaces), its own tool set and its own guardrail policy. |
+| **Department** (room) | A group of agents with a mission, its own data (department files, work items, sandbox workspaces), its own tool set and its own guardrail policy. |
 | **Worker agent** | A member of one department that does the department's work. It may talk to everyone in its department, including the communicator. |
 | **Communicator agent** | Exactly one per department, created with the department. It has *only* messaging tools: no sandbox commands, no file access, no department files. It passes messages between its department and other departments. |
 | **Node** | One agentcore process (usually one VM) that runs agent sandboxes. All nodes share PostgreSQL. |
+| **Work item** | Work a department does on its repository: a branch, its last checkpoint and its pull request. The department owns it; a session borrows it (see [Work items](#work-items-the-department-keeps-the-work)). |
 
 Every agent is a normal agentcore session underneath: it runs in its own
 sandbox, every action goes through policy and possibly a human approval, it
@@ -321,6 +323,8 @@ flowchart LR
 | `outbox_channels`, `outbox_draft`, `outbox_drafts`, `outbox_revise` | if the department may use a channel | ❌ | Drafts for the outside world that people approve (see [Talking to the outside world](#talking-to-the-outside-world)). |
 | `insights_metrics`, `insights_org`, `insights_messages`, `insights_proposals`, `insights_propose`, `insights_revise` | if the department grants `insights` | ❌ | The retrospective: metrics, structure, messages, and proposals (see [below](#metrics-the-retrospective-and-improvements)). |
 | `team_report_progress` | ✅ | ❌ | `goal` (id or title), `text`: replaces the goal's latest progress note. |
+| `team_work_item`, `team_finish_work_item` | with a checkout (see [Work items](#work-items-the-department-keeps-the-work)) | ❌ | The worker's work item (optionally renamed with `title`); close it when done (`summary`). |
+| `team_list_work_items`, `team_assign_work_item` | ❌ | ✅ | The department's open work items; hand one (`item`: id or title) to a worker (`to`). |
 | `run_command`, `read_file`, `write_file`, `list_files` | if the department grants `sandbox` | ❌ | Commands and files in the agent's own sandbox. |
 
 The tool list an agent sees *is* its permission: a tool that is not offered is
@@ -365,7 +369,7 @@ What a worker in a linked department gets:
 
 | | With the `sandbox` tool group | Without |
 |---|---|---|
-| Checkout | Its own clone of the repository (base branch from the project) on its own branch `agent/task-<department>-<agent>-<id>`, prepared on the host before the agent starts, exactly as for project sessions | none |
+| Checkout | A clone of the repository on the branch of its [work item](#work-items-the-department-keeps-the-work): a new branch `agent/task-<department>-<agent>-<id>` from the base branch for new work, or the item's branch as last saved when it carries work on. Prepared on the host before the agent starts | none |
 | GitHub tools | Those of the department's role (default: the project's role): developer → read issues, comment, propose a pull request; project-manager → manage issues, milestones and the board; marketing → discussions | same |
 | First prompt | The role's playbook, the team's convention files from the repository (`CONTRIBUTING.md`, `AGENTS.md`, ...), the project's notes, the role's checks, then the department part (mission, colleagues, the repository and how to deliver) | the role's playbook and the project's notes, then the department part |
 | Delivery | When the agent proposes a pull request, a person clicks **Deliver** in its session: the role's checks run, the branch is pushed with agentcore's GitHub credentials, the pull request is opened | – |
@@ -378,9 +382,67 @@ functions (Engineering, QA, DevOps, Security, Data, AI/ML, Technical
 Writing) use the `default` policy, which allows the usual development tools
 in the sandbox.
 
-Each new session of an agent starts from a fresh checkout of the base
-branch on a new branch, so work should be delivered before a session ends
-(see the session limits in the policy).
+### Work items: the department keeps the work
+
+A worker's work on the repository belongs to its department, not to its
+sandbox. Each piece of work is a **work item**: a branch on GitHub, its last
+checkpoint, and its pull request once delivered. A session *borrows* the item
+through a lease; when the session ends, for whatever reason, the item stays
+with the department and is carried on from its last checkpoint.
+
+```mermaid
+flowchart LR
+    D[("Department<br/>work item: branch,<br/>last checkpoint, PR")] -- "1 acquire: lease,<br/>checkout of the branch" --> S["Session<br/>(any node)"]
+    S -- "2 checkpoint: committed work<br/>pushed while waiting for input" --> D
+    S -- "3 release: session ended,<br/>node restarted or lost" --> D
+    S -. "Deliver (a person)" .-> PR["Pull request"]
+```
+
+1. **Acquire.** When a worker's session starts, it takes the lease on the
+   item it carries on (its most recently updated open item nobody holds), or
+   on a new item with a new branch from the base branch. A carried-on item
+   is checked out as last saved on GitHub; the prompt says so, with the last
+   commit and what happened to the previous session. Only one session holds
+   an item at a time.
+2. **Checkpoint.** While the agent waits for input, its node pushes the
+   *committed* work to the item's branch whenever it changed (every
+   `[cluster].checkpoint_secs`, default 60), and once more when the system
+   ends the session for its time limit or for idleness. Uncommitted changes
+   are not saved; agents are told to commit often. A person's **STOP** does
+   not wait for a save.
+3. **Release.** When the session ends, its node restarts or its node is
+   lost, the lease is released and the item keeps its last checkpoint.
+   **Continue** (time limit), **wake** (a message) and a restart start the
+   next session on the same item.
+
+Who carries the work on:
+
+| The session ended because | What happens to the work |
+|---|---|
+| its time limit, or it slept and was woken | the same worker carries the item on in its next session |
+| its node restarted | the node starts the worker again at once, on the item |
+| its node was lost | another node notices (heartbeat), releases the lease and places the worker on a live node, which carries the item on |
+| a person stopped it, or it failed | the item waits; it is carried on when the worker is started again, or a person or the communicator hands it to another worker |
+
+**Fencing.** Each acquisition gets a new lease generation. Checkpoints and
+delivery push only while the session still holds the lease, and only over the
+branch's last checkpoint (`--force-with-lease`), so a session that lost its
+item (for example on a node cut off from the others) cannot overwrite newer
+work: its push and its delivery are refused.
+
+**Handing work over.** A worker sees its item with `team_work_item` (and
+names it after what it does). When the item is delivered and done, it closes
+it with `team_finish_work_item`, and its next session starts a new one. The
+communicator lists the department's items and hands one to a worker with
+`team_assign_work_item`; people do the same in the department room (*Work
+items*: hand to, close). An item a session works on cannot be handed over or
+closed by others; the new worker gets a message and carries the item on in
+its next session.
+
+Delivery is unchanged: a person clicks **Deliver**, the role's checks run,
+the item's branch is pushed and the pull request opened or updated; the item
+records it, so addressing review comments later, in any session, updates the
+same pull request.
 
 ## Goals, check-ins and agents that keep going
 
@@ -417,8 +479,8 @@ A fresh session starts from the agent's notes: workers with department files
 keep `notes/<agent>.md` (what they are working on, decisions, next steps),
 and the prompt of a continued or woken session says *"You are continuing"*
 and asks the agent to read its notes and recent messages first. On a linked
-repository it gets a fresh checkout on a new branch, so agents are told to
-deliver work before a session ends. Sleeping agents survive a node restart
+repository it carries its [work item](#work-items-the-department-keeps-the-work)
+on: its checkout continues from the item's last checkpoint. Sleeping agents survive a node restart
 (they have nothing running); pausing or stopping works on them as on any
 agent.
 
@@ -820,8 +882,9 @@ nodes nothing happens twice; with one node, the same loop does it all.
 
 | What fails | What happens |
 |---|---|
-| A node crashes or loses the database | Its heartbeat goes stale (`node_timeout_secs`). Any other node marks that node's agents `stopped` (status `failed`, "node lost"). Their sandboxes died with the node; agents are not silently restarted elsewhere, because their workspace state is gone. A person starts them again. |
-| A node restarts | Its interrupted sessions are closed in their audit logs (`session_ended`, interrupted) and its leftover sandboxes are removed. Only its *own* sessions: other nodes' live sessions are untouched. Agents that were **asleep** stay asleep (nothing was running) and wake on their next message; agents that were working are marked stopped ("interrupted: its node restarted"). |
+| A node crashes or loses the database | Its heartbeat goes stale (`node_timeout_secs`). Any other node marks that node's agents `stopped` (status `failed`, "node lost") and releases the work items their sessions held. Workers with open work items are placed on a live node at once and carry their items on from the last checkpoint: their work is in the department, not in the lost sandbox. Other agents are not restarted elsewhere; a person starts them again. |
+| A node restarts | Its interrupted sessions are closed in their audit logs (`session_ended`, interrupted) and its leftover sandboxes are removed. Only its *own* sessions: other nodes' live sessions are untouched. Agents that were **asleep** stay asleep (nothing was running) and wake on their next message; workers that held a work item start again on it; other agents that were working are marked stopped ("interrupted: its node restarted"). |
+| A node is cut off but its sessions run on | Their work items are released and carried on elsewhere; the cut-off sessions' checkpoints and deliveries are refused (lease generation, `--force-with-lease`), so they cannot overwrite the newer work. |
 | A budget runs out | `pause` budgets pause the departments in scope and the model gateway refuses their calls; they resume when the period ends or the limit is raised. |
 | An outward channel fails | The message is marked `failed` with the error; people fix the channel and retry it. Nothing is retried automatically. |
 | Several nodes run the heartbeat | Check-ins, budget steps, proposal and outbox decisions are claimed with conditional updates (`SKIP LOCKED`, revision checks): each happens once. |
@@ -862,6 +925,9 @@ erDiagram
     }
     departments ||--o{ org_agents : "members (1 communicator)"
     departments ||--o{ department_files : "shared data"
+    departments ||--o{ work_items : "work on its repository"
+    org_agents ||--o{ work_items : "carries on"
+    sessions ||--o| work_items : "holds the lease"
     org_agents ||--o| sessions : "current session"
     org_messages ||--o{ org_inbox : "one per recipient"
     org_agents ||--o{ org_inbox : "inbox"
@@ -1018,6 +1084,19 @@ erDiagram
         text path PK
         bytea content
     }
+    work_items {
+        uuid id PK
+        uuid department_id FK
+        uuid project_id FK
+        text branch "holds the work between sessions"
+        text head_commit "last checkpoint"
+        text state "open | closed"
+        uuid assignee FK "carries it on"
+        uuid lease_session "session holding it"
+        text lease_node
+        bigint lease_generation "fences stale sessions"
+        text pull_request_url
+    }
     nodes {
         text name PK
         text internal_url
@@ -1034,7 +1113,7 @@ an admin.
 | Method & path | What |
 |---|---|
 | `GET /org` | Overview: settings, departments with their agents, goals, check-ins, nodes. |
-| `GET /org/stream` | SSE of change notifications (`agents`, `department`, `message`, `files`, `settings`, `goals`, `checkins`, `proposals`, `data_sources`, `budget`, `outbox`, `channels`, `stop_all`, `resync`); clients refetch what changed. |
+| `GET /org/stream` | SSE of change notifications (`agents`, `department`, `message`, `files`, `work_items`, `settings`, `goals`, `checkins`, `proposals`, `data_sources`, `budget`, `outbox`, `channels`, `stop_all`, `resync`); clients refetch what changed. |
 | `GET`/`POST /org/goals` | Goals; create `{"title", "description", "department_id"?}` (operators). |
 | `PUT`/`DELETE /org/goals/{id}` | Change `title`, `description`, `department_id` (`null` clears it), `status` (`active`\|`achieved`\|`dropped`); delete. |
 | `POST /org/goals/{id}/progress` | A person records progress: `{"text"}`. |
@@ -1076,6 +1155,9 @@ an admin.
 | `GET /org/messages?department=&agent=&after=&limit=` | Message feed (organisation, department or agent). |
 | `POST /org/messages` | A person sends a message: `{"to": {"agent": id} \| {"department": id} \| "all_departments", "text": ...}`. |
 | `GET /org/departments/{id}/files` · `GET`/`PUT /org/departments/{id}/files/{*path}` | Department files (`PUT` body `{"content": ...}`, operators). |
+| `GET /org/work-items?department=&closed=` | Work items, open ones first (`closed=true` includes closed ones): title, branch, `assignee`, `in_session` (session and node holding it), `last_checkpoint`, `pull_request`, `note`. |
+| `POST /org/work-items/{id}/assign` | Hand an item to a worker of its department: `{"agent": id}` (operators; `409` while a session works on it). The worker is told and carries it on in its next session. |
+| `POST /org/work-items/{id}/close` | Close an item nobody works on: `{"note"?}` (operators; `409` while a session works on it). Its branch and pull request stay on GitHub. |
 | `GET /org/templates` | Template categories, department templates and blueprints. |
 | `GET`/`PUT /org/profile` | Company name and description, chosen blueprint (admin to change). |
 | `GET /org/suggestions` | What to add next: the blueprint's next stage, related departments, more agents; `blocked` says when a limit prevents it. |
