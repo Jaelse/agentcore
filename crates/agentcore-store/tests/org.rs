@@ -425,6 +425,26 @@ async fn sessions_remember_their_node() {
         (name.as_str(), url.as_str(), alive),
         ("vm-1", "http://vm-1", true)
     );
+
+    // A node that still sends heartbeats cannot be removed; a dead one can,
+    // and its sessions are failed and archived rather than deleted.
+    assert!(store.remove_node("vm-1", 30, "alice").await.is_err());
+    sqlx::query("UPDATE nodes SET last_seen = now() - interval '5 minutes' WHERE name = 'vm-1'")
+        .execute(store.pool())
+        .await
+        .unwrap();
+    assert_eq!(store.remove_node("vm-1", 30, "alice").await.unwrap().0, 1);
+    assert!(
+        store
+            .list_nodes(30)
+            .await
+            .unwrap()
+            .iter()
+            .all(|n| n.name != "vm-1")
+    );
+    let gone = store.get_session(id).await.unwrap().unwrap();
+    assert_eq!(gone.info.status, SessionStatus::Failed);
+    assert!(store.archived_session_ids().await.unwrap().contains(&id));
 }
 
 #[tokio::test]

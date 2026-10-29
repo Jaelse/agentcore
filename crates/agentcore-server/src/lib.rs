@@ -39,7 +39,7 @@ use agentcore_runtime::{AdapterRegistry, RuntimeConfig, SessionManager};
 use agentcore_store::{Cipher, Store};
 use anyhow::Context;
 use axum::Router;
-use axum::routing::{any, get, patch, post, put};
+use axum::routing::{any, delete, get, patch, post, put};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::services::{ServeDir, ServeFile};
@@ -265,6 +265,7 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/{name}/check", post(catalog::check))
         .route("/org", get(org::overview))
         .route("/org/stream", get(org::stream))
+        .route("/org/nodes/{name}", delete(org::remove_node))
         .route("/org/templates", get(org::templates))
         .route("/org/suggestions", get(org::suggestions))
         .route("/org/profile", get(org::get_profile).put(org::put_profile))

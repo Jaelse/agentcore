@@ -1252,6 +1252,76 @@ impl Store {
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
+    /// Remove a node that stopped responding. Its live sessions are marked
+    /// failed and all its sessions are archived (rows, audit logs and model
+    /// calls are kept); its agents are stopped and detached. A node that is
+    /// still sending heartbeats cannot be removed. Returns
+    /// `(sessions archived, agents detached)`.
+    pub async fn remove_node(
+        &self,
+        name: &str,
+        node_timeout_secs: u64,
+        actor: &str,
+    ) -> Result<(u64, u64)> {
+        let mut tx = self.pool.begin().await?;
+        let found: Option<(bool,)> = sqlx::query_as(
+            "SELECT last_seen > now() - make_interval(secs => $2)
+             FROM nodes WHERE name = $1 FOR UPDATE",
+        )
+        .bind(name)
+        .bind(node_timeout_secs as f64)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((alive,)) = found else {
+            return Err(StoreError::NotFound(format!("node {name}")));
+        };
+        if alive {
+            return Err(StoreError::Conflict(format!(
+                "node `{name}` is still running; only nodes that stopped responding can be removed"
+            )));
+        }
+        sqlx::query(
+            "UPDATE sessions SET status = 'failed', ended_at = now()
+             WHERE node = $1 AND status NOT IN ('stopped', 'completed', 'failed')",
+        )
+        .bind(name)
+        .execute(&mut *tx)
+        .await?;
+        let sessions = sqlx::query(
+            "UPDATE sessions SET archived_at = now() WHERE node = $1 AND archived_at IS NULL",
+        )
+        .bind(name)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let agents = sqlx::query(
+            "UPDATE org_agents SET
+                 status = CASE WHEN desired <> 'stopped' THEN 'failed' ELSE status END,
+                 note = CASE WHEN desired <> 'stopped'
+                             THEN 'node ' || $1 || ' was removed' ELSE note END,
+                 desired = 'stopped', node = NULL, session_id = NULL, updated_at = now()
+             WHERE node = $1",
+        )
+        .bind(name)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        sqlx::query("DELETE FROM nodes WHERE name = $1")
+            .bind(name)
+            .execute(&mut *tx)
+            .await?;
+        admin_event(
+            &mut tx,
+            actor,
+            "node.remove",
+            name,
+            serde_json::json!({ "sessions": sessions, "agents": agents }),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok((sessions, agents))
+    }
+
     /// The node that owns a session, with its URL and whether it is alive.
     pub async fn session_node(
         &self,
