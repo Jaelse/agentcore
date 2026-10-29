@@ -1704,6 +1704,27 @@ pub async fn overview(State(state): State<AppState>, _caller: Caller) -> ApiResu
     })))
 }
 
+/// Remove a node that stopped responding, with its sessions and agents.
+pub async fn remove_node(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(name): Path<String>,
+) -> ApiResult<Json<Value>> {
+    caller.require_admin()?;
+    if name == *state.node {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "this node is running; it cannot remove itself",
+        ));
+    }
+    let (sessions, agents) = state
+        .store
+        .remove_node(&name, state.config.cluster.node_timeout_secs, &caller.name)
+        .await?;
+    notify(&state.store, json!({ "kind": "node", "node": name })).await;
+    Ok(Json(json!({ "sessions": sessions, "agents": agents })))
+}
+
 // ---- goals and check-ins ----------------------------------------------------------
 
 pub async fn list_goals(State(state): State<AppState>, _caller: Caller) -> ApiResult<Json<Value>> {

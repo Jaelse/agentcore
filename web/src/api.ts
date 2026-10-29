@@ -264,6 +264,8 @@ export const api = {
   ) =>
     id ? request<Department>("PUT", `/org/departments/${id}`, body) : request<Department>("POST", "/org/departments", body),
   deleteDepartment: (id: string) => request<void>("DELETE", `/org/departments/${id}`),
+  removeNode: (name: string) =>
+    request<{ sessions: number; agents: number }>("DELETE", `/org/nodes/${encodeURIComponent(name)}`),
   controlDepartment: (id: string, control: "start" | "pause" | "resume" | "stop") =>
     request<{ changed: number; failed: { agent: string; error: string }[] }>("POST", `/org/departments/${id}/${control}`),
   addAgent: (

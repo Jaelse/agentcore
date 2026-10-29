@@ -231,6 +231,12 @@ update-client endpoints under `/dist`;
 `dry_run` returns the plan only. A plan that does not fit the limits is
 refused with `409` (the body holds the plan) unless `raise_limits` is set.
 
+`DELETE /org/nodes/{name}` (admin) removes a node that stopped responding
+(`409` while it still sends heartbeats): its unfinished sessions are marked
+failed, all its sessions are archived (nothing is deleted; audit logs and
+model calls stay), and its agents are stopped and detached. Returns
+`{sessions, agents}` (how many of each were archived / detached).
+
 Session endpoints (`/sessions/{id}/...`) work on any node: a node that does
 not run the session forwards the request (streams included) to the node
 that does, or answers `503` if that node is unreachable.

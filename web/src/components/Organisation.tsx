@@ -229,7 +229,7 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
         )}
 
         <Limits org={org} canEdit={isAdmin} onSaved={load} onError={onError} />
-        <Nodes org={org} />
+        <Nodes org={org} canEdit={isAdmin} onChanged={load} onError={onError} />
       </aside>
 
       <main className="main">
@@ -419,7 +419,17 @@ function Limits({ org, canEdit, onSaved, onError }: { org: OrgOverview; canEdit:
   );
 }
 
-function Nodes({ org }: { org: OrgOverview }) {
+function Nodes({
+  org,
+  canEdit,
+  onChanged,
+  onError,
+}: {
+  org: OrgOverview;
+  canEdit: boolean;
+  onChanged: () => void;
+  onError: (err: unknown) => void;
+}) {
   return (
     <div className="card side-panel">
       <h3 className="section-title">Nodes</h3>
@@ -434,6 +444,23 @@ function Nodes({ org }: { org: OrgOverview }) {
             <span className="muted small">
               {n.alive ? `${n.agents}/${n.capacity} agents` : "unreachable"}
             </span>
+            {canEdit && !n.alive && (
+              <button
+                className="link small danger-text"
+                title="Remove this node; its sessions are failed and archived, its agents stopped"
+                onClick={async () => {
+                  if (!confirm(`Remove node ${n.name}? Its sessions are archived and its agents stopped.`)) return;
+                  try {
+                    await api.removeNode(n.name);
+                    onChanged();
+                  } catch (err) {
+                    onError(err);
+                  }
+                }}
+              >
+                remove
+              </button>
+            )}
           </li>
         ))}
       </ul>
