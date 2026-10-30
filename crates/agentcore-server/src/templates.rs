@@ -294,8 +294,7 @@ pub struct Plan {
     pub departments: Vec<PlannedDepartment>,
     /// Departments that would be created.
     pub new_departments: usize,
-    /// Worker agents that would be created (each department also gets a
-    /// communicator).
+    /// Worker agents that would be created.
     pub new_agents: usize,
     /// Current limits.
     pub limits: OrgSettings,
@@ -580,7 +579,7 @@ mod tests {
             mission: String::new(),
             policy: "department".into(),
             tools: vec![],
-            communicator_agent: "x".into(),
+            routing: Default::default(),
             state: agentcore_core::DepartmentState::Active,
             template: Some(template.into()),
             project_id: None,

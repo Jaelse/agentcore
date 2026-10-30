@@ -619,8 +619,8 @@ impl Session {
         lock(&self.keyboard).is_some()
     }
 
-    /// Hand messages from the agent's organisation (colleagues, its
-    /// communicator, people) to an agent that is waiting for input; they
+    /// Hand messages from the agent's organisation (colleagues, other
+    /// departments, people) to an agent that is waiting for input; they
     /// start its next turn. Fails with [`RuntimeError::NotAwaitingInput`]
     /// while the agent is busy or paused, so the caller keeps them queued.
     pub fn deliver_messages(&self, messages: Vec<DeliveredMessage>) -> Result<(), RuntimeError> {

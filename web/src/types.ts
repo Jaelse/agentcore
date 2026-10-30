@@ -67,7 +67,7 @@ export interface SessionContext {
 
 // ---- organisations (crates/agentcore-core/src/org.rs) ----
 
-export type AgentKind = "worker" | "communicator";
+export type AgentKind = "worker";
 export type Desired = "stopped" | "running" | "paused";
 
 export interface OrgSettings {
@@ -101,7 +101,8 @@ export interface Department {
   mission: string;
   policy: string;
   tools: string[];
-  communicator_agent: string;
+  /** What the message router lets through to and from the department. */
+  routing: RoutingPolicy;
   state: "active" | "paused";
   template: string | null;
   project_id: string | null;
@@ -165,8 +166,37 @@ export interface OrgOverview {
   products: Product[];
   releases_pending: number;
   nodes: NodeInfo[];
-  communicator_policy: string;
 }
+
+/** Which departments a department may exchange messages with. */
+export interface PeerRule {
+  /** Only these departments; null = every department. */
+  allow: string[] | null;
+  /** Never these. */
+  deny: string[];
+}
+
+export interface RoutingPolicy {
+  outbound: PeerRule;
+  inbound: PeerRule;
+  /** Which outgoing messages wait for a person. */
+  approval: "none" | "broadcast" | "all";
+  max_message_chars: number | null;
+  max_per_hour: number | null;
+  blocked_phrases: string[];
+  /** Which workers receive messages from other departments. */
+  delivery: { mode: "all" } | { mode: "lead"; worker: string };
+}
+
+export const OPEN_ROUTING: RoutingPolicy = {
+  outbound: { allow: null, deny: [] },
+  inbound: { allow: null, deny: [] },
+  approval: "none",
+  max_message_chars: null,
+  max_per_hour: null,
+  blocked_phrases: [],
+  delivery: { mode: "all" },
+};
 
 export interface OrgMessage {
   id: string;
@@ -180,6 +210,10 @@ export interface OrgMessage {
   to_department: string | null;
   to_name: string;
   text: string;
+  /** What became of it at the message router. */
+  status: "delivered" | "held" | "rejected";
+  /** Why the router held or refused it, or who decided. */
+  decision: string;
   recipients: string[];
 }
 

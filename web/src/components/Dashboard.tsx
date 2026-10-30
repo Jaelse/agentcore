@@ -435,7 +435,6 @@ export function Dashboard({
                   .map((a) => (
                     <tr key={a.id}>
                       <td>
-                        {a.kind === "communicator" ? "📡 " : ""}
                         {a.name} <span className="muted small">{depts.find((d) => d.id === a.department_id)?.name}</span>
                       </td>
                       <td>{a.desired === "stopped" ? "stopped" : (a.status ?? "starting").replace(/_/g, " ")}</td>

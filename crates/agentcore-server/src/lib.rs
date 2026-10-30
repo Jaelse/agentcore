@@ -116,10 +116,10 @@ impl AppState {
             .context("connecting to PostgreSQL")?;
         let node = config.node_name();
         sessions::recover(&store, provider.as_ref(), &node).await;
-        if policies.get(&config.org.communicator_policy).is_none() {
+        if config.org.communicator_policy.is_some() {
             tracing::warn!(
-                policy = %config.org.communicator_policy,
-                "the communicator policy does not exist: departments cannot be created"
+                "[org].communicator_policy is ignored: departments have a message router with \
+                 a routing policy instead of a communicator agent"
             );
         }
         store
@@ -418,6 +418,8 @@ pub fn router(state: AppState) -> Router {
             "/org/messages",
             get(org::list_messages).post(org::post_message),
         )
+        .route("/org/messages/{id}/approve", post(org::approve_message))
+        .route("/org/messages/{id}/reject", post(org::reject_message))
         // Session endpoints are served by the node that runs the session.
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),

@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, streamOrg } from "../api";
 import { useInterval } from "../hooks";
+import {
+  OPEN_ROUTING,
+  type RoutingPolicy,
+} from "../types";
 import type {
   Department,
   DepartmentFile,
@@ -9,6 +13,7 @@ import type {
   OrgAgent,
   OrgMessage,
   OrgOverview,
+  PeerRule,
   Project,
   Suggestion,
   SystemCard,
@@ -200,8 +205,7 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
                     )}
                   </div>
                   <div className="muted small">
-                    {d.agents.filter((a) => a.kind === "worker").length}/{org.settings.max_agents_per_department} agents
-                    {" · "}+ communicator
+                    {d.agents.length}/{org.settings.max_agents_per_department} agents
                   </div>
                 </button>
               </li>
@@ -278,6 +282,7 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
         ) : selection.kind === "new" ? (
           <DepartmentForm
             department={null}
+            departments={org.departments}
             card={card}
             onSaved={(d) => {
               load();
@@ -309,8 +314,8 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
                 <h2>{org.profile.company_name || "Organisation"}</h2>
                 {org.profile.company_about && <p>{org.profile.company_about}</p>}
                 <p className="muted">
-                  Agents work together inside a department. Departments only talk to each other through their
-                  communicators. You can see every message, talk to any agent or department, and pause or stop
+                  Agents work together inside a department. Departments only talk to each other through the
+                  message router, which follows each department's routing policy. You can see every message, talk to any agent or department, and pause or stop
                   anything.
                 </p>
               </div>
@@ -339,6 +344,7 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
               />
             )}
             {org.departments.length > 0 && <Goals org={org} canEdit={canOperate} act={act} />}
+            <HeldMessages org={org} tick={tick} canDecide={canOperate} act={act} onError={onError} />
             <Feed org={org} tick={tick} canPost={canOperate} onError={onError} />
           </div>
         )}
@@ -411,7 +417,7 @@ function Limits({ org, canEdit, onSaved, onError }: { org: OrgOverview; canEdit:
           </div>
           <div>
             <dt>Agents per department</dt>
-            <dd>up to {org.settings.max_agents_per_department} (plus its communicator)</dd>
+            <dd>up to {org.settings.max_agents_per_department}</dd>
           </div>
         </dl>
       )}
@@ -512,6 +518,7 @@ function DepartmentRoom({
     return (
       <DepartmentForm
         department={dept}
+        departments={org.departments}
         card={card}
         onSaved={() => {
           setEditing(false);
@@ -563,8 +570,8 @@ function DepartmentRoom({
                   🚀 {p.name}
                 </span>
               ))}
-            <span className="chip" title="Agent the communicator runs">
-              📡 communicator: {dept.communicator_agent}
+            <span className="chip" title={routingHelp(dept.routing)}>
+              🔀 router: {routingSummary(dept.routing)}
             </span>
             {dept.blocked && (
               <span className="chip" title="Its workers are paused until a repository is linked. Edit the department to link one.">
@@ -643,7 +650,7 @@ function DepartmentRoom({
       <section>
         <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
           <h3 className="section-title">
-            Members · {workers.length}/{org.settings.max_agents_per_department} agents + communicator
+            Members · {workers.length}/{org.settings.max_agents_per_department} agents
           </h3>
           {canOperate && workers.length < org.settings.max_agents_per_department && !adding && (
             <button className="btn small-btn" onClick={() => setAdding(true)}>
@@ -677,6 +684,8 @@ function DepartmentRoom({
           ))}
         </div>
       </section>
+
+      <HeldMessages org={org} dept={dept} tick={tick} canDecide={canOperate} act={act} onError={onError} />
 
       <div className="room-grid">
         <Feed org={org} dept={dept} tick={tick} canPost={canOperate} onError={onError} />
@@ -724,7 +733,6 @@ function AgentCard({
     <div className={`card member ${agent.kind}`}>
       <div className="session-item-top">
         <strong>
-          {agent.kind === "communicator" ? "📡 " : ""}
           {agent.name}
         </strong>
         <span
@@ -736,7 +744,7 @@ function AgentCard({
         </span>
       </div>
       <div className="muted small">
-        {agent.kind === "communicator" ? "talks to other departments" : agent.agent}
+        {agent.agent}
         {agent.node && live && ` · on ${agent.node}`}
       </div>
       {agent.instructions && <div className="session-task small">{agent.instructions}</div>}
@@ -828,12 +836,14 @@ function AddAgent({ dept, card, onDone, onError }: { dept: Department; card: Sys
 
 function DepartmentForm({
   department,
+  departments,
   card,
   onSaved,
   onCancel,
   onError,
 }: {
   department: Department | null;
+  departments: Department[];
   card: SystemCard;
   onSaved: (d: Department) => void;
   onCancel: () => void;
@@ -844,7 +854,7 @@ function DepartmentForm({
   const [mission, setMission] = useState(department?.mission ?? "");
   const [policy, setPolicy] = useState(department?.policy ?? "");
   const [tools, setTools] = useState<string[]>(department?.tools ?? ["files"]);
-  const [communicator, setCommunicator] = useState(department?.communicator_agent ?? card.agents[0]?.name ?? "");
+  const [routing, setRouting] = useState<RoutingPolicy>(department?.routing ?? OPEN_ROUTING);
   const [projectId, setProjectId] = useState(department?.project_id ?? "");
   const [role, setRole] = useState(department?.role ?? "");
   const [requiresRepo, setRequiresRepo] = useState(department?.requires_repository ?? false);
@@ -870,7 +880,7 @@ function DepartmentForm({
               mission,
               policy,
               tools,
-              communicator_agent: communicator,
+              routing,
               project_id: projectId || null,
               role: projectId && role ? role : null,
               requires_repository: requiresRepo,
@@ -893,13 +903,11 @@ function DepartmentForm({
           Guardrail policy for its agents
           <select value={policy} onChange={(e) => setPolicy(e.target.value)}>
             <option value="">Default for departments</option>
-            {card.policies
-              .filter((p) => p.name !== "communicator")
-              .map((p) => (
-                <option key={p.name} value={p.name}>
-                  {p.name}
-                </option>
-              ))}
+            {card.policies.map((p) => (
+              <option key={p.name} value={p.name}>
+                {p.name}
+              </option>
+            ))}
           </select>
         </label>
       </div>
@@ -960,20 +968,7 @@ function DepartmentForm({
           {!tools.includes("sandbox") && " Grant Sandbox to give them a checkout."}
         </p>
       )}
-      <label>
-        Communicator runs
-        <select value={communicator} onChange={(e) => setCommunicator(e.target.value)}>
-          {card.agents.map((a) => (
-            <option key={a.name} value={a.name}>
-              {a.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      <p className="muted small">
-        Every department has one communicator. It only has messaging tools and is the only way this department talks
-        to others.
-      </p>
+      <RoutingForm routing={routing} onChange={setRouting} self={department} departments={departments} />
       <div className="row">
         <button className="btn primary" disabled={busy || !name.trim()}>
           {department ? "Save" : "Create department"}
@@ -983,6 +978,208 @@ function DepartmentForm({
         </button>
       </div>
     </form>
+  );
+}
+
+/** One line on what a department's message router does. */
+function routingSummary(r: RoutingPolicy): string {
+  const parts: string[] = [];
+  if (r.approval === "all") parts.push("approves every outgoing message");
+  else if (r.approval === "broadcast") parts.push("approves broadcasts");
+  if (r.outbound.allow || r.outbound.deny.length) parts.push("limits who it writes to");
+  if (r.inbound.allow || r.inbound.deny.length) parts.push("limits who writes to it");
+  if (r.max_per_hour) parts.push(`${r.max_per_hour}/hour`);
+  if (r.max_message_chars) parts.push(`≤ ${r.max_message_chars} chars`);
+  if (r.blocked_phrases.length) parts.push(`${r.blocked_phrases.length} blocked phrase${r.blocked_phrases.length === 1 ? "" : "s"}`);
+  if (r.delivery.mode === "lead") parts.push(`incoming to ${r.delivery.worker}`);
+  return parts.length ? parts.join(" · ") : "open";
+}
+
+function routingHelp(r: RoutingPolicy): string {
+  return `The message router checks every message to or from other departments (no agent reads it): ${routingSummary(r)}. Edit the department to change this.`;
+}
+
+/** A checkbox per other department: unticked ones are refused. */
+function PeerPicker({
+  label,
+  rule,
+  others,
+  onChange,
+}: {
+  label: string;
+  rule: PeerRule;
+  others: Department[];
+  onChange: (r: PeerRule) => void;
+}) {
+  const permits = (id: string) => !rule.deny.includes(id) && (rule.allow === null || rule.allow.includes(id));
+  const toggle = (id: string, on: boolean) => {
+    if (rule.allow !== null) {
+      const allow = on ? [...rule.allow, id] : rule.allow.filter((a) => a !== id);
+      onChange({ allow, deny: rule.deny.filter((d) => d !== id) });
+    } else {
+      onChange({ allow: null, deny: on ? rule.deny.filter((d) => d !== id) : [...rule.deny, id] });
+    }
+  };
+  return (
+    <fieldset className="card pad">
+      <legend className="small muted">{label}</legend>
+      {others.length === 0 && <span className="muted small">There is no other department yet.</span>}
+      {others.map((d) => (
+        <label key={d.id} className="inline-check">
+          <input type="checkbox" checked={permits(d.id)} onChange={(e) => toggle(d.id, e.target.checked)} />
+          {d.name}
+        </label>
+      ))}
+    </fieldset>
+  );
+}
+
+/** The message router's policy for one department. */
+function RoutingForm({
+  routing,
+  onChange,
+  self,
+  departments,
+}: {
+  routing: RoutingPolicy;
+  onChange: (r: RoutingPolicy) => void;
+  self: Department | null;
+  departments: Department[];
+}) {
+  const others = departments.filter((d) => d.id !== self?.id);
+  const set = (patch: Partial<RoutingPolicy>) => onChange({ ...routing, ...patch });
+  const number = (v: string) => (v.trim() === "" ? null : Math.max(1, Math.floor(Number(v)) || 1));
+  return (
+    <fieldset className="card pad routing-form">
+      <legend className="small muted">Message router (how this department talks to the others)</legend>
+      <p className="muted small">
+        Messages between departments go through a router that follows these rules. No agent reads them on the way, so
+        nothing can talk it into passing something on.
+      </p>
+      <div className="grid-2">
+        <PeerPicker
+          label="May write to"
+          rule={routing.outbound}
+          others={others}
+          onChange={(outbound) => set({ outbound })}
+        />
+        <PeerPicker
+          label="Accepts messages from"
+          rule={routing.inbound}
+          others={others}
+          onChange={(inbound) => set({ inbound })}
+        />
+      </div>
+      <div className="grid-2">
+        <label>
+          A person approves its outgoing messages
+          <select value={routing.approval} onChange={(e) => set({ approval: e.target.value as RoutingPolicy["approval"] })}>
+            <option value="none">Never (delivered straight away)</option>
+            <option value="broadcast">Only messages to all departments</option>
+            <option value="all">Every message</option>
+          </select>
+        </label>
+        <label>
+          Incoming messages go to
+          <select
+            value={routing.delivery.mode === "lead" ? routing.delivery.worker : ""}
+            onChange={(e) => set({ delivery: e.target.value ? { mode: "lead", worker: e.target.value } : { mode: "all" } })}
+          >
+            <option value="">Every agent of the department</option>
+            {(self?.agents ?? []).map((a) => (
+              <option key={a.id} value={a.name}>
+                Only {a.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className="grid-2">
+        <label>
+          Longest message (characters)
+          <input
+            type="number"
+            min={1}
+            value={routing.max_message_chars ?? ""}
+            placeholder="no limit"
+            onChange={(e) => set({ max_message_chars: number(e.target.value) })}
+          />
+        </label>
+        <label>
+          Most messages to other departments per hour
+          <input
+            type="number"
+            min={1}
+            value={routing.max_per_hour ?? ""}
+            placeholder="no limit"
+            onChange={(e) => set({ max_per_hour: number(e.target.value) })}
+          />
+        </label>
+      </div>
+      <label>
+        Blocked phrases (one per line; a message that contains one is refused, sent or received)
+        <textarea
+          rows={3}
+          value={routing.blocked_phrases.join("\n")}
+          onChange={(e) => set({ blocked_phrases: e.target.value.split("\n") })}
+        />
+      </label>
+    </fieldset>
+  );
+}
+
+/** Messages the router holds until a person decides. */
+function HeldMessages({
+  org,
+  dept,
+  tick,
+  canDecide,
+  act,
+  onError,
+}: {
+  org: OrgOverview;
+  dept?: Department;
+  tick: number;
+  canDecide: boolean;
+  act: (fn: () => Promise<unknown>) => Promise<void>;
+  onError: (e: unknown) => void;
+}) {
+  const [held, setHeld] = useState<OrgMessage[]>([]);
+  const deptId = dept?.id;
+  useEffect(() => {
+    api.messages({ department: deptId, status: "held", limit: 100 }).then(setHeld).catch(onError);
+  }, [deptId, tick, onError]);
+  if (held.length === 0) return null;
+  const deptName = (id: string | null) => org.departments.find((d) => d.id === id)?.name ?? "?";
+  return (
+    <section className="card pad held">
+      <h3 className="section-title">Waiting for approval · {held.length}</h3>
+      <p className="muted small">
+        A routing policy holds these messages between departments until a person decides.
+      </p>
+      {held.map((m) => (
+        <div key={m.id} className="message inter">
+          <div className="bubble-head">
+            <strong>{m.from_name}</strong>→<span>{m.to_name}</span>
+            <span className="tag tone-inter">
+              {deptName(m.from_department)} → {m.to_department ? deptName(m.to_department) : "all"}
+            </span>
+            <span className="muted">{new Date(m.created_at).toLocaleTimeString()}</span>
+          </div>
+          <div className="bubble-body">{m.text}</div>
+          {canDecide && (
+            <div className="row">
+              <button className="btn primary small-btn" onClick={() => void act(() => api.approveMessage(m.id))}>
+                Approve and deliver
+              </button>
+              <button className="btn ghost small-btn" onClick={() => void act(() => api.rejectMessage(m.id))}>
+                Reject
+              </button>
+            </div>
+          )}
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -1060,6 +1257,14 @@ function Feed({
               )}
               <span className="muted">{new Date(m.created_at).toLocaleTimeString()}</span>
             </div>
+            {m.status !== "delivered" && (
+              <div className="bubble-head">
+                <span className={`tag ${m.status === "held" ? "tone-inter" : "tone-human"}`}>
+                  {m.status === "held" ? "waiting for approval" : "not delivered"}
+                </span>
+                <span className="muted small">{m.decision}</span>
+              </div>
+            )}
             <div className="bubble-body">{m.text}</div>
           </div>
         ))}

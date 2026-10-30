@@ -421,7 +421,6 @@ export function OrgBuilder({ me, card, org, initialMode, initialPick, onDone, on
                 <strong>
                   {plan.new_departments} new department{plan.new_departments === 1 ? "" : "s"}, {plan.new_agents} agents
                 </strong>
-                <span className="muted small">(each department also gets a communicator)</span>
               </div>
               {!plan.fits && (
                 <div className="banner warn-banner">
@@ -455,9 +454,6 @@ export function OrgBuilder({ me, card, org, initialMode, initialPick, onDone, on
                             <code>{a.name}</code> · {a.title}
                           </li>
                         ))}
-                        <li className="muted">
-                          <code>communicator</code> · talks to other departments
-                        </li>
                       </ul>
                     )}
                   </div>

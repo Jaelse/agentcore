@@ -161,9 +161,9 @@ master key.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `communicator_policy` | `communicator` | Policy every communicator agent runs under |
+| `communicator_policy` | – | Ignored (communicator agents were replaced by the message router; routing is set per department). Still accepted so existing files load; logs a warning. |
 | `default_max_departments` | `10` | Initial limit, until an admin changes it in the UI |
-| `default_max_agents_per_department` | `10` | Initial limit (communicators are not counted) |
+| `default_max_agents_per_department` | `10` | Initial limit |
 
 ### Set in the web UI, not in the file
 

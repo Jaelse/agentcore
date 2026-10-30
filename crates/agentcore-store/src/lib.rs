@@ -45,8 +45,8 @@ pub use launch::{
     LaunchEvent, LaunchStats, MAX_SOURCES, NewSubscriber, Segment, SourceStats, Subscriber,
 };
 pub use org::{
-    AgentInput, AgentScope, COMMUNICATOR_NAME, DepartmentInput, FileInfo, MAX_FILE_BYTES,
-    MessageFilter, NewMessage, ORG_CHANNEL, RESERVED_NAMES, valid_agent_name,
+    AgentInput, AgentScope, DepartmentInput, FileInfo, MAX_FILE_BYTES, MessageFilter, NewMessage,
+    ORG_CHANNEL, RESERVED_NAMES, valid_agent_name,
 };
 pub use outbox::{
     ChannelInput, ChannelUpdate, DEFAULT_DISCLOSURE, MAX_BODY_CHARS, NewOutboxItem, OutboxCounts,

@@ -82,15 +82,14 @@ the audit log proves which exact policy governed the session.
 | `project-management` | For the project-manager role: read the repository, manage issues and the board; milestones and public posts need approval. |
 | `marketing` | For the marketing role: write drafts under `/workspace/drafts/` only; public posts need approval. |
 | `department` | Default for the workers of a [department](MULTI_AGENT.md): team messaging and department files allowed, inspection commands and workspace files allowed, everything else needs approval, secrets and destructive commands denied. Longer limits (8 h, 2000 actions) for long-lived agents. |
-| `communicator` | For every communicator (`[org].communicator_policy`): only the messaging tools are allowed, everything else is denied. |
 
 The default policy also allows reading GitHub (`github_list_*`, `github_get_*`,
 `propose_pull_request`) and requires approval for GitHub writes. A role picks
 its policy with `policy = "..."`; see [Ways of working](WAYS_OF_WORKING.md).
 
 Department agents use tool calls named `team_list_colleagues`,
-`team_read_messages`, `team_send_message`, `team_send_to_department`
-(communicators only), `team_list_files`, `team_read_file`,
+`team_read_messages`, `team_send_message`, `team_send_to_department`,
+`team_list_work_items`, `team_assign_work_item`, `team_list_files`, `team_read_file`,
 `team_write_file`, `team_list_goals` and `team_report_progress`, plus
 `data_list_sources`, `data_query`, `insights_*`, `outbox_*`, `release_*` and `launch_*` where the
 department was granted business data, `insights`, a channel, a product or announces one. Drafting
@@ -98,8 +97,9 @@ department was granted business data, `insights`, a channel, a product or announ
 release (`release_*`) ships nothing: people approve each release, and the
 only rollout control agents have is halting one. `default` and `department` allow them
 (reads, and proposals that change nothing until a person applies them). To have a person
-approve messages that leave a department, give communicators a policy that
-requires approval for `team_send_to_department`:
+approve messages that leave a department, set the *approval* rule of its
+[routing policy](MULTI_AGENT.md#the-message-router), or give its workers a
+policy that requires approval for `team_send_to_department`:
 
 ```toml
 [[rules]]

@@ -37,7 +37,7 @@ export function OfficeFloor({ org, onOpenDepartment, onOpenSession }: Props) {
           <h2>Organisation floor</h2>
           <p className="muted">
             Every department is a room, every agent sits inside it. Click a room to open the department, or an
-            agent to watch its session. Communicators sit by the door: they are how rooms talk to each other.
+            agent to watch its session. Rooms talk to each other through the message router.
           </p>
         </div>
       </section>
@@ -283,8 +283,7 @@ function Room({
   hidden: boolean;
   arrange?: Arrange;
 }) {
-  const communicator = dept.agents.filter((a) => a.kind === "communicator");
-  const workers = dept.agents.filter((a) => a.kind === "worker");
+  const workers = dept.agents;
   const live = dept.agents.filter((a) => a.desired !== "stopped").length;
   return (
     <section
@@ -323,13 +322,6 @@ function Room({
           <Desk key={a.id} agent={a} dept={dept} onOpenSession={onOpenSession} />
         ))}
       </div>
-      {communicator.length > 0 && (
-        <footer className="room-door">
-          {communicator.map((a) => (
-            <Desk key={a.id} agent={a} dept={dept} onOpenSession={onOpenSession} />
-          ))}
-        </footer>
-      )}
     </section>
   );
 }
@@ -345,7 +337,7 @@ function Desk({ agent, dept, onOpenSession }: { agent: OrgAgent; dept: Departmen
       onClick={() => agent.session_id && onOpenSession(agent.session_id)}
     >
       <span className="avatar">
-        <PixelKitten seed={agent.id} eyesShut={m === "asleep" || m === "off"} headset={agent.kind === "communicator"} />
+        <PixelKitten seed={agent.id} eyesShut={m === "asleep" || m === "off"} />
         {m === "asleep" && <span className="desk-badge zzz">z</span>}
         {m === "waiting" && <span className="desk-badge">!</span>}
         {m === "paused" && <span className="desk-badge">❚❚</span>}

@@ -15,11 +15,14 @@ Trust boundaries:
 4. **Departments** (multi-agent organisations). A worker can only message its
    own department and use its own department's files; the department is
    taken from the agent's identity, never from tool arguments. Other
-   departments are reached only through communicators, which have no tools
-   but messaging. This limits what a manipulated agent can reach directly;
-   it does not stop a communicator from *relaying* text it was given, so
-   treat messages between departments as untrusted input and use approvals
-   (`team_send_to_department`) where information must not leave a department.
+   departments are reached only through the message router, a deterministic
+   part of the server with a routing policy per department (who may write to
+   whom, limits, blocked phrases, optional human approval). No model sits in
+   the path, so nothing can talk the router into passing a message on. This
+   limits what a manipulated agent can reach directly; it does not stop an
+   agent from *sending* text it was given, so treat messages between
+   departments as untrusted input and use the *approval* rule where
+   information must not leave a department.
 
 ```mermaid
 flowchart LR
@@ -146,9 +149,11 @@ do, and every attempt is recorded.
   image; pin their versions (the install script does) and review upgrades.
 * Node-to-node requests are plain HTTP to `internal_url` unless you put TLS in
   front of it; they carry the operator's token.
-* Communicators are language models: they can be persuaded to pass on
-  information. The department boundary controls tools and data access, not
-  what text crosses it.
+* The message router is deterministic, but a worker can still be persuaded to
+  send information to another department. The department boundary controls
+  tools and data access; the routing policy's size, rate and phrase checks
+  catch accidents, not a determined sender. Use its approval rule for
+  anything sensitive.
 * Business data an agent reads becomes part of its prompt and is sent to the
   model provider; grant sources with that in mind, and use read-only
   credentials (the read-only transaction is a second line, not the first).

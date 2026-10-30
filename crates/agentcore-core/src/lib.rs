@@ -28,9 +28,10 @@ pub use insights::{
 pub use live::{FileChange, FileChangeKind, LiveFrame, ModelDeltaKind, ProcessInfo};
 pub use model::{KnownModel, ModelCallOutcome, ModelEndpoint, ProviderKind};
 pub use org::{
-    AgentKind, DeliveredMessage, Department, DepartmentId, DepartmentState, Desired, GoalStatus,
-    MessageScope, NodeInfo, OrgAgent, OrgAgentId, OrgGoal, OrgMessage, OrgProfile, OrgSchedule,
-    OrgSettings, WorkItem, WorkItemState, WorkLease,
+    AgentKind, DeliveredMessage, Delivery, Department, DepartmentId, DepartmentState, Desired,
+    GoalStatus, MessageScope, MessageStatus, NodeInfo, OrgAgent, OrgAgentId, OrgGoal, OrgMessage,
+    OrgProfile, OrgSchedule, OrgSettings, PeerRule, RouteApproval, RouteError, RouteVerdict,
+    RoutingPolicy, WorkItem, WorkItemState, WorkLease, decide_route,
 };
 pub use principal::Principal;
 pub use releases::{

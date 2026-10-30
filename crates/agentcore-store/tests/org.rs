@@ -1,6 +1,6 @@
 use agentcore_core::{
-    AgentKind, DepartmentState, Desired, MessageScope, OrgSettings, Principal, SessionInfo,
-    SessionStatus,
+    Delivery, DepartmentState, Desired, MessageScope, MessageStatus, OrgSettings, Principal,
+    RouteApproval, RoutingPolicy, SessionInfo, SessionStatus,
 };
 use agentcore_store::testing::fresh_store;
 use agentcore_store::{
@@ -16,7 +16,7 @@ fn dept(name: &str) -> DepartmentInput {
         mission: format!("{name} things"),
         policy: "default".into(),
         tools: vec!["files".into(), "sandbox".into()],
-        communicator_agent: "opencode".into(),
+        routing: RoutingPolicy::default(),
         template: None,
         project_id: None,
         role: None,
@@ -42,7 +42,7 @@ async fn node(store: &Store, name: &str, capacity: u32) {
 }
 
 #[tokio::test]
-async fn limits_are_enforced_and_departments_get_a_communicator() {
+async fn limits_are_enforced_and_departments_start_empty() {
     let Some((store, _)) = fresh_store().await else {
         return;
     };
@@ -101,16 +101,19 @@ async fn limits_are_enforced_and_departments_get_a_communicator() {
         Err(StoreError::Invalid(_))
     ));
 
-    let members = store.list_agents(Some(research.id)).await.unwrap();
-    assert_eq!(members.len(), 1);
-    assert_eq!(members[0].kind, AgentKind::Communicator);
-    assert_eq!(members[0].name, "communicator");
+    assert!(
+        store
+            .list_agents(Some(research.id))
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     store
         .add_agent(research.id, worker("analyst"), "alice")
         .await
         .unwrap();
-    // The communicator does not count against the limit; a second worker does.
+    // The limit is one worker per department: a second one is refused.
     assert!(matches!(
         store
             .add_agent(research.id, worker("writer"), "alice")
@@ -286,7 +289,10 @@ async fn messages_fan_out_to_inboxes() {
         .await
         .unwrap();
     let dev = store.add_agent(e.id, worker("dev"), "alice").await.unwrap();
-    let r_comm = store.list_agents(Some(r.id)).await.unwrap()[0].clone();
+    let r_writer = store
+        .add_agent(r.id, worker("writer"), "alice")
+        .await
+        .unwrap();
 
     let msg = store
         .insert_message(NewMessage {
@@ -295,15 +301,17 @@ async fn messages_fan_out_to_inboxes() {
             from_department: Some(r.id),
             from_name: "analyst (Research)".into(),
             to_kind: "agent",
-            to_agent: Some(r_comm.id),
+            to_agent: Some(r_writer.id),
             to_department: Some(r.id),
-            to_name: "communicator (Research)".into(),
+            to_name: "writer (Research)".into(),
             text: "ask Eng for limits".into(),
-            recipients: vec![(r_comm.id, r.id)],
+            status: MessageStatus::Delivered,
+            decision: String::new(),
+            recipients: vec![(r_writer.id, r.id)],
         })
         .await
         .unwrap();
-    assert_eq!(msg.recipients, [r_comm.id]);
+    assert_eq!(msg.recipients, [r_writer.id]);
     let human = store
         .insert_message(NewMessage {
             scope: MessageScope::Human,
@@ -315,6 +323,8 @@ async fn messages_fan_out_to_inboxes() {
             to_department: Some(e.id),
             to_name: "Eng".into(),
             text: "hello Eng".into(),
+            status: MessageStatus::Delivered,
+            decision: String::new(),
             recipients: vec![(dev.id, e.id)],
         })
         .await
@@ -322,7 +332,7 @@ async fn messages_fan_out_to_inboxes() {
 
     assert_eq!(
         store
-            .agents_with_mail(&[r_comm.id, dev.id, analyst.id])
+            .agents_with_mail(&[r_writer.id, dev.id, analyst.id])
             .await
             .unwrap()
             .len(),
@@ -723,7 +733,7 @@ async fn proposals_data_sources_and_metrics() {
     assert_eq!(m.daily.iter().map(|d| d.denied).sum::<i64>(), 1);
     let eng = m.departments.iter().find(|x| x.id == d.id).unwrap();
     assert_eq!((eng.workers, eng.denied), (1, 1));
-    assert_eq!(m.agents.len(), 2, "worker and communicator");
+    assert_eq!(m.agents.len(), 1);
     assert_eq!(m.proposals.applied, 1);
 }
 
@@ -1063,4 +1073,139 @@ async fn work_items_are_borrowed_by_one_session_at_a_time() {
             .len(),
         2
     );
+}
+
+#[tokio::test]
+async fn routing_policies_persist() {
+    let Some((store, _)) = fresh_store().await else {
+        return;
+    };
+    let other = store.create_department(dept("Eng"), "alice").await.unwrap();
+    assert_eq!(other.routing, RoutingPolicy::default());
+
+    let mut input = dept("Research");
+    input.routing = RoutingPolicy {
+        approval: RouteApproval::Broadcast,
+        max_per_hour: Some(5),
+        blocked_phrases: vec!["  secret ".into(), "".into()],
+        delivery: Delivery::Lead(" lead ".into()),
+        ..Default::default()
+    };
+    input.routing.outbound.allow = Some(vec![other.id]);
+    let research = store
+        .create_department(input.clone(), "alice")
+        .await
+        .unwrap();
+    assert_eq!(research.routing.approval, RouteApproval::Broadcast);
+    assert_eq!(research.routing.max_per_hour, Some(5));
+    assert_eq!(research.routing.blocked_phrases, ["secret"]);
+    assert_eq!(research.routing.delivery, Delivery::Lead("lead".into()));
+    assert_eq!(research.routing.outbound.allow, Some(vec![other.id]));
+
+    input.routing.max_per_hour = Some(0);
+    assert!(matches!(
+        store
+            .update_department(research.id, input.clone(), "alice")
+            .await,
+        Err(StoreError::Invalid(_))
+    ));
+    input.routing = RoutingPolicy::default();
+    let updated = store
+        .update_department(research.id, input, "alice")
+        .await
+        .unwrap();
+    assert_eq!(updated.routing, RoutingPolicy::default());
+}
+
+#[tokio::test]
+async fn held_messages_are_released_or_rejected_once() {
+    let Some((store, _)) = fresh_store().await else {
+        return;
+    };
+    let r = store
+        .create_department(dept("Research"), "alice")
+        .await
+        .unwrap();
+    let e = store.create_department(dept("Eng"), "alice").await.unwrap();
+    let analyst = store
+        .add_agent(r.id, worker("analyst"), "alice")
+        .await
+        .unwrap();
+    let dev = store.add_agent(e.id, worker("dev"), "alice").await.unwrap();
+
+    let new = |status, text: &str, recipients| NewMessage {
+        scope: MessageScope::InterDepartment,
+        from_agent: Some(analyst.id),
+        from_department: Some(r.id),
+        from_name: "analyst (Research)".into(),
+        to_kind: "department",
+        to_agent: None,
+        to_department: Some(e.id),
+        to_name: "Eng".into(),
+        text: text.into(),
+        status,
+        decision: "waiting".into(),
+        recipients,
+    };
+    let held = store
+        .insert_message(new(MessageStatus::Held, "approve me", vec![]))
+        .await
+        .unwrap();
+    let refused = store
+        .insert_message(new(MessageStatus::Held, "reject me", vec![]))
+        .await
+        .unwrap();
+    let denied = store
+        .insert_message(new(MessageStatus::Rejected, "denied", vec![]))
+        .await
+        .unwrap();
+    assert!(held.recipients.is_empty());
+    assert_eq!(store.agents_with_mail(&[dev.id]).await.unwrap().len(), 0);
+    // Held and refused messages do not count towards the hourly limit when
+    // refused; held ones do.
+    assert_eq!(store.count_sent_last_hour(r.id).await.unwrap(), 2);
+
+    let held_only = store
+        .list_messages(MessageFilter {
+            status: Some(MessageStatus::Held),
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(held_only.len(), 2);
+    assert!(held_only.iter().all(|m| m.id != denied.id));
+
+    let released = store
+        .release_message(held.id, &[(dev.id, e.id)], "approved by bob")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(released.status, MessageStatus::Delivered);
+    assert_eq!(released.recipients, [dev.id]);
+    assert_eq!(released.decision, "approved by bob");
+    assert_eq!(store.pending_messages(dev.id).await.unwrap().len(), 1);
+    // Decided already: nothing happens twice.
+    assert!(
+        store
+            .release_message(held.id, &[], "again")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .reject_message(held.id, "late")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let rejected = store
+        .reject_message(refused.id, "rejected by bob")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(rejected.status, MessageStatus::Rejected);
+    assert!(rejected.recipients.is_empty());
 }

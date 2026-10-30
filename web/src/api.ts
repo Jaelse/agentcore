@@ -16,6 +16,7 @@ import type {
   MessageTo,
   OrgAgent,
   OrgMessage,
+  RoutingPolicy,
   OrgOverview,
   OrgSettings,
   BuildPlan,
@@ -256,7 +257,7 @@ export const api = {
       mission: string;
       policy: string;
       tools: string[];
-      communicator_agent: string;
+      routing: RoutingPolicy;
       project_id: string | null;
       role: string | null;
       requires_repository: boolean;
@@ -304,7 +305,6 @@ export const api = {
     departments: string[];
     size: "lean" | "full";
     agent?: string;
-    communicator_agent?: string;
     project_id?: string | null;
     start?: boolean;
     goal?: string;
@@ -442,14 +442,17 @@ export const api = {
   testChannel: (id: string, to: string[]) => request<{ ok: boolean; error?: string }>("POST", `/org/channels/${id}/test`, { to }),
   pauseAll: () => request<void>("POST", "/org/pause-all"),
   resumeAll: () => request<void>("POST", "/org/resume-all"),
-  messages: (q: { department?: string; agent?: string; limit?: number } = {}) => {
+  messages: (q: { department?: string; agent?: string; status?: OrgMessage["status"]; limit?: number } = {}) => {
     const params = new URLSearchParams();
     if (q.department) params.set("department", q.department);
     if (q.agent) params.set("agent", q.agent);
+    if (q.status) params.set("status", q.status);
     if (q.limit) params.set("limit", String(q.limit));
     const query = params.toString();
     return request<OrgMessage[]>("GET", `/org/messages${query ? `?${query}` : ""}`);
   },
+  approveMessage: (id: string) => request<OrgMessage>("POST", `/org/messages/${id}/approve`),
+  rejectMessage: (id: string) => request<OrgMessage>("POST", `/org/messages/${id}/reject`),
   postMessage: (to: MessageTo, text: string) => request<OrgMessage>("POST", "/org/messages", { to, text }),
   departmentFiles: (id: string) => request<DepartmentFile[]>("GET", `/org/departments/${id}/files`),
   workItems: (department: string, closed = false) =>

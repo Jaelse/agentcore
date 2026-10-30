@@ -3,8 +3,9 @@
 agentcore can run many agents together as an **organisation** made of
 **departments** (a department is a "room"). Each department has its own
 mission, data, tools and guardrails. Agents in the same department work
-together. Departments talk to each other only through their
-**communicator** agents. People can open any department and any agent, see
+together. Departments talk to each other only through the organisation's
+**message router**, which follows each department's **routing policy**: no
+agent sits in between. People can open any department and any agent, see
 everything that happens, talk to any agent, and pause or stop one agent, a
 department or the whole organisation.
 
@@ -53,26 +54,20 @@ A step-by-step walkthrough of running an app this way is in the
 flowchart TB
     subgraph ORG["Organisation (limits: max departments, max agents per department)"]
         subgraph R["Department: Research"]
-            RC(["communicator"])
             R1["analyst"] <--> R2["writer"]
-            R1 <--> RC
-            R2 <--> RC
             RF[("department files")]
         end
         subgraph E["Department: Engineering"]
-            EC(["communicator"])
             E1["developer"] <--> E2["reviewer"]
-            E1 <--> EC
-            E2 <--> EC
             EF[("department files")]
         end
         subgraph S["Department: Sales"]
-            SC(["communicator"])
-            S1["account manager"] <--> SC
+            S1["account manager"]
         end
-        RC <== "department to department" ==> EC
-        EC <== "department to department" ==> SC
-        RC -. "to all departments" .-> EC & SC
+        ROUTER{{"message router<br/>(routing policies)"}}
+        R1 <== "department to department" ==> ROUTER
+        ROUTER <==> E1
+        ROUTER <==> S1
     end
     H["You (web UI)"] -. "watch · talk · pause · stop" .-> ORG
 ```
@@ -81,8 +76,9 @@ flowchart TB
 |---|---|
 | **Organisation** | Every department on this agentcore installation, across all nodes. |
 | **Department** (room) | A group of agents with a mission, its own data (department files, work items, sandbox workspaces), its own tool set and its own guardrail policy. |
-| **Worker agent** | A member of one department that does the department's work. It may talk to everyone in its department, including the communicator. |
-| **Communicator agent** | Exactly one per department, created with the department. It has *only* messaging tools: no sandbox commands, no file access, no department files. It passes messages between its department and other departments. |
+| **Worker agent** | A member of one department that does the department's work. It may talk to everyone in its department, and to other departments with `team_send_to_department`. |
+| **Message router** | Part of the server, not an agent. It checks every message between departments against the departments' routing policies and delivers it, holds it for a person, or refuses it. No model reads the messages, so nothing can talk it into passing something on. |
+| **Routing policy** | Per department: who it may write to and accept from, whether a person approves outgoing messages, limits, blocked phrases and which workers receive incoming messages (see [The message router](#the-message-router)). |
 | **Node** | One agentcore process (usually one VM) that runs agent sandboxes. All nodes share PostgreSQL. |
 | **Work item** | Work a department does on its repository: a branch, its last checkpoint and its pull request. The department owns it; a session borrows it (see [Work items](#work-items-the-department-keeps-the-work)). |
 
@@ -236,37 +232,81 @@ and are not updated when the template changes.
 
 ## Who may talk to whom
 
-Routing is decided by one pure function (`agentcore_core::org::route`), used
-for every message, from agents and from people alike, and unit tested rule by
-rule.
+Addressing is decided by one pure function (`agentcore_core::org::route`),
+used for every message, from agents and from people alike, and unit tested
+rule by rule.
 
-| From ↓ / To → | worker, same dept | own communicator | own department room | worker, other dept | communicator, other dept | other department | all departments |
-|---|---|---|---|---|---|---|---|
-| **Worker** | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Communicator** | ✅ | – | ✅ | ❌ | ✅ | ✅ (to its communicator) | ✅ (to every other communicator) |
-| **Human** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| From ↓ / To → | agent, same dept | own department room | agent, other dept | other department | all departments |
+|---|---|---|---|---|---|
+| **Agent** | ✅ | ✅ | ❌ | ✅ via the router | ✅ via the router |
+| **Human** | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-A refused message is not stored or delivered. The agent gets an error that
-explains the rule ("ask your department's communicator").
+A message to an agent of another department is refused with an error that
+explains the rule ("use `team_send_to_department`"). A message to another
+department goes to the [message router](#the-message-router).
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant A as analyst (Research)
-    participant RC as communicator (Research)
-    participant EC as communicator (Engineering)
+    participant R as message router
     participant D as developer (Engineering)
 
-    A->>RC: team_send_message(to: "communicator", "We need the API rate limits")
-    Note over RC: woken up with the message
-    RC->>EC: team_send_to_department("Engineering", "Research asks: what are the API rate limits?")
-    Note over EC: woken up with the message
-    EC->>D: team_send_message(to: "everyone", ...)
-    D->>EC: team_send_message(to: "communicator", "100 req/s per key")
-    EC->>RC: team_send_to_department("Research", "100 req/s per key")
-    RC->>A: team_send_message(to: "analyst", "Engineering says: 100 req/s per key")
+    A->>R: team_send_to_department("Engineering", "We need the API rate limits")
+    Note over R: Research may write to Engineering,<br/>Engineering accepts Research, text is allowed
+    R->>D: delivered (inbox of Engineering's workers)
+    D->>R: team_send_to_department("Research", "100 req/s per key")
+    R->>A: delivered
     A--xD: team_send_message(to: "developer") ✗ refused: other department
 ```
+
+## The message router
+
+The router is a function in the server (`agentcore_server::org::send`
+with `agentcore_core::decide_route`), not an agent: it uses no model and no
+tokens, and it behaves the same every time. Every message **between
+departments** passes the **routing policy** of the sending department
+(outbound) and of each receiving department (inbound). Messages inside a
+department, and messages from people, are not touched by it.
+
+| Rule (per department) | Effect |
+|---|---|
+| **May write to** | Outbound: the departments it may send to (everyone by default; untick the ones it may not). |
+| **Accepts messages from** | Inbound: the departments that may send to it. |
+| **Approval** | `none` (default), `broadcast` (only messages to all departments) or `all`: the message is **held** until a person approves or rejects it in the department room or on the organisation page. Approving applies the receiving departments' policies as they are then. |
+| **Longest message** | Characters, checked on the sender's and on the receiver's policy. |
+| **Messages per hour** | How many messages the department may send to other departments per hour (held ones count, refused ones do not). |
+| **Blocked phrases** | Case-insensitive; a message that contains one is refused, sent or received. |
+| **Delivery** | Which workers receive incoming messages: all of them (default) or one named worker, who passes it on (all of them if that worker no longer exists). |
+
+A message to all departments is delivered to the departments that accept it;
+it is refused only when none does. Every decision is stored with the
+message: `status` is `delivered`, `held` or `rejected`, and `decision` says
+why or by whom. Refused and held messages show in the feed with that note, and
+the sender is told when its message is refused (a held message is reported as
+held). The default policy is open: everything is delivered straight away.
+
+Set a policy with the department form (*Message router*) or in the `routing`
+field of the department API (`GET /org` shows it):
+
+```json
+{
+  "routing": {
+    "outbound": { "allow": null, "deny": ["<department id>"] },
+    "inbound": { "allow": ["<department id>"], "deny": [] },
+    "approval": "broadcast",
+    "max_message_chars": 4000,
+    "max_per_hour": 30,
+    "blocked_phrases": ["password", "api key"],
+    "delivery": { "mode": "lead", "worker": "lead" }
+  }
+}
+```
+
+People decide on held messages with `GET /org/messages?status=held`,
+`POST /org/messages/{id}/approve` and `POST /org/messages/{id}/reject`
+(operators). Phrase and size checks catch accidents, not a determined sender:
+for anything sensitive, approve messages.
 
 ## Messages
 
@@ -279,16 +319,18 @@ recipients are resolved once and an **inbox** entry is written per recipient:
 |---|---|
 | an agent | that agent |
 | own department room (from a member or a person) | everyone in the department except the sender |
-| another department (communicator) | that department's communicator |
-| all departments (communicator) | the communicators of all other departments |
+| another department (through the router) | the workers its routing policy picks (all of them by default) |
+| all departments (through the router) | the same, in every other department that accepts it |
 
 Delivery to an agent:
 
 ```mermaid
 flowchart LR
-    S["team_send_message<br/>(tool call)"] --> P{"policy +<br/>approval"}
-    P -- allowed --> RT{"route()"}
-    RT -- refused --> ERR["error to the sender"]
+    S["team_send_message /<br/>team_send_to_department<br/>(tool call)"] --> P{"guardrail<br/>policy"}
+    P -- allowed --> RT{"route() +<br/>routing policies"}
+    RT -- refused --> ERR["error to the sender<br/>(stored as rejected)"]
+    RT -- held --> HELD["waits for a person<br/>(stored as held)"]
+    HELD -- approved --> DB
     RT -- ok --> DB[("org_messages +<br/>org_inbox")]
     DB --> N["NOTIFY agentcore_org"]
     N --> NODE["node that runs<br/>the recipient"]
@@ -298,9 +340,9 @@ flowchart LR
     W -- paused --> HOLD["held until resumed"]
 ```
 
-* Sending is a tool call, so it goes through the department's policy like any
-  other action: a policy can, for example, require a human to approve every
-  message that leaves the department (`team_send_to_department`).
+* Sending is a tool call, so it goes through the department's guardrail policy
+  like any other action. A person can also be made to approve messages that
+  leave the department with the routing policy's *approval* rule.
 * Delivery is recorded in the recipient's audit log
   (`messages_delivered`, with message ids, senders and texts), so each agent's
   hash chain shows what it was told and by whom.
@@ -311,21 +353,21 @@ flowchart LR
 
 ### Agent tools
 
-| Tool | Worker | Communicator | Purpose |
-|---|---|---|---|
+| Tool | Available | Purpose |
+|---|---|---|
 | `team_list_colleagues` | ✅ | ✅ | Members of the own department, their status, and the names of the other departments. |
-| `team_send_message` | ✅ | ✅ | `to`: a colleague's name, `communicator` or `everyone` (the department room). |
-| `team_read_messages` | ✅ | ✅ | Unread messages from the inbox (marks them delivered). |
-| `team_send_to_department` | ❌ | ✅ | `department`: a department name or `all`. |
-| `team_list_files`, `team_read_file`, `team_write_file` | if the department grants `files` | ❌ | The department's shared files. |
-| `team_list_goals` | ✅ | ❌ | The organisation's goals with their latest progress. |
-| `data_list_sources`, `data_query` | if the department was granted a data source | ❌ | Read-only business data (see [Business data](#business-data)). |
-| `outbox_channels`, `outbox_draft`, `outbox_drafts`, `outbox_revise` | if the department may use a channel | ❌ | Drafts for the outside world that people approve (see [Talking to the outside world](#talking-to-the-outside-world)). |
-| `insights_metrics`, `insights_org`, `insights_messages`, `insights_proposals`, `insights_propose`, `insights_revise` | if the department grants `insights` | ❌ | The retrospective: metrics, structure, messages, and proposals (see [below](#metrics-the-retrospective-and-improvements)). |
-| `team_report_progress` | ✅ | ❌ | `goal` (id or title), `text`: replaces the goal's latest progress note. |
-| `team_work_item`, `team_finish_work_item` | with a checkout (see [Work items](#work-items-the-department-keeps-the-work)) | ❌ | The worker's work item (optionally renamed with `title`); close it when done (`summary`). |
-| `team_list_work_items`, `team_assign_work_item` | ❌ | ✅ | The department's open work items; hand one (`item`: id or title) to a worker (`to`). |
-| `run_command`, `read_file`, `write_file`, `list_files` | if the department grants `sandbox` | ❌ | Commands and files in the agent's own sandbox. |
+| `team_send_message` | always | `to`: a colleague's name or `everyone` (the department room). |
+| `team_read_messages` | always | Unread messages from the inbox (marks them delivered). |
+| `team_send_to_department` | always | `department`: a department name or `all`. The router may refuse it or hold it for a person. |
+| `team_list_files`, `team_read_file`, `team_write_file` | if the department grants `files` | The department's shared files. |
+| `team_list_goals` | always | The organisation's goals with their latest progress. |
+| `data_list_sources`, `data_query` | if the department was granted a data source | Read-only business data (see [Business data](#business-data)). |
+| `outbox_channels`, `outbox_draft`, `outbox_drafts`, `outbox_revise` | if the department may use a channel | Drafts for the outside world that people approve (see [Talking to the outside world](#talking-to-the-outside-world)). |
+| `insights_metrics`, `insights_org`, `insights_messages`, `insights_proposals`, `insights_propose`, `insights_revise` | if the department grants `insights` | The retrospective: metrics, structure, messages, and proposals (see [below](#metrics-the-retrospective-and-improvements)). |
+| `team_report_progress` | always | `goal` (id or title), `text`: replaces the goal's latest progress note. |
+| `team_work_item`, `team_finish_work_item` | with a checkout (see [Work items](#work-items-the-department-keeps-the-work)) | The worker's work item (optionally renamed with `title`); close it when done (`summary`). |
+| `team_list_work_items`, `team_assign_work_item` | in a department with a repository | The department's open work items; hand one (`item`: id or title) to a worker (`to`), yourself included. |
+| `run_command`, `read_file`, `write_file`, `list_files` | if the department grants `sandbox` | Commands and files in the agent's own sandbox. |
 
 The tool list an agent sees *is* its permission: a tool that is not offered is
 also refused if called.
@@ -374,7 +416,7 @@ What a worker in a linked department gets:
 | First prompt | The role's playbook, the team's convention files from the repository (`CONTRIBUTING.md`, `AGENTS.md`, ...), the project's notes, the role's checks, then the department part (mission, colleagues, the repository and how to deliver) | the role's playbook and the project's notes, then the department part |
 | Delivery | When the agent proposes a pull request, a person clicks **Deliver** in its session: the role's checks run, the branch is pushed with agentcore's GitHub credentials, the pull request is opened | – |
 
-Communicators never get the repository. Nothing reaches GitHub without
+Nothing reaches GitHub without
 passing the department's policy: GitHub writes need approval under the
 `department` and `default` policies, and code only leaves the sandbox
 through a delivery a person starts. Department templates for code-heavy
@@ -422,7 +464,7 @@ Who carries the work on:
 | its time limit, or it slept and was woken | the same worker carries the item on in its next session |
 | its node restarted | the node starts the worker again at once, on the item |
 | its node was lost | another node notices (heartbeat), releases the lease and places the worker on a live node, which carries the item on |
-| a person stopped it, or it failed | the item waits; it is carried on when the worker is started again, or a person or the communicator hands it to another worker |
+| a person stopped it, or it failed | the item waits; it is carried on when the worker is started again, or a person or a colleague hands it to another worker |
 
 **Fencing.** Each acquisition gets a new lease generation. Checkpoints and
 delivery push only while the session still holds the lease, and only over the
@@ -432,9 +474,9 @@ work: its push and its delivery are refused.
 
 **Handing work over.** A worker sees its item with `team_work_item` (and
 names it after what it does). When the item is delivered and done, it closes
-it with `team_finish_work_item`, and its next session starts a new one. The
-communicator lists the department's items and hands one to a worker with
-`team_assign_work_item`; people do the same in the department room (*Work
+it with `team_finish_work_item`, and its next session starts a new one. Workers
+list the department's items and hand one to a worker (themselves included)
+with `team_assign_work_item`; people do the same in the department room (*Work
 items*: hand to, close). An item a session works on cannot be handed over or
 closed by others; the new worker gets a message and carries the item on in
 its next session.
@@ -748,11 +790,8 @@ announcements into the outbox. See
 | **Mission** | Text given to every agent of the department in its first prompt. | Prompt |
 | **Tools** | `sandbox` (commands and files in the agent's own sandbox), `files` (department files) and/or `insights` (the organisation's metrics and proposing improvements). Messaging is always available. | Tool gateway (`tools/list` and `tools/call`) |
 | **Data** | Department files: a small shared file store (PostgreSQL, so every node sees it) that only that department's workers can read and write. Each worker also has its own sandbox workspace. [Business data](#business-data) sources granted to the department, read-only. | Gateway: the department is taken from the agent's identity, never from tool arguments |
-| **Guardrails** | A policy (allow / deny / require approval, limits) for its workers. Communicators use the `communicator` policy. | Policy engine, per action |
+| **Guardrails** | A policy (allow / deny / require approval, limits) for its workers. Messages between departments also follow the [routing policy](#the-message-router). | Policy engine, per action |
 | **Agent kind** | Which configured `[[agents]]` (e.g. `opencode`) each member runs, plus member-specific instructions. | Runtime |
-
-The communicator has no sandbox tools, no file tools and a policy that only
-allows the `team_*` messaging tools.
 
 ## Human oversight
 
@@ -779,7 +818,7 @@ An admin sets, in the UI (Organisation → Limits) or with
 
 * `max_departments`: how many departments may exist;
 * `max_agents_per_department`: how many worker agents a department may
-  have (its communicator is not counted).
+  have.
 
 They are checked inside the same database transaction that creates the
 department or agent (with a row lock on the settings), so two people adding
@@ -923,7 +962,7 @@ erDiagram
         text company_about
         text blueprint
     }
-    departments ||--o{ org_agents : "members (1 communicator)"
+    departments ||--o{ org_agents : "members"
     departments ||--o{ department_files : "shared data"
     departments ||--o{ work_items : "work on its repository"
     org_agents ||--o{ work_items : "carries on"
@@ -947,7 +986,7 @@ erDiagram
         text mission
         text policy
         text_array tools
-        text communicator_agent
+        jsonb routing_policy "message router rules"
         text state "active | paused"
         text template "created from"
         uuid project_id FK "works on"
@@ -957,7 +996,7 @@ erDiagram
         uuid id PK
         uuid department_id FK
         text name
-        text kind "worker | communicator"
+        text kind "worker"
         text agent "configured [[agents]]"
         text instructions
         text desired "stopped | running | paused"
@@ -1072,6 +1111,8 @@ erDiagram
         uuid to_agent
         uuid to_department
         text scope
+        text status "delivered | held | rejected"
+        text decision "why, or who decided"
         text text
     }
     org_inbox {
@@ -1144,7 +1185,7 @@ an admin.
 | `POST /org/data-sources/{id}/test` | Try a read (admin); optional body with `sql`, `path` or `filter`. |
 | `POST /org/checkins/{id}/run` | Send it now (`409` when turned off); the schedule continues from now. |
 | `GET`/`PUT /org/settings` | Limits (admin). |
-| `POST /org/departments` | Create a department (and its communicator): `{"name", "description", "mission", "policy", "tools", "communicator_agent", "project_id"?, "role"?}`. |
+| `POST /org/departments` | Create a department: `{"name", "description", "mission", "policy", "tools", "routing"?, "project_id"?, "role"?}`. |
 | `PUT`/`DELETE /org/departments/{id}` | Update; delete (only when all its agents are stopped). |
 | `POST /org/departments/{id}/agents` | Add a worker agent. |
 | `PUT`/`DELETE /org/agents/{id}` | Update instructions; remove (when stopped). |
@@ -1161,7 +1202,7 @@ an admin.
 | `GET /org/templates` | Template categories, department templates and blueprints. |
 | `GET`/`PUT /org/profile` | Company name and description, chosen blueprint (admin to change). |
 | `GET /org/suggestions` | What to add next: the blueprint's next stage, related departments, more agents; `blocked` says when a limit prevents it. |
-| `POST /org/build` | Create departments from templates (admin): `{"profile", "departments": [ids], "size": "lean"\|"full", "agent", "communicator_agent", "project_id", "goal", "check_ins", "start", "raise_limits", "dry_run"}`; `goal` creates a first goal, `check_ins` a daily check-in per new department (and a weekly review in Strategy); with `project_id`, new departments whose template has a role are linked to that project. Existing departments are skipped; a plan over the limits is refused with `409` (body has the plan) unless `raise_limits`. |
+| `POST /org/build` | Create departments from templates (admin): `{"profile", "departments": [ids], "size": "lean"\|"full", "agent", "project_id", "goal", "check_ins", "start", "raise_limits", "dry_run"}`; `goal` creates a first goal, `check_ins` a daily check-in per new department (and a weekly review in Strategy); with `project_id`, new departments whose template has a role are linked to that project. Existing departments are skipped; a plan over the limits is refused with `409` (body has the plan) unless `raise_limits`. |
 
 ## Configuration
 
@@ -1178,7 +1219,6 @@ reconcile_millis = 2000                  # periodic reconcile pass
 dir = "templates"                        # departments/*.toml, blueprints/*.toml
 
 [org]
-communicator_policy = "communicator"     # policy for every communicator
 default_max_departments = 10             # initial limits (then set in the UI)
 default_max_agents_per_department = 10
 ```
@@ -1195,4 +1235,5 @@ several VMs: [Deployment](DEPLOYMENT.md#several-vms).
   they are added as HTTP sources.
 * Moving a running agent between nodes (live migration of a sandbox).
 * Per-department model providers.
+* Round-robin delivery and regular-expression phrase checks in the routing policy.
 * A dedicated message broker for very large organisations.

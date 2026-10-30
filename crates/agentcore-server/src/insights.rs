@@ -843,12 +843,7 @@ pub async fn validate_actions(state: &AppState, actions: &[ProposalAction]) -> R
         match action {
             ProposalAction::UpdateInstructions { agent: a, .. }
             | ProposalAction::RemoveAgent { agent: a } => {
-                let a = agent(*a).map_err(at)?;
-                if matches!(action, ProposalAction::RemoveAgent { .. })
-                    && a.kind == AgentKind::Communicator
-                {
-                    return Err(at("a communicator cannot be removed".into()));
-                }
+                agent(*a).map_err(at)?;
             }
             ProposalAction::ControlAgent { agent: a, control } => {
                 agent(*a).map_err(at)?;
@@ -1120,7 +1115,7 @@ async fn apply_one(state: &AppState, action: &ProposalAction, by: &str) -> Resul
                 mission: mission.clone().unwrap_or(d.mission.clone()),
                 policy: policy.clone().unwrap_or(d.policy.clone()),
                 tools: tools.clone().unwrap_or(d.tools.clone()),
-                communicator_agent: d.communicator_agent.clone(),
+                routing: d.routing.clone(),
                 template: d.template.clone(),
                 project_id: d.project_id,
                 role: d.role.clone(),
@@ -1486,6 +1481,7 @@ impl ToolHandler for InsightsTools {
                         department,
                         agent: None,
                         after: None,
+                        status: None,
                         limit,
                     })
                     .await

@@ -76,7 +76,7 @@ pub enum EventKind {
         by: Principal,
         text: String,
     },
-    /// Messages from colleagues, communicators or people in the agent's
+    /// Messages from colleagues, other departments or people in the agent's
     /// organisation were handed to the agent.
     MessagesDelivered {
         messages: Vec<DeliveredMessage>,

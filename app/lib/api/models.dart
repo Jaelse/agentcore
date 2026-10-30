@@ -322,7 +322,7 @@ class OrgAgent {
   final String id;
   final String name;
 
-  /// `worker` or `communicator`.
+  /// Always `worker`.
   final String kind;
   final String agent;
 
