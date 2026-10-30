@@ -45,7 +45,7 @@ fn config(dir: &std::path::Path, db_url: &str, bind: std::net::SocketAddr) -> Co
         ..Default::default()
     };
     config.sandbox.process.allow_insecure = true;
-    config.agents = vec![quick("quick", "echo done"), quick("relay-bot", "true")];
+    config.agents = vec![quick("quick", "echo done")];
     config
 }
 
@@ -179,10 +179,26 @@ async fn the_feed_merges_what_happened() {
     assert_eq!(progress["actor"], "alice");
 
     // Messages: one to a department is shown, with the sender's name.
-    let (code, dep) = call(&base, "POST", "/org/departments", "admin-token", Some(json!({
-        "name": "Ops", "mission": "Ops work", "tools": ["files"], "communicator_agent": "relay-bot",
-    }))).await;
+    let (code, dep) = call(
+        &base,
+        "POST",
+        "/org/departments",
+        "admin-token",
+        Some(json!({
+            "name": "Ops", "mission": "Ops work", "tools": ["files"],
+        })),
+    )
+    .await;
     assert_eq!(code, 201, "{dep}");
+    let (code, worker) = call(
+        &base,
+        "POST",
+        &format!("/org/departments/{}/agents", dep["id"].as_str().unwrap()),
+        "admin-token",
+        Some(json!({ "name": "clerk", "agent": "quick" })),
+    )
+    .await;
+    assert_eq!(code, 201, "{worker}");
     let (code, _) = call(
         &base,
         "POST",

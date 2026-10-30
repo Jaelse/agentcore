@@ -48,7 +48,6 @@ dir = "templates"
 
 # Multi-agent organisations (docs/MULTI_AGENT.md).
 # [org]
-# communicator_policy = "communicator"
 # default_max_departments = 10
 # default_max_agents_per_department = 10
 

@@ -164,7 +164,7 @@ class _DepartmentCard extends StatelessWidget {
           for (final a in d.agents)
             ListTile(
               dense: true,
-              leading: Icon(a.kind == 'communicator' ? Icons.campaign_outlined : Icons.smart_toy_outlined),
+              leading: const Icon(Icons.smart_toy_outlined),
               title: Text(a.name),
               subtitle: Text(
                 [a.agent, a.status != null ? SessionStatus.parse(a.status).label : a.desired, ?a.note].join(' · '),

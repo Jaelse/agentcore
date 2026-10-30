@@ -51,8 +51,8 @@ to every agent, and agentcore adds:
 * **Human oversight (Art. 14).** People see every message in the
   organisation and every department, can talk to any agent, and can pause,
   resume or stop one agent, a department or everything, on every node.
-  Communicators can be required to ask a person before any message leaves
-  a department.
+  A department's routing policy can require a person to approve messages
+  that leave it (all of them, or only broadcasts).
 * **Risk management (Art. 9).** Admins limit the number of departments and
   agents; departments only get the tools and data they need (business data
   is read-only); budgets can pause the work when spending runs out;

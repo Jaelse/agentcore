@@ -858,7 +858,7 @@ async fn department_work_items_survive_sessions() {
         "POST",
         "/org/departments".into(),
         Some(json!({
-            "name": "Eng", "tools": ["sandbox", "files"], "communicator_agent": "dept-agent",
+            "name": "Eng", "tools": ["sandbox", "files"],
             "project_id": project["id"], "role": "developer",
         })),
     )
@@ -1109,7 +1109,7 @@ async fn lost_work_is_carried_on_by_another_node() {
         "POST",
         "/org/departments".into(),
         Some(json!({
-            "name": "Eng", "tools": ["sandbox"], "communicator_agent": "dept-agent",
+            "name": "Eng", "tools": ["sandbox"],
             "project_id": project["id"], "role": "developer",
         })),
     )

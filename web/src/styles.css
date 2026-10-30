@@ -357,7 +357,6 @@ a.kanban-title:hover { text-decoration: underline; }
 /* ---- organisation ---- */
 .member-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
 .member { padding: 10px 12px; display: grid; gap: 6px; align-content: start; }
-.member.communicator { border-style: dashed; }
 .room-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; align-items: start; }
 .room-grid > :only-child { grid-column: 1 / -1; }
 .feed { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; max-height: 70vh; min-height: 260px; }

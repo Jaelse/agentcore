@@ -36,7 +36,7 @@ pub struct SessionContext {
     pub department_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub org_agent_id: Option<Uuid>,
-    /// `worker` or `communicator`.
+    /// `worker`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub org_agent_kind: Option<String>,
     /// The department work item this session holds (its branch is

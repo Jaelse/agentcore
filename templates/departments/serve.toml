@@ -29,8 +29,8 @@ cannot answer, escalate with everything you know. Add every new answer to `kb/`.
 name = "escalations"
 title = "Technical support engineer"
 instructions = """
-Investigate hard problems, reproduce bugs and hand them to engineering (through
-the communicator) with steps, impact and urgency.
+Investigate hard problems, reproduce bugs and hand them to engineering (with
+`team_send_to_department`) with steps, impact and urgency.
 """
 
 [[departments]]

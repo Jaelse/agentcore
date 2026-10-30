@@ -107,7 +107,7 @@ id = "allow-team"
 description = "Organisation messaging and department files (multi-agent departments)."
 effect = "allow"
 kinds = ["tool_call"]
-tools = ["team_list_colleagues", "team_read_messages", "team_send_message", "team_list_files", "team_read_file", "team_write_file", "team_list_goals", "team_report_progress", "team_work_item", "team_finish_work_item"]
+tools = ["team_list_colleagues", "team_read_messages", "team_send_message", "team_send_to_department", "team_list_work_items", "team_assign_work_item", "team_list_files", "team_read_file", "team_write_file", "team_list_goals", "team_report_progress", "team_work_item", "team_finish_work_item"]
 
 [[rules]]
 id = "approve-github-writes"

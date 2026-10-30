@@ -1,5 +1,5 @@
-//! Multi-agent organisations end to end: departments, communicators,
-//! message routing, pause/stop at every level, and two nodes sharing one
+//! Multi-agent organisations end to end: departments, the message
+//! router and its policies, pause/stop at every level, and two nodes sharing one
 //! database. Agents are shell scripts calling the MCP gateway with curl.
 //! Requires `AGENTCORE_TEST_DATABASE_URL` (skipped otherwise).
 
@@ -22,34 +22,23 @@ call() {
 }
 "#;
 
-/// Research worker: asks its communicator for help (first turn only) and
-/// tries what it must not.
+/// Research worker: asks Eng for help through the router (first turn only)
+/// and tries what it must not.
 const ANALYST: &str = r##"
 case "$0" in
   "You have "*" new message(s):"*) ;;
   *)
-    call team_send_message '{"to":"communicator","text":"NEED the API rate limits"}'
+    call team_send_to_department '{"department":"eng","text":"NEED the API rate limits"}'
     call team_send_message '{"to":"dev","text":"hi"}'
     call run_command '{"command":"echo","args":["x"]}'
     call team_write_file '{"path":"/notes/plan.md","content":"# plan"}' ;;
 esac
 "##;
 
-/// Both communicators: pass each marker on to the next hop.
-const RELAY: &str = r#"
-case "$0" in
-  *NEED*) call team_send_to_department '{"department":"eng","text":"ASK rate limits for Research"}' ;;
-  *ASK*) call run_command '{"command":"echo","args":["x"]}'
-         call team_send_message '{"to":"everyone","text":"FROM-RESEARCH rate limits?"}' ;;
-  *ANSWER*) call team_send_to_department '{"department":"Research","text":"REPLY 100 req/s"}' ;;
-  *REPLY*) call team_send_message '{"to":"analyst","text":"DONE 100 req/s"}' ;;
-esac
-"#;
-
 /// Eng worker: answers questions from Research.
 const DEV: &str = r#"
 case "$0" in
-  *FROM-RESEARCH*) call team_send_message '{"to":"communicator","text":"ANSWER 100 req/s per key"}' ;;
+  *NEED*) call team_send_to_department '{"department":"Research","text":"ANSWER 100 req/s per key"}' ;;
 esac
 "#;
 
@@ -169,7 +158,6 @@ fn config(dir: &std::path::Path, db_url: &str, bind: std::net::SocketAddr, node:
     config.cluster.node_timeout_secs = 3;
     config.agents = vec![
         agent("analyst-bot", ANALYST),
-        agent("relay-bot", RELAY),
         agent("dev-bot", DEV),
         agent("idle-bot", ""),
         agent("goal-bot", GOAL_WORKER),
@@ -313,12 +301,11 @@ fn output(events: &[Value]) -> String {
 fn department(name: &str, tools: &[&str]) -> Value {
     json!({
         "name": name, "mission": format!("{name} work"), "tools": tools,
-        "communicator_agent": "relay-bot",
     })
 }
 
 #[tokio::test]
-async fn departments_talk_through_their_communicators() {
+async fn departments_talk_through_the_router() {
     let Some((_, db_url)) = agentcore_store::testing::fresh_store().await else {
         return;
     };
@@ -356,7 +343,7 @@ async fn departments_talk_through_their_communicators() {
         )
         .await;
     assert_eq!(research["policy"], "department");
-    assert_eq!(research["agents"][0]["kind"], "communicator");
+    assert!(research["agents"].as_array().unwrap().is_empty());
     let (code, err) = node
         .call(
             "POST",
@@ -397,7 +384,7 @@ async fn departments_talk_through_their_communicators() {
     let started = node
         .ok("POST", &format!("/org/departments/{eid}/start"), None)
         .await;
-    assert_eq!(started["changed"], 2);
+    assert_eq!(started["changed"], 1);
     let dev = node
         .wait_agent(dev["id"].as_str().unwrap(), "dev waiting", |a| {
             a["status"] == "awaiting_input"
@@ -406,8 +393,8 @@ async fn departments_talk_through_their_communicators() {
     node.ok("POST", &format!("/org/departments/{rid}/start"), None)
         .await;
 
-    // The question travels analyst → Research communicator → Eng
-    // communicator → Eng room → dev, and the answer comes back.
+    // The question travels analyst → router → dev, and the answer comes
+    // back the same way.
     let analyst_id = analyst["id"].as_str().unwrap();
     let mut done = false;
     for _ in 0..300 {
@@ -415,7 +402,7 @@ async fn departments_talk_through_their_communicators() {
             .messages("")
             .await
             .iter()
-            .any(|m| m["text"].as_str().unwrap().starts_with("DONE"))
+            .any(|m| m["text"].as_str().unwrap().starts_with("ANSWER"))
         {
             done = true;
             break;
@@ -443,32 +430,8 @@ async fn departments_talk_through_their_communicators() {
         })
         .collect();
     let expected = [
-        (
-            "NEED",
-            "internal",
-            "analyst (Research)",
-            "communicator (Research)",
-        ),
-        ("ASK", "inter_department", "communicator (Research)", "Eng"),
-        (
-            "FROM-RESEARCH",
-            "internal",
-            "communicator (Eng)",
-            "everyone in Eng",
-        ),
-        ("ANSWER", "internal", "dev (Eng)", "communicator (Eng)"),
-        (
-            "REPLY",
-            "inter_department",
-            "communicator (Eng)",
-            "Research",
-        ),
-        (
-            "DONE",
-            "internal",
-            "communicator (Research)",
-            "analyst (Research)",
-        ),
+        ("NEED", "inter_department", "analyst (Research)", "Eng"),
+        ("ANSWER", "inter_department", "dev (Eng)", "Research"),
     ];
     assert_eq!(
         flow,
@@ -494,9 +457,12 @@ async fn departments_talk_through_their_communicators() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     let out = output(&events);
-    assert!(out.contains("DONE 100 req/s"), "{out}");
-    assert!(events.iter().any(|e| e["event"] == "messages_delivered"
-        && e["messages"][0]["from"] == "communicator (Research)"));
+    assert!(out.contains("ANSWER 100 req/s"), "{out}");
+    assert!(
+        events
+            .iter()
+            .any(|e| e["event"] == "messages_delivered" && e["messages"][0]["from"] == "dev (Eng)")
+    );
     // It could not reach Eng directly, nor use a sandbox its department lacks.
     assert!(
         out.contains("there is no `dev` in your department"),
@@ -508,15 +474,6 @@ async fn departments_talk_through_their_communicators() {
             .iter()
             .any(|e| e["event"] == "action_requested"
                 && e["requested_by"]["id"] == "Research/analyst")
-    );
-
-    // Communicators never get sandbox tools.
-    let eng_comm = eng["agents"][0]["id"].as_str().unwrap();
-    let eng_comm = node.agent(eng_comm).await;
-    let comm_out = output(&node.events(eng_comm["session_id"].as_str().unwrap()).await);
-    assert!(
-        comm_out.contains("unknown tool `run_command`"),
-        "{comm_out}"
     );
 
     // Department files are shared within Research only.
@@ -540,7 +497,7 @@ async fn departments_talk_through_their_communicators() {
             .is_empty()
     );
     // Feeds per department and per agent.
-    assert_eq!(node.messages(&format!("?department={rid}")).await.len(), 4);
+    assert_eq!(node.messages(&format!("?department={rid}")).await.len(), 2);
     assert_eq!(
         node.messages(&format!("?agent={analyst_id}")).await.len(),
         2
@@ -555,7 +512,7 @@ async fn departments_talk_through_their_communicators() {
         )
         .await;
     assert_eq!(posted["scope"], "human");
-    assert_eq!(posted["recipients"].as_array().unwrap().len(), 2);
+    assert_eq!(posted["recipients"].as_array().unwrap().len(), 1);
     let dev_session = dev["session_id"].as_str().unwrap().to_string();
     for _ in 0..100 {
         if output(&node.events(&dev_session).await).contains("hello Eng") {
@@ -614,11 +571,206 @@ async fn departments_talk_through_their_communicators() {
     let stopped = node
         .ok("POST", "/stop-all", Some(json!({ "reason": "test" })))
         .await;
-    assert_eq!(stopped["department_agents"], 2);
+    assert_eq!(stopped["department_agents"], 1);
     node.wait_agent(analyst_id, "analyst stopped", |a| a["status"] == "stopped")
         .await;
     node.ok("DELETE", &format!("/org/departments/{rid}"), None)
         .await;
+    node.cluster.cancel();
+}
+
+#[tokio::test]
+async fn routing_policies_decide_what_crosses_between_departments() {
+    use agentcore_server::org::{Recipient, SendError, Sender, send};
+    let Some((_, db_url)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let node = start(dir.path(), &db_url, "n1", 10).await;
+    let store = &node.state.store;
+
+    let mut ids = Vec::new();
+    let mut workers = Vec::new();
+    for name in ["Research", "Eng", "Legal"] {
+        let d = node
+            .ok("POST", "/org/departments", Some(department(name, &[])))
+            .await;
+        let id = d["id"].as_str().unwrap().to_string();
+        for w in ["lead", "dev"] {
+            let a = node
+                .ok(
+                    "POST",
+                    &format!("/org/departments/{id}/agents"),
+                    Some(json!({ "name": w, "agent": "idle-bot" })),
+                )
+                .await;
+            workers.push((name, w, a["id"].as_str().unwrap().parse().unwrap()));
+        }
+        ids.push(id);
+    }
+    let worker = |dept: &str, name: &str| {
+        workers
+            .iter()
+            .find(|(d, w, _)| *d == dept && *w == name)
+            .unwrap()
+            .2
+    };
+    let set_routing = |i: usize, routing: Value| {
+        let node = &node;
+        let id = ids[i].clone();
+        async move {
+            let org = node.ok("GET", "/org", None).await;
+            let d = org["departments"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|d| d["id"] == id.as_str())
+                .unwrap()
+                .clone();
+            let mut input = json!({});
+            for key in ["name", "description", "mission", "policy", "tools"] {
+                input[key] = d[key].clone();
+            }
+            input["routing"] = routing;
+            node.ok("PUT", &format!("/org/departments/{id}"), Some(input))
+                .await;
+        }
+    };
+    let eng: uuid::Uuid = ids[1].parse().unwrap();
+    let research: uuid::Uuid = ids[0].parse().unwrap();
+    let from = Sender::Agent(worker("Research", "dev"));
+
+    // Nothing configured: the message reaches every worker of Eng.
+    let m = send(store, &from, Recipient::Department(eng), "hello")
+        .await
+        .unwrap();
+    assert_eq!(m.scope, agentcore_core::MessageScope::InterDepartment);
+    assert_eq!(m.recipients.len(), 2);
+    // A worker cannot address another department's agent.
+    let err = send(store, &from, Recipient::Agent(worker("Eng", "dev")), "hi")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, SendError::Route(_)), "{err}");
+
+    // Delivery rule: only Eng's lead receives it.
+    set_routing(
+        1,
+        json!({ "delivery": { "mode": "lead", "worker": "lead" } }),
+    )
+    .await;
+    let m = send(store, &from, Recipient::Department(eng), "to the lead")
+        .await
+        .unwrap();
+    assert_eq!(m.recipients, [worker("Eng", "lead")]);
+
+    // Eng refuses Research and blocks a phrase; refusals are recorded.
+    set_routing(
+        1,
+        json!({ "inbound": { "deny": [research] }, "blocked_phrases": ["password"] }),
+    )
+    .await;
+    let err = send(store, &from, Recipient::Department(eng), "hello")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, SendError::Refused(why) if why.contains("does not accept")),
+        "{err}"
+    );
+    let rejected = node.messages("?status=rejected").await;
+    assert_eq!(rejected.len(), 1);
+    assert_eq!(rejected[0]["status"], "rejected");
+    assert!(rejected[0]["recipients"].as_array().unwrap().is_empty());
+
+    // A broadcast goes to the departments that accept it (not Eng).
+    let m = send(store, &from, Recipient::AllDepartments, "news")
+        .await
+        .unwrap();
+    assert_eq!(m.recipients.len(), 2);
+
+    // Research must have messages approved; a person decides.
+    set_routing(0, json!({ "approval": "all" })).await;
+    set_routing(1, json!({})).await;
+    let held = send(store, &from, Recipient::Department(eng), "approve me")
+        .await
+        .unwrap();
+    assert_eq!(held.status, agentcore_core::MessageStatus::Held);
+    assert!(held.recipients.is_empty());
+    let held2 = send(store, &from, Recipient::Department(eng), "reject me")
+        .await
+        .unwrap();
+    let queue = node.messages("?status=held").await;
+    assert_eq!(queue.len(), 2);
+
+    let (code, _) = node
+        .call(
+            "POST",
+            &format!("/org/messages/{}/approve", held.id),
+            "viewer-token",
+            None,
+        )
+        .await;
+    assert_eq!(code, 403, "viewers cannot decide");
+    let approved = node
+        .ok("POST", &format!("/org/messages/{}/approve", held.id), None)
+        .await;
+    assert_eq!(approved["status"], "delivered");
+    assert_eq!(approved["recipients"].as_array().unwrap().len(), 2);
+    assert_eq!(approved["decision"], "approved by root");
+    let refused = node
+        .ok("POST", &format!("/org/messages/{}/reject", held2.id), None)
+        .await;
+    assert_eq!(refused["status"], "rejected");
+    let (code, _) = node
+        .call(
+            "POST",
+            &format!("/org/messages/{}/approve", held2.id),
+            "admin-token",
+            None,
+        )
+        .await;
+    assert_eq!(code, 400, "decided once");
+    assert!(node.messages("?status=held").await.is_empty());
+
+    // Limits: six messages an hour (four are counted already), and a size limit on the receiving side.
+    set_routing(0, json!({ "max_per_hour": 6 })).await;
+    for _ in 0..2 {
+        send(store, &from, Recipient::Department(eng), "again")
+            .await
+            .unwrap();
+    }
+    let err = send(store, &from, Recipient::Department(eng), "one too many")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, SendError::Refused(why) if why.contains("last hour")),
+        "{err}"
+    );
+    set_routing(0, json!({})).await;
+    set_routing(1, json!({ "max_message_chars": 5 })).await;
+    let err = send(store, &from, Recipient::Department(eng), "too long for Eng")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, SendError::Refused(why) if why.contains("longer than 5")),
+        "{err}"
+    );
+    // Messages inside a department and from people ignore all of this.
+    send(
+        store,
+        &from,
+        Recipient::Agent(worker("Research", "lead")),
+        "inside it",
+    )
+    .await
+    .unwrap();
+    let posted = node
+        .ok(
+            "POST",
+            "/org/messages",
+            Some(json!({ "to": { "department": ids[1] }, "text": "a person writes" })),
+        )
+        .await;
+    assert_eq!(posted["status"], "delivered");
     node.cluster.cancel();
 }
 
@@ -635,7 +787,7 @@ async fn agents_spread_over_nodes_and_nodes_can_be_lost() {
         .ok(
             "POST",
             "/org/departments",
-            Some(json!({ "name": "Ops", "tools": [], "communicator_agent": "idle-bot" })),
+            Some(json!({ "name": "Ops", "tools": [] })),
         )
         .await;
     let id = dept["id"].as_str().unwrap();
@@ -653,8 +805,15 @@ async fn agents_spread_over_nodes_and_nodes_can_be_lost() {
             Some(json!({ "name": "x", "agent": "idle-bot" })),
         )
         .await;
+    let third = n1
+        .ok(
+            "POST",
+            &format!("/org/departments/{id}/agents"),
+            Some(json!({ "name": "y", "agent": "idle-bot" })),
+        )
+        .await;
     // Two agents fit (one per node); the third does not.
-    let comm_id = dept["agents"][0]["id"].as_str().unwrap();
+    let comm_id = extra["id"].as_str().unwrap();
     n1.ok("POST", &format!("/org/agents/{comm_id}/start"), None)
         .await;
     n1.ok(
@@ -666,7 +825,7 @@ async fn agents_spread_over_nodes_and_nodes_can_be_lost() {
     let (code, err) = n1
         .call(
             "POST",
-            &format!("/org/agents/{}/start", extra["id"].as_str().unwrap()),
+            &format!("/org/agents/{}/start", third["id"].as_str().unwrap()),
             "alice-token",
             None,
         )
@@ -674,7 +833,7 @@ async fn agents_spread_over_nodes_and_nodes_can_be_lost() {
     assert_eq!(code, 503, "{err}");
 
     let comm = n1
-        .wait_agent(comm_id, "communicator running", |a| {
+        .wait_agent(comm_id, "second worker running", |a| {
             a["status"] == "awaiting_input"
         })
         .await;
@@ -840,7 +999,7 @@ async fn build_an_organisation_from_templates_and_grow_it() {
         .iter()
         .map(|a| a["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["lead", "developer", "communicator"]);
+    assert_eq!(names, ["lead", "developer"]);
 
     // Engineering cannot work without a repository: its workers are held.
     let dept = &org["departments"][0];
@@ -863,7 +1022,7 @@ async fn build_an_organisation_from_templates_and_grow_it() {
         "mission",
         "policy",
         "tools",
-        "communicator_agent",
+        "routing",
         "template",
         "project_id",
         "role",

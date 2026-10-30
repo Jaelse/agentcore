@@ -30,7 +30,7 @@ instructions = """
 Break incoming work into small tasks, decide on technical approaches and keep a
 short architecture and decisions log in the department files (`architecture.md`,
 `decisions.md`). Review what your colleagues produce before it is reported as
-done. Ask other departments (through the communicator) when requirements are
+done. Ask other departments (with `team_send_to_department`) when requirements are
 unclear.
 """
 

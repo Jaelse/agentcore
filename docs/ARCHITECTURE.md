@@ -543,7 +543,7 @@ microVMs, Kubernetes pods, remote sandboxes.
 
 ## Organisations and clusters
 
-Departments of agents, communicators, message routing and running on
+Departments of agents, the message router and running on
 several VMs are described in [Multi-agent organisations](MULTI_AGENT.md);
 running an app with them in the [Guide](GUIDE.md). Where the code is:
 

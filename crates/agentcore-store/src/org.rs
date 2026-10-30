@@ -3,8 +3,8 @@
 //! agent *should* be doing lives here, and nodes converge to it.
 
 use agentcore_core::{
-    AgentKind, Department, DepartmentId, DepartmentState, Desired, MessageScope, NodeInfo,
-    OrgAgent, OrgAgentId, OrgMessage, OrgProfile, OrgSettings, SessionId,
+    AgentKind, Department, DepartmentId, DepartmentState, Desired, MessageScope, MessageStatus,
+    NodeInfo, OrgAgent, OrgAgentId, OrgMessage, OrgProfile, OrgSettings, RoutingPolicy, SessionId,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -14,10 +14,9 @@ use crate::{Result, Store, StoreError, admin_event};
 
 /// Channel every node listens on for organisation changes.
 pub const ORG_CHANNEL: &str = "agentcore_org";
-/// Name every communicator has inside its department.
-pub const COMMUNICATOR_NAME: &str = "communicator";
-/// Names agents use to address their communicator and the whole room.
-pub const RESERVED_NAMES: [&str; 3] = [COMMUNICATOR_NAME, "everyone", "all"];
+/// Names agents cannot have: `everyone` and `all` address a whole room, and
+/// `communicator` was the name of the department's former go-between.
+pub const RESERVED_NAMES: [&str; 3] = ["communicator", "everyone", "all"];
 
 pub const MAX_FILE_BYTES: usize = 1024 * 1024;
 pub const MAX_FILES_PER_DEPARTMENT: i64 = 500;
@@ -34,7 +33,9 @@ pub struct DepartmentInput {
     pub policy: String,
     #[serde(default)]
     pub tools: Vec<String>,
-    pub communicator_agent: String,
+    /// What the message router lets through to and from the department.
+    #[serde(default)]
+    pub routing: RoutingPolicy,
     /// Template the department is created from (kept for suggestions).
     #[serde(default)]
     pub template: Option<String>,
@@ -79,6 +80,9 @@ pub struct NewMessage {
     pub to_department: Option<DepartmentId>,
     pub to_name: String,
     pub text: String,
+    pub status: MessageStatus,
+    /// Why the router held or refused it.
+    pub decision: String,
     /// (agent, its department)
     pub recipients: Vec<(OrgAgentId, DepartmentId)>,
 }
@@ -89,6 +93,7 @@ pub struct MessageFilter {
     pub agent: Option<OrgAgentId>,
     /// Only messages with an id greater than this (ids are time-ordered).
     pub after: Option<Uuid>,
+    pub status: Option<MessageStatus>,
     pub limit: i64,
 }
 
@@ -108,7 +113,7 @@ struct DepartmentRow {
     mission: String,
     policy: String,
     tools: Vec<String>,
-    communicator_agent: String,
+    routing_policy: serde_json::Value,
     state: String,
     template: Option<String>,
     project_id: Option<Uuid>,
@@ -127,7 +132,7 @@ impl From<DepartmentRow> for Department {
             mission: r.mission,
             policy: r.policy,
             tools: r.tools,
-            communicator_agent: r.communicator_agent,
+            routing: serde_json::from_value(r.routing_policy).unwrap_or_default(),
             state: r.state.parse().unwrap_or(DepartmentState::Active),
             template: r.template,
             project_id: r.project_id,
@@ -193,6 +198,8 @@ struct MessageRow {
     to_department: Option<Uuid>,
     to_name: String,
     text: String,
+    status: String,
+    decision: String,
     recipients: Vec<Uuid>,
 }
 
@@ -210,6 +217,8 @@ impl From<MessageRow> for OrgMessage {
             to_department: r.to_department,
             to_name: r.to_name,
             text: r.text,
+            status: r.status.parse().unwrap_or_default(),
+            decision: r.decision,
             recipients: r.recipients,
         }
     }
@@ -243,16 +252,21 @@ impl From<NodeRow> for NodeInfo {
 }
 
 const DEPARTMENT_COLUMNS: &str = "id, name, description, mission, policy, tools, \
-    communicator_agent, state, template, project_id, role, requires_repository, created_at, updated_by";
+    routing_policy, state, template, project_id, role, requires_repository, created_at, updated_by";
 const AGENT_COLUMNS: &str = "id, department_id, name, kind, agent, provider, model, instructions, desired, \
     node, session_id, status, note, changed_by, created_at";
 const MESSAGE_SELECT: &str = "SELECT m.id, m.created_at, m.scope, m.from_agent, \
     m.from_department, m.from_name, m.to_kind, m.to_agent, m.to_department, m.to_name, m.text, \
+    m.status, m.decision, \
     COALESCE((SELECT array_agg(i.agent_id) FROM org_inbox i WHERE i.message_id = m.id), \
              '{}') AS recipients \
     FROM org_messages m";
 /// Serialises placement decisions across nodes.
 const PLACEMENT_LOCK: i64 = 0x6167_656e_7463_6f72; // "agentcor"
+
+fn routing_json(routing: &RoutingPolicy) -> serde_json::Value {
+    serde_json::to_value(routing).unwrap_or_default()
+}
 
 fn invalid(msg: impl Into<String>) -> StoreError {
     StoreError::Invalid(msg.into())
@@ -269,9 +283,7 @@ fn clean_department(input: &mut DepartmentInput) -> Result<()> {
     if input.policy.trim().is_empty() {
         return Err(invalid("policy must not be empty"));
     }
-    if input.communicator_agent.trim().is_empty() {
-        return Err(invalid("communicator_agent must not be empty"));
-    }
+    clean_routing(&mut input.routing)?;
     input.tools.sort();
     input.tools.dedup();
     for tool in &input.tools {
@@ -280,6 +292,29 @@ fn clean_department(input: &mut DepartmentInput) -> Result<()> {
                 "unknown tool group `{tool}` (available: {})",
                 agentcore_core::org::TOOL_GROUPS.join(", ")
             )));
+        }
+    }
+    Ok(())
+}
+
+fn clean_routing(routing: &mut RoutingPolicy) -> Result<()> {
+    if routing.max_message_chars == Some(0) || routing.max_per_hour == Some(0) {
+        return Err(invalid(
+            "the routing limits must be at least 1 (leave them out for no limit)",
+        ));
+    }
+    routing.blocked_phrases = routing
+        .blocked_phrases
+        .iter()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    routing.blocked_phrases.dedup();
+    if let agentcore_core::Delivery::Lead(name) = &routing.delivery {
+        if name.trim().is_empty() {
+            routing.delivery = agentcore_core::Delivery::All;
+        } else {
+            routing.delivery = agentcore_core::Delivery::Lead(name.trim().to_string());
         }
     }
     Ok(())
@@ -435,7 +470,7 @@ impl Store {
         Ok(row.map(Into::into))
     }
 
-    /// Create a department and its communicator, within the department limit.
+    /// Create a department, within the department limit.
     pub async fn create_department(
         &self,
         mut input: DepartmentInput,
@@ -458,7 +493,7 @@ impl Store {
         let id = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO departments (id, name, description, mission, policy, tools,
-                                      communicator_agent, updated_by, template, project_id,
+                                      routing_policy, updated_by, template, project_id,
                                       role, requires_repository)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
@@ -468,7 +503,7 @@ impl Store {
         .bind(&input.mission)
         .bind(input.policy.trim())
         .bind(&input.tools)
-        .bind(input.communicator_agent.trim())
+        .bind(routing_json(&input.routing))
         .bind(actor)
         .bind(&input.template)
         .bind(input.project_id)
@@ -483,16 +518,6 @@ impl Store {
         .execute(&mut *tx)
         .await
         .map_err(|e| map_unique(e, format!("department `{}`", input.name)))?;
-        sqlx::query(
-            "INSERT INTO org_agents (id, department_id, name, kind, agent)
-             VALUES ($1, $2, $3, 'communicator', $4)",
-        )
-        .bind(Uuid::now_v7())
-        .bind(id)
-        .bind(COMMUNICATOR_NAME)
-        .bind(input.communicator_agent.trim())
-        .execute(&mut *tx)
-        .await?;
         admin_event(
             &mut tx,
             actor,
@@ -500,7 +525,7 @@ impl Store {
             &input.name,
             serde_json::json!({
                 "id": id, "policy": input.policy, "tools": input.tools,
-                "communicator_agent": input.communicator_agent,
+                "routing": input.routing,
             }),
         )
         .await?;
@@ -518,7 +543,7 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         let updated = sqlx::query(
             "UPDATE departments SET name = $2, description = $3, mission = $4, policy = $5,
-                 tools = $6, communicator_agent = $7, updated_at = now(), updated_by = $8,
+                 tools = $6, routing_policy = $7, updated_at = now(), updated_by = $8,
                  project_id = $9, role = $10, requires_repository = $11
              WHERE id = $1",
         )
@@ -528,7 +553,7 @@ impl Store {
         .bind(&input.mission)
         .bind(input.policy.trim())
         .bind(&input.tools)
-        .bind(input.communicator_agent.trim())
+        .bind(routing_json(&input.routing))
         .bind(actor)
         .bind(input.project_id)
         .bind(
@@ -545,20 +570,14 @@ impl Store {
         if updated.rows_affected() == 0 {
             return Err(StoreError::NotFound(format!("department {id}")));
         }
-        sqlx::query(
-            "UPDATE org_agents SET agent = $2, updated_at = now()
-             WHERE department_id = $1 AND kind = 'communicator'",
-        )
-        .bind(id)
-        .bind(input.communicator_agent.trim())
-        .execute(&mut *tx)
-        .await?;
         admin_event(
             &mut tx,
             actor,
             "department.update",
             &input.name,
-            serde_json::json!({ "id": id, "policy": input.policy, "tools": input.tools }),
+            serde_json::json!({
+                "id": id, "policy": input.policy, "tools": input.tools, "routing": input.routing,
+            }),
         )
         .await?;
         tx.commit().await?;
@@ -799,11 +818,6 @@ impl Store {
     /// Remove a stopped worker.
     pub async fn delete_agent(&self, id: OrgAgentId, actor: &str) -> Result<()> {
         let agent = self.get_agent(id).await?;
-        if agent.kind == AgentKind::Communicator {
-            return Err(invalid(
-                "a department always has its communicator; delete the department instead",
-            ));
-        }
         let mut tx = self.pool.begin().await?;
         let deleted = sqlx::query("DELETE FROM org_agents WHERE id = $1 AND desired = 'stopped'")
             .bind(id)
@@ -1021,8 +1035,8 @@ impl Store {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO org_messages (id, scope, from_agent, from_department, from_name,
-                 to_kind, to_agent, to_department, to_name, text)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                 to_kind, to_agent, to_department, to_name, text, status, decision)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(id)
         .bind(msg.scope.as_str())
@@ -1034,6 +1048,8 @@ impl Store {
         .bind(msg.to_department)
         .bind(&msg.to_name)
         .bind(&msg.text)
+        .bind(msg.status.as_str())
+        .bind(&msg.decision)
         .execute(&mut *tx)
         .await?;
         let (agents, departments): (Vec<Uuid>, Vec<Uuid>) = msg.recipients.iter().copied().unzip();
@@ -1080,15 +1096,82 @@ impl Store {
                     OR EXISTS (SELECT 1 FROM org_inbox i
                                WHERE i.message_id = m.id AND i.agent_id = $2))
                AND ($3::uuid IS NULL OR m.id > $3)
+               AND ($5::text IS NULL OR m.status = $5)
              ORDER BY m.id DESC LIMIT $4) recent ORDER BY id"
         )))
         .bind(filter.department)
         .bind(filter.agent)
         .bind(filter.after)
         .bind(limit)
+        .bind(filter.status.map(MessageStatus::as_str))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// How many messages a department sent to other departments in the last
+    /// hour (held ones count, refused ones do not).
+    pub async fn count_sent_last_hour(&self, department: DepartmentId) -> Result<u32> {
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM org_messages
+             WHERE from_department = $1 AND scope = 'inter_department'
+               AND status <> 'rejected' AND created_at > now() - interval '1 hour'",
+        )
+        .bind(department)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(u32::try_from(n).unwrap_or(u32::MAX))
+    }
+
+    /// Release a held message to its recipients. `None` when it is not held
+    /// (another person or node decided first).
+    pub async fn release_message(
+        &self,
+        id: Uuid,
+        recipients: &[(OrgAgentId, DepartmentId)],
+        decision: &str,
+    ) -> Result<Option<OrgMessage>> {
+        let mut tx = self.pool.begin().await?;
+        let released = sqlx::query(
+            "UPDATE org_messages SET status = 'delivered', decision = $2
+             WHERE id = $1 AND status = 'held'",
+        )
+        .bind(id)
+        .bind(decision)
+        .execute(&mut *tx)
+        .await?;
+        if released.rows_affected() == 0 {
+            return Ok(None);
+        }
+        let (agents, departments): (Vec<Uuid>, Vec<Uuid>) = recipients.iter().copied().unzip();
+        sqlx::query(
+            "INSERT INTO org_inbox (message_id, agent_id, department_id)
+             SELECT $1, a, d FROM unnest($2::uuid[], $3::uuid[]) AS t(a, d)
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(id)
+        .bind(&agents)
+        .bind(&departments)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        self.get_message(id).await.map(Some)
+    }
+
+    /// Refuse a held message. `None` when it is not held.
+    pub async fn reject_message(&self, id: Uuid, decision: &str) -> Result<Option<OrgMessage>> {
+        let rejected = sqlx::query(
+            "UPDATE org_messages SET status = 'rejected', decision = $2
+             WHERE id = $1 AND status = 'held'",
+        )
+        .bind(id)
+        .bind(decision)
+        .execute(&self.pool)
+        .await?;
+        if rejected.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.get_message(id).await.map(Some)
     }
 
     /// Messages waiting for an agent, oldest first (not marked).

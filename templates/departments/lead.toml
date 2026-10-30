@@ -22,7 +22,7 @@ core = true
 instructions = """
 Keep `goals.md` (goals, owners, status) and write a weekly summary in
 `weekly/` of what every department did, what is blocked and which decisions
-people need to make. Ask departments through the communicator.
+people need to make. Ask departments with `team_send_to_department`.
 """
 
 [[departments.agents]]

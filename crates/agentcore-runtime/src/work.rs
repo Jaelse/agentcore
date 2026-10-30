@@ -54,8 +54,8 @@ pub struct SessionOptions {
     pub work_item: Option<WorkItem>,
     pub context: SessionContext,
     /// Do not offer the built-in sandbox tools (`run_command`, `read_file`,
-    /// ...): the agent only gets the external tools. Used for communicators
-    /// and departments that do not grant sandbox access.
+    /// ...): the agent only gets the external tools. Used for
+    /// departments that do not grant sandbox access.
     pub hide_sandbox_tools: bool,
     /// How the agent is named in the audit trail (default: the agent spec
     /// name), e.g. `Research/analyst`.

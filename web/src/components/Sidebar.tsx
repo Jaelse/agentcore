@@ -79,7 +79,6 @@ export function Sidebar({
               {s.context?.department_name && (
                 <div className="muted small">
                   🏢 {s.context.department_name}
-                  {s.context.org_agent_kind === "communicator" && " · communicator"}
                 </div>
               )}
               {s.context?.project_name && (

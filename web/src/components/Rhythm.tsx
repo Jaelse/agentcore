@@ -22,7 +22,7 @@ const PRESETS: { name: string; minutes: number; message: string }[] = [
     name: "weekly review",
     minutes: 7 * 24 * 60,
     message:
-      "Weekly review. Ask every department (through the communicator) what they did, what is blocked and what is next. Update the goals' progress, write the weekly summary, and list the decisions people need to make.",
+      "Weekly review. Ask every department (with team_send_to_department) what they did, what is blocked and what is next. Update the goals' progress, write the weekly summary, and list the decisions people need to make.",
   },
   {
     name: "triage",

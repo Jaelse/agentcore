@@ -402,6 +402,7 @@ pub async fn feed(
                 department: None,
                 agent: None,
                 after: None,
+                status: None,
                 limit: PER_SOURCE,
             })
             .await?;

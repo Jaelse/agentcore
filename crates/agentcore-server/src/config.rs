@@ -79,8 +79,10 @@ impl Default for ClusterConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OrgConfig {
-    /// Policy every communicator agent runs under.
-    pub communicator_policy: String,
+    /// No longer used (communicator agents were replaced by the message
+    /// router); still accepted so existing configuration files load.
+    #[serde(skip_serializing)]
+    pub communicator_policy: Option<String>,
     /// Initial limits; afterwards an admin sets them in the UI.
     pub default_max_departments: u32,
     pub default_max_agents_per_department: u32,
@@ -89,7 +91,7 @@ pub struct OrgConfig {
 impl Default for OrgConfig {
     fn default() -> Self {
         Self {
-            communicator_policy: "communicator".into(),
+            communicator_policy: None,
             default_max_departments: 10,
             default_max_agents_per_department: 10,
         }

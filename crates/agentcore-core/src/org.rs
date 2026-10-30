@@ -2,8 +2,9 @@
 //!
 //! A department (a "room") groups agents that work together. Agents talk
 //! freely inside their department; departments only talk to each other
-//! through their communicator agents. [`route`] is the single place where
-//! that rule is decided.
+//! through the organisation's message router. [`route`] decides who may
+//! address whom and [`RoutingPolicy`] decides, per department, what the
+//! router lets through.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -19,15 +20,12 @@ pub type OrgAgentId = Uuid;
 pub enum AgentKind {
     /// Does the department's work.
     Worker,
-    /// Only passes messages between its department and other departments.
-    Communicator,
 }
 
 impl AgentKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Worker => "worker",
-            Self::Communicator => "communicator",
         }
     }
 }
@@ -38,7 +36,6 @@ impl std::str::FromStr for AgentKind {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "worker" => Ok(Self::Worker),
-            "communicator" => Ok(Self::Communicator),
             other => Err(format!("unknown agent kind `{other}`")),
         }
     }
@@ -117,7 +114,7 @@ pub const TOOL_GROUPS: [&str; 3] = [TOOL_SANDBOX, TOOL_FILES, TOOL_INSIGHTS];
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrgSettings {
     pub max_departments: u32,
-    /// Worker agents per department; the communicator is not counted.
+    /// Worker agents per department.
     pub max_agents_per_department: u32,
 }
 
@@ -147,8 +144,9 @@ pub struct Department {
     pub policy: String,
     /// Granted tool groups ([`TOOL_GROUPS`]).
     pub tools: Vec<String>,
-    /// Configured agent (`[[agents]]`) the communicator runs.
-    pub communicator_agent: String,
+    /// What the message router lets through to and from this department.
+    #[serde(default)]
+    pub routing: RoutingPolicy,
     pub state: DepartmentState,
     /// Template the department was created from, if any.
     #[serde(default)]
@@ -218,7 +216,6 @@ pub enum Party {
     Agent {
         id: OrgAgentId,
         department: DepartmentId,
-        kind: AgentKind,
     },
 }
 
@@ -228,12 +225,11 @@ pub enum Target {
     Agent {
         id: OrgAgentId,
         department: DepartmentId,
-        kind: AgentKind,
     },
     /// A department: its room when sent from inside (or by a person), its
-    /// communicator when sent by another department's communicator.
+    /// workers (as the router's delivery rule picks them) from outside.
     Department(DepartmentId),
-    /// Every other department (their communicators).
+    /// Every other department.
     AllDepartments,
 }
 
@@ -242,7 +238,7 @@ pub enum Target {
 pub enum MessageScope {
     /// Inside one department.
     Internal,
-    /// Between communicators of different departments.
+    /// Between departments, through the router.
     InterDepartment,
     /// Sent by a person.
     Human,
@@ -274,50 +270,226 @@ impl std::str::FromStr for MessageScope {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RouteError {
     #[error(
-        "you cannot contact other departments directly: send your message to your \
-         department's communicator (to: \"communicator\")"
-    )]
-    WorkerOutsideDepartment,
-    #[error(
-        "communicators reach other departments through their communicators: use \
+        "you cannot contact agents of other departments directly: send your message with \
          team_send_to_department"
     )]
-    CommunicatorToForeignWorker,
+    WorkerOutsideDepartment,
     #[error("you cannot send a message to yourself")]
     ToSelf,
 }
 
-/// Decide whether `from` may send to `to`, and with which scope.
+/// Decide whether `from` may send to `to`, and with which scope. A message
+/// that leaves its department can only be addressed to a department; the
+/// router's [`RoutingPolicy`] then decides whether it gets through.
 pub fn route(from: Party, to: Target) -> Result<MessageScope, RouteError> {
     let Party::Agent {
         id: from_id,
         department: from_dept,
-        kind: from_kind,
     } = from
     else {
         return Ok(MessageScope::Human);
     };
-    match (from_kind, to) {
-        (_, Target::Agent { id, .. }) if id == from_id => Err(RouteError::ToSelf),
-        (_, Target::Agent { department, .. }) if department == from_dept => {
-            Ok(MessageScope::Internal)
+    match to {
+        Target::Agent { id, .. } if id == from_id => Err(RouteError::ToSelf),
+        Target::Agent { department, .. } if department == from_dept => Ok(MessageScope::Internal),
+        Target::Department(department) if department == from_dept => Ok(MessageScope::Internal),
+        Target::Agent { .. } => Err(RouteError::WorkerOutsideDepartment),
+        Target::Department(_) | Target::AllDepartments => Ok(MessageScope::InterDepartment),
+    }
+}
+
+/// Which departments a department may exchange messages with.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerRule {
+    /// Only these departments; `None` = every department.
+    #[serde(default)]
+    pub allow: Option<Vec<DepartmentId>>,
+    /// Never these, even when allowed above.
+    #[serde(default)]
+    pub deny: Vec<DepartmentId>,
+}
+
+impl PeerRule {
+    pub fn permits(&self, peer: DepartmentId) -> bool {
+        !self.deny.contains(&peer) && self.allow.as_ref().is_none_or(|a| a.contains(&peer))
+    }
+}
+
+/// When messages that leave a department wait for a person.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteApproval {
+    /// Straight through.
+    #[default]
+    None,
+    /// Only a message to all departments waits.
+    Broadcast,
+    /// Every message waits.
+    All,
+}
+
+/// Which workers of the receiving department get a message from outside.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "mode", content = "worker")]
+pub enum Delivery {
+    /// Every worker (the room).
+    #[default]
+    All,
+    /// One worker (by name), who passes it on; every worker when that name
+    /// does not exist (any more).
+    Lead(String),
+}
+
+/// What the message router lets through to and from one department. All
+/// checks are deterministic: no model reads the messages.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoutingPolicy {
+    /// Departments this one may write to.
+    #[serde(default)]
+    pub outbound: PeerRule,
+    /// Departments that may write to this one.
+    #[serde(default)]
+    pub inbound: PeerRule,
+    /// Outgoing messages that wait for a person.
+    #[serde(default)]
+    pub approval: RouteApproval,
+    /// Longest message sent or received, in characters.
+    #[serde(default)]
+    pub max_message_chars: Option<usize>,
+    /// Most messages this department may send to other departments per hour.
+    #[serde(default)]
+    pub max_per_hour: Option<u32>,
+    /// Phrases (case-insensitive) a message may not contain, sent or
+    /// received.
+    #[serde(default)]
+    pub blocked_phrases: Vec<String>,
+    /// Which of its workers receive messages from other departments.
+    #[serde(default)]
+    pub delivery: Delivery,
+}
+
+impl RoutingPolicy {
+    /// The first rule, if any, that stops `text` from being sent or
+    /// received by this department.
+    pub fn content_violation(&self, text: &str) -> Option<String> {
+        if let Some(max) = self.max_message_chars
+            && text.chars().count() > max
+        {
+            return Some(format!("longer than {max} characters"));
         }
-        (_, Target::Department(department)) if department == from_dept => {
-            Ok(MessageScope::Internal)
+        let lower = text.to_lowercase();
+        self.blocked_phrases
+            .iter()
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .find(|p| lower.contains(&p.to_lowercase()))
+            .map(|p| format!("contains the blocked phrase `{p}`"))
+    }
+}
+
+/// What the router decided about one message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RouteVerdict {
+    /// Delivered to these departments.
+    Deliver(Vec<DepartmentId>),
+    /// Held for a person; if approved it goes to these departments.
+    Hold(Vec<DepartmentId>),
+    /// Not delivered, and why.
+    Deny(String),
+}
+
+/// Apply the sender's and the receivers' policies to one message from
+/// `from` to `targets` (departments with their names and policies).
+/// `sent_last_hour` is how many messages `from` already sent out in the
+/// last hour; `broadcast` whether it is addressed to all departments.
+pub fn decide_route(
+    from: (DepartmentId, &RoutingPolicy),
+    targets: &[(DepartmentId, &str, &RoutingPolicy)],
+    text: &str,
+    broadcast: bool,
+    sent_last_hour: u32,
+) -> RouteVerdict {
+    let (from_id, out) = from;
+    if let Some(max) = out.max_per_hour
+        && sent_last_hour >= max
+    {
+        return RouteVerdict::Deny(format!(
+            "your department has already sent {max} messages to other departments in the last \
+             hour"
+        ));
+    }
+    if let Some(why) = out.content_violation(text) {
+        return RouteVerdict::Deny(format!(
+            "your department's routing policy refuses it: {why}"
+        ));
+    }
+    let mut reasons = Vec::new();
+    let mut ok = Vec::new();
+    for (id, name, inbound) in targets {
+        let why = if !out.outbound.permits(*id) {
+            Some("your department may not write to it".to_string())
+        } else if !inbound.inbound.permits(from_id) {
+            Some("it does not accept messages from your department".to_string())
+        } else {
+            inbound
+                .content_violation(text)
+                .map(|w| format!("its routing policy refuses it: {w}"))
+        };
+        match why {
+            Some(why) => reasons.push(format!("{name}: {why}")),
+            None => ok.push(*id),
         }
-        (AgentKind::Worker, _) => Err(RouteError::WorkerOutsideDepartment),
-        (
-            AgentKind::Communicator,
-            Target::Agent {
-                kind: AgentKind::Communicator,
-                ..
-            },
-        )
-        | (AgentKind::Communicator, Target::Department(_) | Target::AllDepartments) => {
-            Ok(MessageScope::InterDepartment)
+    }
+    if ok.is_empty() {
+        return RouteVerdict::Deny(if reasons.is_empty() {
+            "there is no department to send it to".into()
+        } else {
+            reasons.join("; ")
+        });
+    }
+    let hold = match out.approval {
+        RouteApproval::None => false,
+        RouteApproval::Broadcast => broadcast,
+        RouteApproval::All => true,
+    };
+    if hold {
+        RouteVerdict::Hold(ok)
+    } else {
+        RouteVerdict::Deliver(ok)
+    }
+}
+
+/// What became of a message at the router.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageStatus {
+    #[default]
+    Delivered,
+    /// Waiting for a person to approve it.
+    Held,
+    /// Not delivered: refused by a routing policy or by a person.
+    Rejected,
+}
+
+impl MessageStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Delivered => "delivered",
+            Self::Held => "held",
+            Self::Rejected => "rejected",
         }
-        (AgentKind::Communicator, Target::Agent { .. }) => {
-            Err(RouteError::CommunicatorToForeignWorker)
+    }
+}
+
+impl std::str::FromStr for MessageStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "delivered" => Ok(Self::Delivered),
+            "held" => Ok(Self::Held),
+            "rejected" => Ok(Self::Rejected),
+            other => Err(format!("unknown message status `{other}`")),
         }
     }
 }
@@ -340,6 +512,11 @@ pub struct OrgMessage {
     /// Display name of the addressee.
     pub to_name: String,
     pub text: String,
+    #[serde(default)]
+    pub status: MessageStatus,
+    /// Why the router held or refused it, or who decided.
+    #[serde(default)]
+    pub decision: String,
     /// Agents it was delivered to (inbox entries).
     #[serde(default)]
     pub recipients: Vec<OrgAgentId>,
@@ -525,80 +702,136 @@ pub struct NodeInfo {
 mod tests {
     use super::*;
 
-    fn agent(dept: DepartmentId, kind: AgentKind) -> (Party, Target) {
+    fn agent(dept: DepartmentId) -> (Party, Target) {
         let id = Uuid::new_v4();
         (
             Party::Agent {
                 id,
                 department: dept,
-                kind,
             },
             Target::Agent {
                 id,
                 department: dept,
-                kind,
             },
         )
     }
 
     #[test]
-    fn workers_stay_inside_their_department() {
+    fn agents_talk_freely_inside_and_reach_others_only_as_departments() {
         let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
-        let (w1, _) = agent(a, AgentKind::Worker);
-        let (_, w2) = agent(a, AgentKind::Worker);
-        let (_, own_comm) = agent(a, AgentKind::Communicator);
-        let (_, foreign_worker) = agent(b, AgentKind::Worker);
-        let (_, foreign_comm) = agent(b, AgentKind::Communicator);
+        let (w1, me) = agent(a);
+        let (_, w2) = agent(a);
+        let (_, foreign) = agent(b);
 
         assert_eq!(route(w1, w2), Ok(MessageScope::Internal));
-        assert_eq!(route(w1, own_comm), Ok(MessageScope::Internal));
         assert_eq!(route(w1, Target::Department(a)), Ok(MessageScope::Internal));
-        for to in [
-            foreign_worker,
-            foreign_comm,
-            Target::Department(b),
-            Target::AllDepartments,
-        ] {
-            assert_eq!(route(w1, to), Err(RouteError::WorkerOutsideDepartment));
+        assert_eq!(route(w1, me), Err(RouteError::ToSelf));
+        assert_eq!(route(w1, foreign), Err(RouteError::WorkerOutsideDepartment));
+        for to in [Target::Department(b), Target::AllDepartments] {
+            assert_eq!(route(w1, to), Ok(MessageScope::InterDepartment));
         }
-    }
-
-    #[test]
-    fn communicators_bridge_departments() {
-        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
-        let (comm, comm_target) = agent(a, AgentKind::Communicator);
-        let (_, own_worker) = agent(a, AgentKind::Worker);
-        let (_, foreign_worker) = agent(b, AgentKind::Worker);
-        let (_, foreign_comm) = agent(b, AgentKind::Communicator);
-
-        assert_eq!(route(comm, own_worker), Ok(MessageScope::Internal));
-        assert_eq!(
-            route(comm, Target::Department(a)),
-            Ok(MessageScope::Internal)
-        );
-        assert_eq!(route(comm, foreign_comm), Ok(MessageScope::InterDepartment));
-        assert_eq!(
-            route(comm, Target::Department(b)),
-            Ok(MessageScope::InterDepartment)
-        );
-        assert_eq!(
-            route(comm, Target::AllDepartments),
-            Ok(MessageScope::InterDepartment)
-        );
-        assert_eq!(
-            route(comm, foreign_worker),
-            Err(RouteError::CommunicatorToForeignWorker)
-        );
-        assert_eq!(route(comm, comm_target), Err(RouteError::ToSelf));
     }
 
     #[test]
     fn people_reach_everyone() {
         let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
-        let (_, w) = agent(a, AgentKind::Worker);
-        let (_, c) = agent(b, AgentKind::Communicator);
+        let (_, w) = agent(a);
+        let (_, c) = agent(b);
         for to in [w, c, Target::Department(a), Target::AllDepartments] {
             assert_eq!(route(Party::Human, to), Ok(MessageScope::Human));
         }
+    }
+
+    fn open() -> RoutingPolicy {
+        RoutingPolicy::default()
+    }
+
+    #[test]
+    fn an_open_policy_delivers() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let p = open();
+        assert_eq!(
+            decide_route((a, &p), &[(b, "B", &p)], "hello", false, 0),
+            RouteVerdict::Deliver(vec![b])
+        );
+    }
+
+    #[test]
+    fn peers_are_allowed_and_denied_by_both_sides() {
+        let (a, b, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let mut from = open();
+        from.outbound.allow = Some(vec![b]);
+        let mut b_policy = open();
+        b_policy.inbound.deny = vec![a];
+        let c_policy = open();
+        // Out: only B; B refuses A; C is not on A's list.
+        let v = decide_route(
+            (a, &from),
+            &[(b, "B", &b_policy), (c, "C", &c_policy)],
+            "hi",
+            true,
+            0,
+        );
+        let RouteVerdict::Deny(why) = v else {
+            panic!("expected a denial, got {v:?}")
+        };
+        assert!(why.contains("B: it does not accept"), "{why}");
+        assert!(why.contains("C: your department may not write"), "{why}");
+        // Broadcast delivers to whoever remains.
+        from.outbound.allow = None;
+        assert_eq!(
+            decide_route(
+                (a, &from),
+                &[(b, "B", &b_policy), (c, "C", &c_policy)],
+                "hi",
+                true,
+                0
+            ),
+            RouteVerdict::Deliver(vec![c])
+        );
+    }
+
+    #[test]
+    fn approval_holds_what_the_policy_asks_for() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let p = open();
+        let mut from = open();
+        from.approval = RouteApproval::Broadcast;
+        assert_eq!(
+            decide_route((a, &from), &[(b, "B", &p)], "x", false, 0),
+            RouteVerdict::Deliver(vec![b])
+        );
+        assert_eq!(
+            decide_route((a, &from), &[(b, "B", &p)], "x", true, 0),
+            RouteVerdict::Hold(vec![b])
+        );
+        from.approval = RouteApproval::All;
+        assert_eq!(
+            decide_route((a, &from), &[(b, "B", &p)], "x", false, 0),
+            RouteVerdict::Hold(vec![b])
+        );
+    }
+
+    #[test]
+    fn limits_and_phrases_refuse() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut from = open();
+        from.max_per_hour = Some(2);
+        let p = open();
+        assert!(matches!(
+            decide_route((a, &from), &[(b, "B", &p)], "x", false, 2),
+            RouteVerdict::Deny(w) if w.contains("last hour")
+        ));
+        let mut to = open();
+        to.blocked_phrases = vec!["Password".into()];
+        to.max_message_chars = Some(10);
+        assert!(matches!(
+            decide_route((a, &open()), &[(b, "B", &to)], "the password is x", false, 0),
+            RouteVerdict::Deny(w) if w.contains("longer than 10")
+        ));
+        assert!(matches!(
+            decide_route((a, &open()), &[(b, "B", &to)], "password", false, 0),
+            RouteVerdict::Deny(w) if w.contains("blocked phrase `Password`")
+        ));
     }
 }

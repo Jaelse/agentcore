@@ -1,9 +1,9 @@
 //! Multi-agent organisations: departments of agents that work together and
-//! talk to other departments only through their communicators.
+//! talk to other departments only through the message router.
 //!
 //! * the operator API (`/api/v1/org/...`),
 //! * the `team_*` tools agents use to talk and share files,
-//! * sending a message (routing + recipients),
+//! * sending a message (routing, the departments' routing policies, recipients),
 //! * the first prompt of a department agent and starting its session.
 //!
 //! Where an agent runs and what it should be doing is decided in PostgreSQL;
@@ -18,13 +18,14 @@ use agentcore_core::org::{
     Party, RouteError, TOOL_FILES, TOOL_INSIGHTS, TOOL_SANDBOX, Target, route,
 };
 use agentcore_core::{
-    AgentKind, DeliveredMessage, Department, DepartmentId, DepartmentState, Desired, OrgAgent,
-    OrgAgentId, OrgMessage, OrgProfile, OrgSettings, Principal, SessionContext, WorkItem,
+    AgentKind, DeliveredMessage, Delivery, Department, DepartmentId, DepartmentState, Desired,
+    MessageScope, MessageStatus, OrgAgent, OrgAgentId, OrgMessage, OrgProfile, OrgSettings,
+    Principal, RouteVerdict, SessionContext, WorkItem, decide_route,
 };
 use agentcore_runtime::{CreateSession, Session, SessionOptions, ToolHandler};
 use agentcore_store::{
-    Acquired, AgentInput, AgentScope, COMMUNICATOR_NAME, DepartmentInput, GoalInput, GoalUpdate,
-    MessageFilter, NewMessage, NewWorkItem, ScheduleInput, ScheduleUpdate, Store, StoreError,
+    Acquired, AgentInput, AgentScope, DepartmentInput, GoalInput, GoalUpdate, MessageFilter,
+    NewMessage, NewWorkItem, ScheduleInput, ScheduleUpdate, Store, StoreError,
 };
 use async_trait::async_trait;
 use axum::Json;
@@ -87,9 +88,16 @@ impl Org {
             .filter(move |a| a.department_id == department)
     }
 
-    pub fn communicator(&self, department: DepartmentId) -> Option<&OrgAgent> {
-        self.members(department)
-            .find(|a| a.kind == AgentKind::Communicator)
+    /// The workers of a department that receive a message from another
+    /// department, as its routing policy's delivery rule picks them.
+    pub fn inbound_recipients(&self, department: DepartmentId) -> Vec<&OrgAgent> {
+        let policy = self.department(department).map(|d| &d.routing);
+        if let Some(Delivery::Lead(name)) = policy.map(|p| &p.delivery)
+            && let Some(lead) = self.members(department).find(|a| &a.name == name)
+        {
+            return vec![lead];
+        }
+        self.members(department).collect()
     }
 
     /// `analyst (Research)`
@@ -119,6 +127,9 @@ pub enum Recipient {
 pub enum SendError {
     #[error(transparent)]
     Route(#[from] RouteError),
+    /// A department's routing policy stopped the message.
+    #[error("the message router did not deliver it: {0}")]
+    Refused(String),
     #[error("{0}")]
     Invalid(String),
     #[error(transparent)]
@@ -138,7 +149,6 @@ fn party(agent: &OrgAgent) -> Party {
     Party::Agent {
         id: agent.id,
         department: agent.department_id,
-        kind: agent.kind,
     }
 }
 
@@ -146,11 +156,13 @@ fn target(agent: &OrgAgent) -> Target {
     Target::Agent {
         id: agent.id,
         department: agent.department_id,
-        kind: agent.kind,
     }
 }
 
-/// Route a message, resolve its recipients, store it and notify every node.
+/// Route a message, apply the routing policies, resolve its recipients,
+/// store it and notify every node. A message to another department that a
+/// policy asks a person to approve is stored as `held`; one that a policy
+/// refuses is stored as `rejected` and returned as an error.
 pub async fn send(
     store: &Store,
     from: &Sender,
@@ -198,29 +210,12 @@ pub async fn send(
         Recipient::AllDepartments => (Target::AllDepartments, "all_departments", None, None),
     };
     let scope = route(from_party, to_target)?;
-    let inter = scope == agentcore_core::MessageScope::InterDepartment;
+    let inter = scope == MessageScope::InterDepartment;
 
     let sender_id = from_agent.map(|a| a.id);
     let sender_dept = from_agent.map(|a| a.department_id);
-    let recipients: Vec<&OrgAgent> = match to {
-        Recipient::Agent(_) => to_agent.and_then(|id| org.agent(id)).into_iter().collect(),
-        Recipient::Department(d) if inter => org.communicator(d).into_iter().collect(),
-        Recipient::Department(d) => org.members(d).filter(|a| Some(a.id) != sender_id).collect(),
-        Recipient::AllDepartments if from_agent.is_none() => org.agents.iter().collect(),
-        Recipient::AllDepartments => org
-            .departments
-            .iter()
-            .filter(|d| Some(d.id) != sender_dept)
-            .filter_map(|d| org.communicator(d.id))
-            .collect(),
-    };
-    if recipients.is_empty() {
-        return Err(SendError::Invalid(
-            "nobody would receive this message".into(),
-        ));
-    }
     let to_name = match to {
-        Recipient::Agent(_) => recipients.first().map(|a| org.label(a)).unwrap_or_default(),
+        Recipient::Agent(id) => org.agent(id).map(|a| org.label(a)).unwrap_or_default(),
         Recipient::Department(d) => {
             let name = org.department(d).map_or("?", |d| d.name.as_str());
             if inter {
@@ -231,20 +226,96 @@ pub async fn send(
         }
         Recipient::AllDepartments => "all departments".into(),
     };
-    let message = store
-        .insert_message(NewMessage {
-            scope,
-            from_agent: sender_id,
-            from_department: sender_dept,
-            from_name,
-            to_kind,
-            to_agent,
-            to_department,
-            to_name,
-            text: text.to_string(),
-            recipients: recipients.iter().map(|a| (a.id, a.department_id)).collect(),
-        })
-        .await?;
+    let mut message = NewMessage {
+        scope,
+        from_agent: sender_id,
+        from_department: sender_dept,
+        from_name,
+        to_kind,
+        to_agent,
+        to_department,
+        to_name,
+        text: text.to_string(),
+        status: MessageStatus::Delivered,
+        decision: String::new(),
+        recipients: Vec::new(),
+    };
+
+    let recipients: Vec<&OrgAgent> = if inter {
+        // Between departments the router decides.
+        let from_dept = sender_dept
+            .and_then(|d| org.department(d))
+            .ok_or_else(|| unknown("your department".into()))?;
+        let targets = inbound_targets(&org, from_dept.id, to_department);
+        let sent = store.count_sent_last_hour(from_dept.id).await?;
+        let verdict = decide_route(
+            (from_dept.id, &from_dept.routing),
+            &targets,
+            text,
+            to_department.is_none(),
+            sent,
+        );
+        match verdict {
+            RouteVerdict::Deny(why) => {
+                message.status = MessageStatus::Rejected;
+                message.decision = why.clone();
+                let stored = store.insert_message(message).await?;
+                notify_message(store, &stored, sender_dept, &[]).await;
+                return Err(SendError::Refused(why));
+            }
+            RouteVerdict::Hold(_) => {
+                message.status = MessageStatus::Held;
+                message.decision = "waiting for a person to approve it (routing policy)".into();
+                let stored = store.insert_message(message).await?;
+                notify_message(store, &stored, sender_dept, &[]).await;
+                return Ok(stored);
+            }
+            RouteVerdict::Deliver(departments) => departments
+                .into_iter()
+                .flat_map(|d| org.inbound_recipients(d))
+                .collect(),
+        }
+    } else {
+        match to {
+            Recipient::Agent(_) => to_agent.and_then(|id| org.agent(id)).into_iter().collect(),
+            Recipient::Department(d) => {
+                org.members(d).filter(|a| Some(a.id) != sender_id).collect()
+            }
+            // Only people reach every agent.
+            Recipient::AllDepartments => org.agents.iter().collect(),
+        }
+    };
+    if recipients.is_empty() {
+        return Err(SendError::Invalid(
+            "nobody would receive this message".into(),
+        ));
+    }
+    message.recipients = recipients.iter().map(|a| (a.id, a.department_id)).collect();
+    let stored = store.insert_message(message).await?;
+    notify_message(store, &stored, sender_dept, &recipients).await;
+    Ok(stored)
+}
+
+/// The departments a message from `from` reaches: the addressed one, or
+/// every other department, with each one's policy.
+fn inbound_targets(
+    org: &Org,
+    from: DepartmentId,
+    to: Option<DepartmentId>,
+) -> Vec<(DepartmentId, &str, &agentcore_core::RoutingPolicy)> {
+    org.departments
+        .iter()
+        .filter(|d| d.id != from && to.is_none_or(|t| t == d.id))
+        .map(|d| (d.id, d.name.as_str(), &d.routing))
+        .collect()
+}
+
+async fn notify_message(
+    store: &Store,
+    message: &OrgMessage,
+    sender_dept: Option<DepartmentId>,
+    recipients: &[&OrgAgent],
+) {
     let mut departments: Vec<DepartmentId> = recipients.iter().map(|a| a.department_id).collect();
     departments.extend(sender_dept);
     departments.sort();
@@ -259,7 +330,63 @@ pub async fn send(
         }),
     )
     .await;
-    Ok(message)
+}
+
+/// A person decides on a message the router holds. Approving delivers it
+/// under the receiving departments' policies as they are now.
+pub async fn decide_held(
+    store: &Store,
+    id: Uuid,
+    approve: bool,
+    by: &str,
+) -> Result<OrgMessage, SendError> {
+    let held = store.get_message(id).await?;
+    if held.status != MessageStatus::Held {
+        return Err(SendError::Invalid(
+            "the message is not waiting for approval".into(),
+        ));
+    }
+    let org = Org::load(store).await?;
+    let sender_dept = held.from_department;
+    let stored = if approve {
+        let from_dept = sender_dept
+            .and_then(|d| org.department(d))
+            .ok_or_else(|| SendError::Invalid("the sending department no longer exists".into()))?;
+        let targets = inbound_targets(&org, from_dept.id, held.to_department);
+        // Approval and the hourly limit were already dealt with.
+        let mut policy = from_dept.routing.clone();
+        policy.approval = agentcore_core::RouteApproval::None;
+        policy.max_per_hour = None;
+        let recipients: Vec<&OrgAgent> =
+            match decide_route((from_dept.id, &policy), &targets, &held.text, false, 0) {
+                RouteVerdict::Deliver(departments) => departments
+                    .into_iter()
+                    .flat_map(|d| org.inbound_recipients(d))
+                    .collect(),
+                RouteVerdict::Hold(_) => Vec::new(),
+                RouteVerdict::Deny(why) => {
+                    store
+                        .reject_message(id, &format!("approved by {by}, but now refused: {why}"))
+                        .await?;
+                    return Err(SendError::Refused(why));
+                }
+            };
+        let pairs: Vec<_> = recipients.iter().map(|a| (a.id, a.department_id)).collect();
+        let released = store
+            .release_message(id, &pairs, &format!("approved by {by}"))
+            .await?
+            .ok_or_else(|| SendError::Invalid("someone else already decided".into()))?;
+        notify_message(store, &released, sender_dept, &recipients).await;
+        released
+    } else {
+        let rejected = store
+            .reject_message(id, &format!("rejected by {by}"))
+            .await?
+            .ok_or_else(|| SendError::Invalid("someone else already decided".into()))?;
+        notify_message(store, &rejected, sender_dept, &[]).await;
+        rejected
+    };
+    Ok(stored)
 }
 
 /// Tell every node (including this one) that something changed.
@@ -373,8 +500,6 @@ impl TeamTools {
             "The repository is set up in this session: see your repository section and GitHub \
              tools."
                 .into()
-        } else if self.kind == AgentKind::Communicator {
-            "Only workers get the repository; ask a worker in your department.".into()
         } else {
             "The repository was linked after this session started. Finish what you are doing: \
              the organisation restarts you with the checkout and GitHub tools in a fresh \
@@ -422,10 +547,7 @@ impl TeamTools {
             "mission": dept.mission,
             "colleagues": colleagues,
             "other_departments": others,
-            "how_to_reach_other_departments": match me.kind {
-                AgentKind::Worker => "ask your communicator: team_send_message(to: \"communicator\")",
-                AgentKind::Communicator => "team_send_to_department(department, text)",
-            },
+            "how_to_reach_other_departments": "team_send_to_department(department, text)",
         }))
     }
 
@@ -441,8 +563,9 @@ impl TeamTools {
                     .find(|a| a.name == name)
                     .ok_or_else(|| {
                         format!(
-                            "there is no `{name}` in your department; use a colleague's name, \
-                             \"communicator\" or \"everyone\" (see team_list_colleagues)"
+                            "there is no `{name}` in your department; use a colleague's name or \
+                             \"everyone\" (see team_list_colleagues). To reach another \
+                             department use team_send_to_department"
                         )
                     })?;
                 Recipient::Agent(colleague.id)
@@ -478,7 +601,17 @@ impl TeamTools {
         let sent = send(&self.store, &Sender::Agent(me.id), recipient, &text)
             .await
             .map_err(|e| e.to_string())?;
-        Ok(json!({ "sent": true, "to": sent.to_name, "recipients": sent.recipients.len() }))
+        Ok(match sent.status {
+            MessageStatus::Held => json!({
+                "sent": false,
+                "held": true,
+                "to": sent.to_name,
+                "note": "Your department's routing policy asks a person to approve this \
+                         message before it is delivered. You will not get a separate answer \
+                         about that: carry on.",
+            }),
+            _ => json!({ "sent": true, "to": sent.to_name, "recipients": sent.recipients.len() }),
+        })
     }
 
     async fn read_messages(&self) -> Result<Value, String> {
@@ -687,9 +820,9 @@ impl ToolHandler for TeamTools {
             ),
             def(
                 "team_send_message",
-                "Send a message inside your department. `to` is a colleague's name, \
-                 \"communicator\" (your department's link to other departments) or \"everyone\" \
-                 (the whole department).",
+                "Send a message inside your department. `to` is a colleague's name or \
+                 \"everyone\" (the whole department). To reach another department use \
+                 team_send_to_department.",
                 json!({ "to": text, "text": text }),
                 &["to", "text"],
             ),
@@ -734,7 +867,7 @@ impl ToolHandler for TeamTools {
                 &["summary"],
             ));
         }
-        if self.kind == AgentKind::Communicator {
+        if self.project_at_start.is_some() {
             tools.push(def(
                 "team_list_work_items",
                 "Your department's open work items: who carries each on, whether a session \
@@ -745,20 +878,21 @@ impl ToolHandler for TeamTools {
             tools.push(def(
                 "team_assign_work_item",
                 "Hand a work item (id or title) to a worker of your department (`to`: its \
-                 name). The worker carries it on in its next session. An item a session works \
-                 on now cannot be handed over.",
+                 name, yours to take it yourself). The worker carries it on in its next \
+                 session. An item a session works on now cannot be handed over.",
                 json!({ "item": text, "to": text }),
                 &["item", "to"],
             ));
-            tools.push(def(
-                "team_send_to_department",
-                "Send a message to another department (its communicator receives it), or to \
-                 every other department with department \"all\". Make it self-contained: say \
-                 who asks and what is needed.",
-                json!({ "department": text, "text": text }),
-                &["department", "text"],
-            ));
         }
+        tools.push(def(
+            "team_send_to_department",
+            "Send a message to another department, or to every other department with \
+             department \"all\". The message router checks it against the departments' \
+             routing policies: it may be refused, or wait for a person to approve it. Make it \
+             self-contained: say who asks and what is needed.",
+            json!({ "department": text, "text": text }),
+            &["department", "text"],
+        ));
         if self.files {
             tools.extend([
                 def(
@@ -985,14 +1119,7 @@ pub fn compose_prompt(
             let colleagues: Vec<String> = org
                 .members(dept.id)
                 .filter(|a| a.id != agent.id)
-                .map(|a| match a.kind {
-                    AgentKind::Communicator => {
-                        format!(
-                            "- `{COMMUNICATOR_NAME}`: passes messages to and from other departments"
-                        )
-                    }
-                    AgentKind::Worker => format!("- `{}`", a.name),
-                })
+                .map(|a| format!("- `{}`", a.name))
                 .collect();
             p.push_str(&format!(
                 "You are `{}`, an AI agent in the **{}** department of an organisation of AI \
@@ -1009,9 +1136,11 @@ pub fn compose_prompt(
             });
             p.push_str(&format!(
                 "\n\n## Your department\n\n{}\n\nOther departments: {others}. You cannot contact \
-                 them directly: ask your department's communicator (`team_send_message` with \
-                 `to: \"communicator\"`) and say which department you need and what for. \
-                 Answers come back to you as messages.\n\n",
+                 their agents directly: write to the department with \
+                 `team_send_to_department(department, text)` and say who asks and what is \
+                 needed. The organisation's message router checks the message against the \
+                 departments' routing policies and delivers it to the department; answers come \
+                 back to you as messages.\n\n",
                 colleagues.join("\n")
             ));
             if repo.is_none() {
@@ -1089,7 +1218,8 @@ pub fn compose_prompt(
             }
             p.push_str(
                 "## Working together\n\n\
-                 - `team_send_message(to, text)`: a colleague's name, `communicator`, or `everyone`.\n\
+                 - `team_send_message(to, text)`: a colleague's name or `everyone`.\n\
+                 - `team_send_to_department(department, text)`: another department (or `all`).\n\
                  - `team_read_messages()`: new messages; `team_list_colleagues()`: who is here now.\n",
             );
             if dept.grants(TOOL_FILES) {
@@ -1108,40 +1238,6 @@ pub fn compose_prompt(
                 "\nWhen you have done what you can for now, end your turn with a short summary. \
                  You are woken up when a message arrives.\n",
             );
-        }
-        AgentKind::Communicator => {
-            let members: Vec<String> = org
-                .members(dept.id)
-                .filter(|a| a.kind == AgentKind::Worker)
-                .map(|a| format!("`{}`", a.name))
-                .collect();
-            p.push_str(&format!(
-                "You are the communicator of the **{}** department in an organisation of AI \
-                 agents. People supervise the organisation and read every message.\n\n\
-                 Your only job is to pass messages between your department and other \
-                 departments. You do not do the department's work, and you have no tools other \
-                 than messaging.\n\n{company_section}\
-                 ## Your department\n\nMission: {mission}\n\nMembers: {}\n\n\
-                 Other departments: {others}\n\n\
-                 ## How you work\n\n\
-                 - When a colleague asks you to contact another department, send a clear, \
-                 self-contained message with `team_send_to_department(department, text)`: who \
-                 is asking, what is needed, by when. Use department `all` only for things every \
-                 department needs to know.\n\
-                 - When a message arrives from another department, pass it on with \
-                 `team_send_message(to, text)` to the colleague it concerns, or to `everyone`, \
-                 and say which department it came from. Answers go back the same way.\n\
-                 - Pass messages on faithfully. Do not invent facts, make commitments for your \
-                 department, or share anything your colleagues did not ask you to share.\n\
-                 - When you have passed everything on, end your turn. You are woken up when the \
-                 next message arrives.\n",
-                dept.name,
-                if members.is_empty() {
-                    "none yet".to_string()
-                } else {
-                    members.join(", ")
-                },
-            ));
         }
     }
     let goals: Vec<&agentcore_core::OrgGoal> = org
@@ -1435,10 +1531,7 @@ async fn build_agent_session(
     linked: Option<(agentcore_store::Project, Arc<agentcore_roles::Role>)>,
     work: Option<&Acquired>,
 ) -> Result<Arc<Session>, ApiError> {
-    let policy = match agent.kind {
-        AgentKind::Worker => dept.policy.clone(),
-        AgentKind::Communicator => state.config.org.communicator_policy.clone(),
-    };
+    let policy = dept.policy.clone();
     let label = format!("{}/{}", dept.name, agent.name);
     let mut context = SessionContext {
         department_id: Some(dept.id),
@@ -1449,7 +1542,7 @@ async fn build_agent_session(
     };
     let mut options = SessionOptions {
         models,
-        hide_sandbox_tools: agent.kind == AgentKind::Communicator || !dept.grants(TOOL_SANDBOX),
+        hide_sandbox_tools: !dept.grants(TOOL_SANDBOX),
         agent_label: Some(label),
         ..Default::default()
     };
@@ -1464,15 +1557,12 @@ async fn build_agent_session(
             })
         }),
     ))];
-    let (data_sources, channels, products, announces) = match agent.kind {
-        AgentKind::Worker => (
-            state.store.data_sources_for(dept.id).await?,
-            state.store.channels_for(dept.id).await?,
-            state.store.products_for(dept.id).await?,
-            state.store.products_announced_by(dept.id).await?,
-        ),
-        AgentKind::Communicator => (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
-    };
+    let (data_sources, channels, products, announces) = (
+        state.store.data_sources_for(dept.id).await?,
+        state.store.channels_for(dept.id).await?,
+        state.store.products_for(dept.id).await?,
+        state.store.products_announced_by(dept.id).await?,
+    );
     if agent.kind == AgentKind::Worker {
         // Business data granted to the department (checked on every call).
         if !data_sources.is_empty() {
@@ -1700,7 +1790,6 @@ pub async fn overview(State(state): State<AppState>, _caller: Caller) -> ApiResu
             .filter(|p| p.status.is_pending())
             .count(),
         "nodes": state.store.list_nodes(state.config.cluster.node_timeout_secs).await?,
-        "communicator_policy": state.config.org.communicator_policy,
     })))
 }
 
@@ -1911,18 +2000,7 @@ pub(crate) async fn check_department(
     if state.manager.policies().get(input.policy.trim()).is_none() {
         return Err(bad(format!("unknown policy `{}`", input.policy)));
     }
-    if state
-        .manager
-        .policies()
-        .get(&state.config.org.communicator_policy)
-        .is_none()
-    {
-        return Err(bad(format!(
-            "the communicator policy `{}` does not exist",
-            state.config.org.communicator_policy
-        )));
-    }
-    check_agent_spec(state, &input.communicator_agent)
+    Ok(())
 }
 
 pub(crate) fn check_agent_spec(state: &AppState, name: &str) -> ApiResult<()> {
@@ -2358,6 +2436,9 @@ pub struct MessagesQuery {
     pub after: Option<Uuid>,
     #[serde(default)]
     pub limit: Option<i64>,
+    /// `delivered`, `held` or `rejected`.
+    #[serde(default)]
+    pub status: Option<MessageStatus>,
 }
 
 pub async fn list_messages(
@@ -2372,9 +2453,34 @@ pub async fn list_messages(
                 department: q.department,
                 agent: q.agent,
                 after: q.after,
+                status: q.status,
                 limit: q.limit.unwrap_or(200),
             })
             .await?
+    )))
+}
+
+/// Approve a message the router holds: it is delivered.
+pub async fn approve_message(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    caller.require_operator()?;
+    Ok(Json(json!(
+        decide_held(&state.store, id, true, &caller.name).await?
+    )))
+}
+
+/// Refuse a message the router holds.
+pub async fn reject_message(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    caller.require_operator()?;
+    Ok(Json(json!(
+        decide_held(&state.store, id, false, &caller.name).await?
     )))
 }
 
@@ -2573,9 +2679,6 @@ pub struct BuildRequest {
     /// Configured agent every new member runs (default: the first one).
     #[serde(default)]
     pub agent: Option<String>,
-    /// Agent the communicators run (default: `agent`).
-    #[serde(default)]
-    pub communicator_agent: Option<String>,
     /// Start the new departments right away.
     #[serde(default)]
     pub start: bool,
@@ -2628,7 +2731,7 @@ pub fn default_check_ins(template: &str, lead: OrgAgentId) -> Vec<ScheduleInput>
     if template == "strategy" {
         check_ins.push(ScheduleInput {
             name: "weekly review".into(),
-            message: "Weekly review. Ask every department (through the communicator) what they \
+            message: "Weekly review. Ask every department (`team_send_to_department`) what they \
                       did, what is blocked and what is next. Update the goals' progress, write \
                       the weekly summary, and list the decisions people need to make."
                 .into(),
@@ -2657,11 +2760,6 @@ pub async fn build(
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "no agents are configured"))?,
     };
     check_agent_spec(&state, &agent)?;
-    let communicator = req
-        .communicator_agent
-        .clone()
-        .unwrap_or_else(|| agent.clone());
-    check_agent_spec(&state, &communicator)?;
     let mut profile = state.store.org_profile().await?;
     if let Some(p) = &req.profile {
         check_blueprint(&state, p)?;
@@ -2719,7 +2817,7 @@ pub async fn build(
             mission: planned.mission.clone(),
             policy: planned.policy.clone().unwrap_or_default(),
             tools: planned.tools.clone(),
-            communicator_agent: communicator.clone(),
+            routing: Default::default(),
             template: Some(planned.template.clone()),
             project_id: req.project_id.filter(|_| planned.role.is_some()),
             role: planned.role.clone().filter(|_| req.project_id.is_some()),
