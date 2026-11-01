@@ -343,6 +343,10 @@ a.kanban-title:hover { text-decoration: underline; }
 .work-item-title { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; min-width: 0; }
 .work-item-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .work-item-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.handoff-heading { margin: 4px 0 0; }
+.handoff-spec summary { cursor: pointer; color: var(--muted); }
+.handoff-spec .bubble-body { white-space: pre-wrap; max-height: 220px; overflow: auto; margin-top: 4px; }
+.handoff-result { border-left: 3px solid var(--border); padding-left: 8px; white-space: pre-wrap; }
 .file-kind { font-family: ui-monospace, monospace; font-weight: 800; width: 1ch; }
 .file-created .file-kind { color: var(--ok); }
 .file-modified .file-kind { color: var(--attention); }

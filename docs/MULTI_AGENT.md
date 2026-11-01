@@ -33,6 +33,7 @@ A step-by-step walkthrough of running an app this way is in the
 - [Writing your own templates](#writing-your-own-templates)
 - [Who may talk to whom](#who-may-talk-to-whom)
 - [Messages](#messages)
+- [Handoffs: departments that work in turn](#handoffs-departments-that-work-in-turn)
 - [Data, tools and guardrails per department](#data-tools-and-guardrails-per-department)
 - [Working on a repository](#working-on-a-repository)
 - [Goals, check-ins and agents that keep going](#goals-check-ins-and-agents-that-keep-going)
@@ -366,11 +367,61 @@ flowchart LR
 | `insights_metrics`, `insights_org`, `insights_messages`, `insights_proposals`, `insights_propose`, `insights_revise` | if the department grants `insights` | The retrospective: metrics, structure, messages, and proposals (see [below](#metrics-the-retrospective-and-improvements)). |
 | `team_report_progress` | always | `goal` (id or title), `text`: replaces the goal's latest progress note. |
 | `team_work_item`, `team_finish_work_item` | with a checkout (see [Work items](#work-items-the-department-keeps-the-work)) | The worker's work item (optionally renamed with `title`); close it when done (`summary`). |
+| `team_hand_off` | always | `department`, `title`, `spec`: hand work to another department (see [Handoffs](#handoffs-departments-that-work-in-turn)). |
+| `team_list_handoffs`, `team_read_handoff`, `team_take_handoff`, `team_finish_handoff` | always | Open work handed to the department and what it handed to others; read one (`handoff`: id or title) with its specification; take it; close it (`outcome`: `done` or `declined`, `result`), which tells the sender. |
 | `team_list_work_items`, `team_assign_work_item` | in a department with a repository | The department's open work items; hand one (`item`: id or title) to a worker (`to`), yourself included. |
 | `run_command`, `read_file`, `write_file`, `list_files` | if the department grants `sandbox` | Commands and files in the agent's own sandbox. |
 
 The tool list an agent sees *is* its permission: a tool that is not offered is
 also refused if called.
+
+## Handoffs: departments that work in turn
+
+Departments do not have to work at the same time. A department can work on
+its own (Product writing a specification, say) and, when it has something
+concrete, **hand it off** to another department (Dev) that is not running,
+paused or outside its hours. The work waits for the receiving department
+until one of its workers takes it.
+
+```mermaid
+sequenceDiagram
+    participant P as pm (Product)
+    participant R as Router
+    participant H as handoffs
+    participant D as builder (Dev)
+    P->>R: team_hand_off("Dev", "Login page", spec)
+    R->>H: waiting (notice in Dev's inbox)
+    Note over D: Dev is stopped, paused or asleep
+    D->>H: starts later: prompt lists the open handoff
+    D->>H: team_take_handoff → taken
+    D->>H: team_finish_handoff(done, "PR 12") → done
+    H->>R: result to Product
+    R->>P: message wakes pm
+```
+
+* `team_hand_off(department, title, spec)` stores the handoff and sends a
+  notice with the whole specification to the department through the
+  [router](#the-message-router): the routing policies apply as to any message
+  between departments (a policy may refuse it, or hold it for a person; the
+  handoff follows that decision). The specification is up to 15 KiB; longer
+  material belongs in department files.
+* The notice waits in the receivers' inboxes and wakes them the same way as
+  any message: at once if they wait for input, when the department is resumed
+  if it is paused, in their first session if they were never started.
+* Every new session of a worker of the receiving department lists the
+  department's open handoffs in its prompt (*Work handed to your
+  department*), so the work is not lost when a session ends before it is done.
+* A worker takes it (`team_take_handoff`; a colleague can take it over) and
+  closes it with `team_finish_handoff`: `done` with what was made and where, or
+  `declined` with why. The result goes back to the sending department as a
+  message (through the router again) and stays on the handoff.
+* People see the handoffs of a department in its room (*Handoffs*: received
+  and handed off, with each specification and result) and of the whole
+  organisation on *Whole organisation*. Operators can cancel an open one.
+
+Statuses: `held` (waiting for a person to approve the notice), `waiting`
+(nobody has taken it), `taken`, `done`, `declined`, `cancelled` (refused at the
+router, rejected by a person, or withdrawn).
 
 ## Working on a repository
 
@@ -964,6 +1015,7 @@ erDiagram
     }
     departments ||--o{ org_agents : "members"
     departments ||--o{ department_files : "shared data"
+    departments ||--o{ handoffs : "hands off and receives"
     departments ||--o{ work_items : "work on its repository"
     org_agents ||--o{ work_items : "carries on"
     sessions ||--o| work_items : "holds the lease"
@@ -1125,6 +1177,17 @@ erDiagram
         text path PK
         bytea content
     }
+    handoffs {
+        uuid id PK
+        uuid from_department FK
+        uuid to_department FK
+        text title
+        text spec
+        text status "held|waiting|taken|done|declined|cancelled"
+        uuid message_id FK "the notice"
+        uuid taken_by FK
+        text result
+    }
     work_items {
         uuid id PK
         uuid department_id FK
@@ -1154,7 +1217,7 @@ an admin.
 | Method & path | What |
 |---|---|
 | `GET /org` | Overview: settings, departments with their agents, goals, check-ins, nodes. |
-| `GET /org/stream` | SSE of change notifications (`agents`, `department`, `message`, `files`, `work_items`, `settings`, `goals`, `checkins`, `proposals`, `data_sources`, `budget`, `outbox`, `channels`, `stop_all`, `resync`); clients refetch what changed. |
+| `GET /org/stream` | SSE of change notifications (`agents`, `department`, `message`, `files`, `work_items`, `handoffs`, `settings`, `goals`, `checkins`, `proposals`, `data_sources`, `budget`, `outbox`, `channels`, `stop_all`, `resync`); clients refetch what changed. |
 | `GET`/`POST /org/goals` | Goals; create `{"title", "description", "department_id"?}` (operators). |
 | `PUT`/`DELETE /org/goals/{id}` | Change `title`, `description`, `department_id` (`null` clears it), `status` (`active`\|`achieved`\|`dropped`); delete. |
 | `POST /org/goals/{id}/progress` | A person records progress: `{"text"}`. |
@@ -1196,6 +1259,8 @@ an admin.
 | `GET /org/messages?department=&agent=&after=&limit=` | Message feed (organisation, department or agent). |
 | `POST /org/messages` | A person sends a message: `{"to": {"agent": id} \| {"department": id} \| "all_departments", "text": ...}`. |
 | `GET /org/departments/{id}/files` · `GET`/`PUT /org/departments/{id}/files/{*path}` | Department files (`PUT` body `{"content": ...}`, operators). |
+| `GET /org/handoffs?department=&open=` | Handoffs, newest first; with `department`, the ones it sent or received; `open=true` only `held`, `waiting` and `taken` ones. Each has the departments' names, `spec`, `status`, `taken_by_name` and `result`. |
+| `POST /org/handoffs/{id}/cancel` | Withdraw an open handoff: `{"reason": "..."}` (optional; operators; `409` when it is closed). A held notice is rejected with it. |
 | `GET /org/work-items?department=&closed=` | Work items, open ones first (`closed=true` includes closed ones): title, branch, `assignee`, `in_session` (session and node holding it), `last_checkpoint`, `pull_request`, `note`. |
 | `POST /org/work-items/{id}/assign` | Hand an item to a worker of its department: `{"agent": id}` (operators; `409` while a session works on it). The worker is told and carries it on in its next session. |
 | `POST /org/work-items/{id}/close` | Close an item nobody works on: `{"note"?}` (operators; `409` while a session works on it). Its branch and pull request stay on GitHub. |

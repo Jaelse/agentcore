@@ -16,6 +16,7 @@ import type {
   MessageTo,
   OrgAgent,
   OrgMessage,
+  Handoff,
   RoutingPolicy,
   OrgOverview,
   OrgSettings,
@@ -453,6 +454,14 @@ export const api = {
   },
   approveMessage: (id: string) => request<OrgMessage>("POST", `/org/messages/${id}/approve`),
   rejectMessage: (id: string) => request<OrgMessage>("POST", `/org/messages/${id}/reject`),
+  handoffs: (q: { department?: string; open?: boolean } = {}) => {
+    const params = new URLSearchParams();
+    if (q.department) params.set("department", q.department);
+    if (q.open) params.set("open", "true");
+    const query = params.toString();
+    return request<Handoff[]>("GET", `/org/handoffs${query ? `?${query}` : ""}`);
+  },
+  cancelHandoff: (id: string, reason?: string) => request<Handoff>("POST", `/org/handoffs/${id}/cancel`, { reason }),
   postMessage: (to: MessageTo, text: string) => request<OrgMessage>("POST", "/org/messages", { to, text }),
   departmentFiles: (id: string) => request<DepartmentFile[]>("GET", `/org/departments/${id}/files`),
   workItems: (department: string, closed = false) =>

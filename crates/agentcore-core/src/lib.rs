@@ -29,9 +29,9 @@ pub use live::{FileChange, FileChangeKind, LiveFrame, ModelDeltaKind, ProcessInf
 pub use model::{KnownModel, ModelCallOutcome, ModelEndpoint, ProviderKind};
 pub use org::{
     AgentKind, DeliveredMessage, Delivery, Department, DepartmentId, DepartmentState, Desired,
-    GoalStatus, MessageScope, MessageStatus, NodeInfo, OrgAgent, OrgAgentId, OrgGoal, OrgMessage,
-    OrgProfile, OrgSchedule, OrgSettings, PeerRule, RouteApproval, RouteError, RouteVerdict,
-    RoutingPolicy, WorkItem, WorkItemState, WorkLease, decide_route,
+    GoalStatus, Handoff, HandoffStatus, MessageScope, MessageStatus, NodeInfo, OrgAgent,
+    OrgAgentId, OrgGoal, OrgMessage, OrgProfile, OrgSchedule, OrgSettings, PeerRule, RouteApproval,
+    RouteError, RouteVerdict, RoutingPolicy, WorkItem, WorkItemState, WorkLease, decide_route,
 };
 pub use principal::Principal;
 pub use releases::{

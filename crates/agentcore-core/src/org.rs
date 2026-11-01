@@ -682,6 +682,85 @@ impl std::str::FromStr for WorkItemState {
     }
 }
 
+/// Work one department hands to another: a self-contained specification
+/// that waits for the receiving department until one of its workers takes
+/// it, however long that is (the department may be paused, asleep or
+/// outside its hours). It passes the message router like any message
+/// between departments; the receivers' answer goes back to the sender.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Handoff {
+    pub id: Uuid,
+    pub from_department: DepartmentId,
+    /// `None` when a person handed it off.
+    pub from_agent: Option<OrgAgentId>,
+    /// Display name: `pm (Product)` or the person's name.
+    pub from_name: String,
+    pub to_department: DepartmentId,
+    pub title: String,
+    pub spec: String,
+    pub status: HandoffStatus,
+    /// The notice the router carried (held, delivered or refused with it).
+    pub message_id: Option<Uuid>,
+    /// The worker that took it.
+    pub taken_by: Option<OrgAgentId>,
+    pub taken_by_name: Option<String>,
+    pub taken_at: Option<DateTime<Utc>>,
+    /// What the receivers did (done) or why not (declined, cancelled).
+    pub result: String,
+    pub closed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandoffStatus {
+    /// The router holds it for a person to approve.
+    Held,
+    /// Delivered; nobody has taken it yet.
+    Waiting,
+    /// A worker of the receiving department works on it.
+    Taken,
+    Done,
+    /// The receiving department will not do it.
+    Declined,
+    /// Refused by the router or a person, or withdrawn.
+    Cancelled,
+}
+
+impl HandoffStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Held => "held",
+            Self::Waiting => "waiting",
+            Self::Taken => "taken",
+            Self::Done => "done",
+            Self::Declined => "declined",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    /// Still to be done by the receiving department.
+    pub fn is_open(self) -> bool {
+        matches!(self, Self::Held | Self::Waiting | Self::Taken)
+    }
+}
+
+impl std::str::FromStr for HandoffStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "held" => Ok(Self::Held),
+            "waiting" => Ok(Self::Waiting),
+            "taken" => Ok(Self::Taken),
+            "done" => Ok(Self::Done),
+            "declined" => Ok(Self::Declined),
+            "cancelled" => Ok(Self::Cancelled),
+            other => Err(format!("unknown handoff status `{other}`")),
+        }
+    }
+}
+
 /// A node of the cluster (one agentcore process, usually one VM).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeInfo {

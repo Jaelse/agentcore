@@ -15,6 +15,7 @@ pub mod distribution;
 mod error;
 pub mod feed;
 pub mod github;
+pub mod handoffs;
 pub mod hours;
 pub mod insights;
 pub mod launch;
@@ -418,6 +419,8 @@ pub fn router(state: AppState) -> Router {
             "/org/messages",
             get(org::list_messages).post(org::post_message),
         )
+        .route("/org/handoffs", get(handoffs::list))
+        .route("/org/handoffs/{id}/cancel", post(handoffs::cancel))
         .route("/org/messages/{id}/approve", post(org::approve_message))
         .route("/org/messages/{id}/reject", post(org::reject_message))
         // Session endpoints are served by the node that runs the session.

@@ -8,6 +8,7 @@
 
 mod agents;
 mod crypto;
+mod handoffs;
 mod hours;
 mod insights;
 mod launch;
@@ -35,6 +36,7 @@ use uuid::Uuid;
 
 pub use agents::InstalledAgent;
 pub use crypto::{Cipher, MASTER_KEY_ENV};
+pub use handoffs::NewHandoff;
 pub use hours::HoursInput;
 pub use insights::{
     Activity, AgentMetrics, AgentSessionMetrics, DataSourceInput, DataSourceUpdate, DayMetrics,

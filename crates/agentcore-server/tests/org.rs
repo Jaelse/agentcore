@@ -42,6 +42,27 @@ case "$0" in
 esac
 "#;
 
+/// Product manager: hands a specification to Dev on its first turn, and says
+/// when Dev's answer arrives.
+const PM: &str = r#"
+case "$0" in
+  *"is done by"*) echo GOT-RESULT ;;
+  "You have "*) ;;
+  *) call team_hand_off '{"department":"Dev","title":"Login page","spec":"Build a login page. Accept: email + password, errors shown inline."}' ;;
+esac
+"#;
+
+/// Developer: takes work handed to its department and finishes it.
+const BUILDER: &str = r#"
+case "$0" in
+  *"Work handed to your department"*)
+    id=$(printf %s "$0" | grep -o 'handoff [0-9a-f-]\{36\}' | head -n 1 | cut -d' ' -f2)
+    call team_read_handoff "{\"handoff\":\"$id\"}" | grep -q 'errors shown inline' && echo READ-SPEC
+    call team_take_handoff "{\"handoff\":\"$id\"}"
+    call team_finish_handoff "{\"handoff\":\"$id\",\"outcome\":\"done\",\"result\":\"PR 12 adds the login page\"}" ;;
+esac
+"#;
+
 /// Long-running worker: reports progress on the first turn of every
 /// session and says what its prompt told it.
 const GOAL_WORKER: &str = r###"
@@ -164,6 +185,8 @@ fn config(dir: &std::path::Path, db_url: &str, bind: std::net::SocketAddr, node:
         agent("retro-bot", RETRO),
         agent("spender", SPENDER),
         agent("drafter", DRAFTER),
+        agent("pm-bot", PM),
+        agent("builder-bot", BUILDER),
     ];
     config
 }
@@ -771,6 +794,205 @@ async fn routing_policies_decide_what_crosses_between_departments() {
         )
         .await;
     assert_eq!(posted["status"], "delivered");
+    node.cluster.cancel();
+}
+
+#[tokio::test]
+async fn handoffs_wait_for_the_receiving_department() {
+    let Some((_, db_url)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let node = start(dir.path(), &db_url, "n1", 10).await;
+    let product = node
+        .ok("POST", "/org/departments", Some(department("Product", &[])))
+        .await;
+    let dev = node
+        .ok("POST", "/org/departments", Some(department("Dev", &[])))
+        .await;
+    let (pid, did) = (
+        product["id"].as_str().unwrap().to_string(),
+        dev["id"].as_str().unwrap().to_string(),
+    );
+    let pm = node
+        .ok(
+            "POST",
+            &format!("/org/departments/{pid}/agents"),
+            Some(json!({ "name": "pm", "agent": "pm-bot" })),
+        )
+        .await;
+    let builder = node
+        .ok(
+            "POST",
+            &format!("/org/departments/{did}/agents"),
+            Some(json!({ "name": "builder", "agent": "builder-bot" })),
+        )
+        .await;
+
+    // Product works alone: Dev is not running when the work is handed off.
+    node.ok("POST", &format!("/org/departments/{pid}/start"), None)
+        .await;
+    let mut handoffs = Vec::new();
+    for _ in 0..300 {
+        handoffs = node
+            .ok("GET", "/org/handoffs", None)
+            .await
+            .as_array()
+            .cloned()
+            .unwrap();
+        if !handoffs.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    if handoffs.is_empty() {
+        let a = node.agent(pm["id"].as_str().unwrap()).await;
+        let out = match a["session_id"].as_str() {
+            Some(s) => output(&node.events(s).await),
+            None => a.to_string(),
+        };
+        panic!("nothing was handed off; pm: {out}");
+    }
+    assert_eq!(handoffs.len(), 1, "{handoffs:?}");
+    let h = &handoffs[0];
+    assert_eq!(h["status"], "waiting");
+    assert_eq!(h["title"], "Login page");
+    assert_eq!(h["from_name"], "pm (Product)");
+    assert_eq!(h["to_department_name"], "Dev");
+    let hid = h["id"].as_str().unwrap().to_string();
+    let notice = node
+        .messages(&format!("?department={did}"))
+        .await
+        .into_iter()
+        .find(|m| {
+            m["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("Handoff from Product")
+        })
+        .unwrap();
+    assert_eq!(notice["recipients"], json!([builder["id"]]));
+    let open = node
+        .ok(
+            "GET",
+            &format!("/org/handoffs?department={did}&open=true"),
+            None,
+        )
+        .await;
+    assert_eq!(open.as_array().unwrap().len(), 1);
+    assert_eq!(
+        node.agent(builder["id"].as_str().unwrap()).await["status"],
+        Value::Null,
+        "Dev never ran"
+    );
+
+    // Dev becomes available later, finds the work and answers.
+    node.ok("POST", &format!("/org/departments/{did}/start"), None)
+        .await;
+    let mut done = Value::Null;
+    for _ in 0..300 {
+        let all = node.ok("GET", "/org/handoffs", None).await;
+        if all[0]["status"] == "done" {
+            done = all[0].clone();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        done["status"],
+        "done",
+        "{:#?}",
+        node.ok("GET", "/org/handoffs", None).await
+    );
+    assert_eq!(done["taken_by_name"], "builder");
+    assert_eq!(done["result"], "PR 12 adds the login page");
+    let b = node.agent(builder["id"].as_str().unwrap()).await;
+    let out = output(&node.events(b["session_id"].as_str().unwrap()).await);
+    assert!(out.contains("READ-SPEC"), "{out}");
+
+    // The answer goes back to Product, which is woken by it.
+    let pm_id = pm["id"].as_str().unwrap();
+    let mut got = false;
+    for _ in 0..300 {
+        let a = node.agent(pm_id).await;
+        let out = output(&node.events(a["session_id"].as_str().unwrap()).await);
+        if out.contains("GOT-RESULT") {
+            got = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(got, "Product never got Dev's answer");
+    node.ok("POST", &format!("/org/departments/{pid}/stop"), None)
+        .await;
+    node.ok("POST", &format!("/org/departments/{did}/stop"), None)
+        .await;
+
+    // With approval required, a handoff waits for a person first.
+    let store = &node.state.store;
+    let mut input = json!({});
+    for key in ["name", "description", "mission", "policy", "tools"] {
+        input[key] = product[key].clone();
+    }
+    input["routing"] = json!({ "approval": "all" });
+    node.ok("PUT", &format!("/org/departments/{pid}"), Some(input))
+        .await;
+    let pm_agent = store.get_agent(pm_id.parse().unwrap()).await.unwrap();
+    let held = agentcore_server::handoffs::hand_off(store, &pm_agent, "dev", "Signup", "Spec A")
+        .await
+        .unwrap();
+    assert_eq!(held.status, agentcore_core::HandoffStatus::Held);
+    node.ok(
+        "POST",
+        &format!("/org/messages/{}/approve", held.message_id.unwrap()),
+        None,
+    )
+    .await;
+    assert_eq!(
+        store.get_handoff(held.id).await.unwrap().status,
+        agentcore_core::HandoffStatus::Waiting
+    );
+    let refused = agentcore_server::handoffs::hand_off(store, &pm_agent, "Dev", "Billing", "B")
+        .await
+        .unwrap();
+    node.ok(
+        "POST",
+        &format!("/org/messages/{}/reject", refused.message_id.unwrap()),
+        None,
+    )
+    .await;
+    let refused = store.get_handoff(refused.id).await.unwrap();
+    assert_eq!(refused.status, agentcore_core::HandoffStatus::Cancelled);
+    assert_eq!(refused.result, "rejected by root");
+
+    // People can withdraw open work; closed work stays closed.
+    let (code, _) = node
+        .call(
+            "POST",
+            &format!("/org/handoffs/{}/cancel", held.id),
+            "viewer-token",
+            None,
+        )
+        .await;
+    assert_eq!(code, 403);
+    let cancelled = node
+        .ok(
+            "POST",
+            &format!("/org/handoffs/{}/cancel", held.id),
+            Some(json!({ "reason": "not needed" })),
+        )
+        .await;
+    assert_eq!(cancelled["status"], "cancelled");
+    assert_eq!(cancelled["result"], "cancelled by root: not needed");
+    let (code, _) = node
+        .call(
+            "POST",
+            &format!("/org/handoffs/{hid}/cancel"),
+            "admin-token",
+            None,
+        )
+        .await;
+    assert_eq!(code, 409);
     node.cluster.cancel();
 }
 
