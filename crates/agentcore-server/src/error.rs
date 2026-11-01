@@ -23,6 +23,11 @@ impl ApiError {
         &self.message
     }
 
+    /// The structured body, for errors that carry one.
+    pub fn body(&self) -> Option<&serde_json::Value> {
+        self.body.as_ref()
+    }
+
     /// An error with a structured JSON body (must contain `error`).
     pub fn with_body(status: StatusCode, body: serde_json::Value) -> Self {
         Self {

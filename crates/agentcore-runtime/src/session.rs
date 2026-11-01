@@ -1394,10 +1394,15 @@ impl Session {
             }
             *lock(&self.proposal) = Some(proposal.clone());
             let _ = self.emit(EventKind::PullRequestProposed { proposal });
+            let next = self
+                .role
+                .as_ref()
+                .map(|r| r.delivery.after_proposal())
+                .unwrap_or("A human reviews your changes and delivers the pull request.");
             return ActionOutcome::Succeeded {
                 output: serde_json::json!({
                     "status": "recorded",
-                    "next": "A human reviews your changes and delivers the pull request. You are done unless they ask for more."
+                    "next": format!("{next} You are done unless they ask for more.")
                 }),
             };
         }
