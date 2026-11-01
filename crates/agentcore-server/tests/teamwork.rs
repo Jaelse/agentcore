@@ -630,10 +630,18 @@ async fn agent_delivers_its_own_pull_request() {
     } = issue_session(dir.path(), db, api, TURN_TWO_AUTO, true).await;
 
     // Nobody clicks Deliver: the failed check goes back to the agent, it
-    // fixes the commit and proposes again, and the pull request opens.
+    // fixes the commit and proposes again, and the pull request opens. The
+    // card moves in a later request, so wait for it as well.
     let mut created = false;
     for _ in 0..400 {
-        if log.lock().unwrap().iter().any(|(w, _)| w == "create pr") {
+        let done = {
+            let log = log.lock().unwrap();
+            log.iter().any(|(w, _)| w == "create pr")
+                && log
+                    .iter()
+                    .any(|(w, v)| w == "move card" && v["o"] == "opt-In Review")
+        };
+        if done {
             created = true;
             break;
         }
@@ -641,7 +649,7 @@ async fn agent_delivers_its_own_pull_request() {
     }
     assert!(
         created,
-        "no pull request was opened: {:?}",
+        "no pull request was opened and moved to review: {:?}",
         log.lock().unwrap()
     );
     assert_eq!(
