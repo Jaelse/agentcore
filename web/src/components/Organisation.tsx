@@ -6,6 +6,7 @@ import {
   type RoutingPolicy,
 } from "../types";
 import type {
+  Handoff,
   Department,
   DepartmentFile,
   Me,
@@ -345,6 +346,7 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
             )}
             {org.departments.length > 0 && <Goals org={org} canEdit={canOperate} act={act} />}
             <HeldMessages org={org} tick={tick} canDecide={canOperate} act={act} onError={onError} />
+            {org.departments.length > 1 && <Handoffs tick={tick} canOperate={canOperate} act={act} onError={onError} />}
             <Feed org={org} tick={tick} canPost={canOperate} onError={onError} />
           </div>
         )}
@@ -690,6 +692,7 @@ function DepartmentRoom({
       <div className="room-grid">
         <Feed org={org} dept={dept} tick={tick} canPost={canOperate} onError={onError} />
         <div className="side-stack">
+          <Handoffs dept={dept} tick={tick} canOperate={canOperate} act={act} onError={onError} />
           <CheckIns dept={dept} org={org} canEdit={canOperate} act={act} />
           {dept.project_id && dept.tools.includes("sandbox") && (
             <WorkItems dept={dept} tick={tick} canOperate={canOperate} act={act} onOpenSession={onOpenSession} onError={onError} />
@@ -1433,7 +1436,114 @@ function WorkItems({
           </li>
         ))}
       </ul>
-      <label className="small muted">
+      <label className="inline-check small muted">
+        <input type="checkbox" checked={showClosed} onChange={(e) => setShowClosed(e.target.checked)} /> show closed
+      </label>
+    </section>
+  );
+}
+
+const HANDOFF_STATUS: Record<Handoff["status"], { label: string; tone: string }> = {
+  held: { label: "waiting for approval", tone: "status-awaiting_approval" },
+  waiting: { label: "waiting to be taken", tone: "status-awaiting_input" },
+  taken: { label: "in progress", tone: "status-running" },
+  done: { label: "done", tone: "status-completed" },
+  declined: { label: "declined", tone: "status-failed" },
+  cancelled: { label: "cancelled", tone: "" },
+};
+
+/** Work handed between departments: what a department received (it waits
+ * there until a worker takes it) and what it handed to others. */
+function Handoffs({
+  dept,
+  tick,
+  canOperate,
+  act,
+  onError,
+}: {
+  dept?: Department;
+  tick: number;
+  canOperate: boolean;
+  act: (fn: () => Promise<unknown>) => Promise<void>;
+  onError: (e: unknown) => void;
+}) {
+  const [items, setItems] = useState<Handoff[]>([]);
+  const [showClosed, setShowClosed] = useState(false);
+  const deptId = dept?.id;
+  useEffect(() => {
+    api.handoffs({ department: deptId, open: !showClosed }).then(setItems).catch(onError);
+  }, [deptId, tick, showClosed, onError]);
+  const received = deptId ? items.filter((h) => h.to_department === deptId) : items;
+  const sent = deptId ? items.filter((h) => h.from_department === deptId) : [];
+  const open = (hs: Handoff[]) => hs.filter((h) => ["held", "waiting", "taken"].includes(h.status)).length;
+
+  const item = (h: Handoff, other: "from" | "to" | "both") => {
+    const status = HANDOFF_STATUS[h.status];
+    const closed = !["held", "waiting", "taken"].includes(h.status);
+    return (
+      <li key={h.id} className={closed ? "muted" : ""}>
+        <div className="work-item-title">
+          <strong title={h.title}>{h.title}</strong>
+          <span className={`pill ${status.tone}`}>{status.label}</span>
+        </div>
+        <div className="muted small">
+          {other === "from" && <>from {h.from_name}</>}
+          {other === "to" && <>to {h.to_department_name ?? "a removed department"}</>}
+          {other === "both" && (
+            <>
+              {h.from_department_name ?? "?"} → {h.to_department_name ?? "?"}
+            </>
+          )}
+          {" · "}
+          {new Date(h.created_at).toLocaleString()}
+          {h.taken_by_name && ` · ${h.status === "taken" ? "taken" : "done"} by ${h.taken_by_name}`}
+        </div>
+        <details className="handoff-spec">
+          <summary className="small">specification</summary>
+          <div className="bubble-body">{h.spec}</div>
+        </details>
+        {h.result && <div className="small handoff-result">{h.result}</div>}
+        {canOperate && !closed && (
+          <div className="work-item-actions">
+            <button
+              className="link small"
+              onClick={() => {
+                const reason = prompt(`Cancel "${h.title}"? Optionally say why (the departments see it).`);
+                if (reason !== null) void act(() => api.cancelHandoff(h.id, reason));
+              }}
+            >
+              cancel
+            </button>
+          </div>
+        )}
+      </li>
+    );
+  };
+
+  return (
+    <section className="card side-panel">
+      <h3 className="section-title">Handoffs</h3>
+      <p className="muted small">
+        {dept
+          ? "Work handed between departments. What is handed here waits until one of its workers takes it, even while the department is paused or asleep; the result goes back to the sender."
+          : "Work departments hand to each other. Each handoff waits for the receiving department until one of its workers takes it."}
+      </p>
+      {dept ? (
+        <>
+          <h4 className="small handoff-heading">Received{open(received) > 0 && ` · ${open(received)} open`}</h4>
+          {received.length === 0 && <p className="muted small">Nothing handed to {dept.name}.</p>}
+          <ul className="work-items">{received.map((h) => item(h, "from"))}</ul>
+          <h4 className="small handoff-heading">Handed off{open(sent) > 0 && ` · ${open(sent)} open`}</h4>
+          {sent.length === 0 && <p className="muted small">{dept.name} has not handed anything off.</p>}
+          <ul className="work-items">{sent.map((h) => item(h, "to"))}</ul>
+        </>
+      ) : (
+        <>
+          {items.length === 0 && <p className="muted small">No open handoffs.</p>}
+          <ul className="work-items">{items.map((h) => item(h, "both"))}</ul>
+        </>
+      )}
+      <label className="inline-check small muted">
         <input type="checkbox" checked={showClosed} onChange={(e) => setShowClosed(e.target.checked)} /> show closed
       </label>
     </section>

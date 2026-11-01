@@ -90,7 +90,9 @@ its policy with `policy = "..."`; see [Ways of working](WAYS_OF_WORKING.md).
 Department agents use tool calls named `team_list_colleagues`,
 `team_read_messages`, `team_send_message`, `team_send_to_department`,
 `team_list_work_items`, `team_assign_work_item`, `team_list_files`, `team_read_file`,
-`team_write_file`, `team_list_goals` and `team_report_progress`, plus
+`team_write_file`, `team_list_goals`, `team_report_progress` and the handoff
+tools (`team_hand_off`, `team_list_handoffs`, `team_read_handoff`,
+`team_take_handoff`, `team_finish_handoff`), plus
 `data_list_sources`, `data_query`, `insights_*`, `outbox_*`, `release_*` and `launch_*` where the
 department was granted business data, `insights`, a channel, a product or announces one. Drafting
 (`outbox_*`) sends nothing: people approve each message in the outbox. Proposing a

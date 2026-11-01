@@ -365,9 +365,9 @@ pub async fn decide_held(
                     .collect(),
                 RouteVerdict::Hold(_) => Vec::new(),
                 RouteVerdict::Deny(why) => {
-                    store
-                        .reject_message(id, &format!("approved by {by}, but now refused: {why}"))
-                        .await?;
+                    let decision = format!("approved by {by}, but now refused: {why}");
+                    store.reject_message(id, &decision).await?;
+                    crate::handoffs::notice_decided(store, id, false, &decision).await;
                     return Err(SendError::Refused(why));
                 }
             };
@@ -376,6 +376,7 @@ pub async fn decide_held(
             .release_message(id, &pairs, &format!("approved by {by}"))
             .await?
             .ok_or_else(|| SendError::Invalid("someone else already decided".into()))?;
+        crate::handoffs::notice_decided(store, id, true, &released.decision).await;
         notify_message(store, &released, sender_dept, &recipients).await;
         released
     } else {
@@ -383,6 +384,7 @@ pub async fn decide_held(
             .reject_message(id, &format!("rejected by {by}"))
             .await?
             .ok_or_else(|| SendError::Invalid("someone else already decided".into()))?;
+        crate::handoffs::notice_decided(store, id, false, &rejected.decision).await;
         notify_message(store, &rejected, sender_dept, &[]).await;
         rejected
     };
@@ -893,6 +895,57 @@ impl ToolHandler for TeamTools {
             json!({ "department": text, "text": text }),
             &["department", "text"],
         ));
+        tools.extend([
+            def(
+                "team_hand_off",
+                "Hand work to another department: a self-contained specification of what to \
+                 make (goal, scope, requirements, acceptance criteria, open questions). It \
+                 waits for that department until one of its workers takes it, even if the \
+                 department is not running now, and their answer comes back to your \
+                 department as a message. It passes the message router like any message to \
+                 another department.",
+                json!({
+                    "department": text,
+                    "title": { "type": "string", "description": "Short name of the work" },
+                    "spec": { "type": "string", "description": "The specification" },
+                }),
+                &["department", "title", "spec"],
+            ),
+            def(
+                "team_list_handoffs",
+                "Work handed to your department that is still open (waiting or taken, with \
+                 who took it), and what your department handed to others with its status and \
+                 result.",
+                json!({}),
+                &[],
+            ),
+            def(
+                "team_read_handoff",
+                "Read a handoff (id or title) your department sent or received, with its whole \
+                 specification.",
+                json!({ "handoff": text }),
+                &["handoff"],
+            ),
+            def(
+                "team_take_handoff",
+                "Take a handoff (id or title) for your department: you work on it now, and \
+                 your colleagues see that. Take one a colleague took only to carry it on.",
+                json!({ "handoff": text }),
+                &["handoff"],
+            ),
+            def(
+                "team_finish_handoff",
+                "Close a handoff your department received. `outcome`: `done` or `declined`; \
+                 `result`: what was made and where (pull request, files), or why it will not \
+                 be done. The result is sent back to the department that handed it off.",
+                json!({
+                    "handoff": text,
+                    "outcome": { "type": "string", "enum": ["done", "declined"] },
+                    "result": text,
+                }),
+                &["handoff", "outcome", "result"],
+            ),
+        ]);
         if self.files {
             tools.extend([
                 def(
@@ -933,6 +986,79 @@ impl ToolHandler for TeamTools {
             "team_send_message" => self.send_message(arguments).await,
             "team_read_messages" => self.read_messages().await,
             "team_send_to_department" => self.send_to_department(arguments).await,
+            "team_hand_off" => {
+                let (_, me) = self.me().await?;
+                let h = crate::handoffs::hand_off(
+                    &self.store,
+                    &me,
+                    &text_arg(arguments, "department")?,
+                    &text_arg(arguments, "title")?,
+                    &text_arg(arguments, "spec")?,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+                Ok(match h.status {
+                    agentcore_core::HandoffStatus::Held => json!({
+                        "id": h.id,
+                        "status": h.status,
+                        "note": "Your department's routing policy asks a person to approve it \
+                                 first. It waits for the other department after that: carry on.",
+                    }),
+                    _ => json!({
+                        "id": h.id,
+                        "status": h.status,
+                        "note": "It waits for the department until one of its workers takes it; \
+                                 their answer comes back to your department as a message.",
+                    }),
+                })
+            }
+            "team_list_handoffs" => {
+                let (org, me) = self.me().await?;
+                let all = self
+                    .store
+                    .list_handoffs(Some(me.department_id), false)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let brief = |h: &agentcore_core::Handoff| {
+                    let mut v = crate::handoffs::handoff_json(&org, h);
+                    v.as_object_mut().map(|o| o.remove("spec"));
+                    v
+                };
+                Ok(json!({
+                    "received": all.iter()
+                        .filter(|h| h.to_department == me.department_id && h.status.is_open()
+                            && h.status != agentcore_core::HandoffStatus::Held)
+                        .map(brief).collect::<Vec<_>>(),
+                    "sent": all.iter()
+                        .filter(|h| h.from_department == me.department_id)
+                        .take(20).map(brief).collect::<Vec<_>>(),
+                }))
+            }
+            "team_read_handoff" => {
+                let (org, me) = self.me().await?;
+                let all = self
+                    .store
+                    .list_handoffs(Some(me.department_id), false)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let h = crate::handoffs::find(&all, &text_arg(arguments, "handoff")?)?;
+                Ok(crate::handoffs::handoff_json(&org, h))
+            }
+            "team_take_handoff" => {
+                let (_, me) = self.me().await?;
+                crate::handoffs::take(&self.store, &me, &text_arg(arguments, "handoff")?).await
+            }
+            "team_finish_handoff" => {
+                let (_, me) = self.me().await?;
+                crate::handoffs::finish(
+                    &self.store,
+                    &me,
+                    &text_arg(arguments, "handoff")?,
+                    &text_arg(arguments, "outcome")?,
+                    &text_arg(arguments, "result")?,
+                )
+                .await
+            }
             "team_work_item" => self.work_item(arguments).await,
             "team_finish_work_item" => self.finish_work_item(arguments).await,
             "team_list_work_items" => self.list_work_items().await,
@@ -1064,6 +1190,8 @@ pub struct StartContext<'a> {
     pub continuing: Option<&'a str>,
     /// Messages that arrived while the agent was asleep.
     pub messages: &'a [OrgMessage],
+    /// Open handoffs to the agent's department (not held).
+    pub handoffs: &'a [agentcore_core::Handoff],
     /// Business data the department may read.
     pub data_sources: &'a [agentcore_core::DataSource],
     /// Budgets that cover this department, and the currency.
@@ -1220,7 +1348,13 @@ pub fn compose_prompt(
                 "## Working together\n\n\
                  - `team_send_message(to, text)`: a colleague's name or `everyone`.\n\
                  - `team_send_to_department(department, text)`: another department (or `all`).\n\
-                 - `team_read_messages()`: new messages; `team_list_colleagues()`: who is here now.\n",
+                 - `team_read_messages()`: new messages; `team_list_colleagues()`: who is here now.\n\
+                 - `team_hand_off(department, title, spec)`: hand finished work on to another \
+                 department, as a specification they can act on without asking you. It waits \
+                 for them until they are available; their answer comes back as a message.\n\
+                 - `team_list_handoffs`, `team_read_handoff`, `team_take_handoff`, \
+                 `team_finish_handoff`: work handed to your department. Take a handoff when you \
+                 start on it and finish it with the result, so the sender knows.\n",
             );
             if dept.grants(TOOL_FILES) {
                 p.push_str(
@@ -1436,6 +1570,27 @@ pub fn compose_prompt(
                 " and the recent messages (`team_read_messages`), then carry on.\n"
             },
         );
+    }
+    if !start.handoffs.is_empty() {
+        p.push_str(
+            "\n## Work handed to your department\n\nOther departments handed this work to \
+             yours and are waiting for it (read the specification with `team_read_handoff`):\n\n",
+        );
+        for h in start.handoffs {
+            let state = match (&h.taken_by_name, h.taken_by == Some(agent.id)) {
+                (Some(_), true) => "taken by you: carry it on".to_string(),
+                (Some(who), false) => format!("taken by {who}"),
+                (None, _) => "waiting: nobody has taken it".to_string(),
+            };
+            p.push_str(&format!(
+                "- \"{}\" from {} ({}), handoff {}: {state}\n",
+                h.title,
+                org.department(h.from_department)
+                    .map_or("a removed department", |d| d.name.as_str()),
+                h.created_at.format("%Y-%m-%d %H:%M UTC"),
+                h.id
+            ));
+        }
     }
     if !start.messages.is_empty() {
         p.push_str("\n## New messages\n\n");
@@ -1679,10 +1834,18 @@ async fn build_agent_session(
     let currency = state.store.currency().await?;
     // Messages that arrived while the agent was not running start it off.
     let pending = state.store.pending_messages(agent.id).await?;
+    let handoffs: Vec<agentcore_core::Handoff> = state
+        .store
+        .list_handoffs(Some(dept.id), true)
+        .await?
+        .into_iter()
+        .filter(|h| h.to_department == dept.id && h.status != agentcore_core::HandoffStatus::Held)
+        .collect();
     let start = StartContext {
         repo: repo.as_ref(),
         continuing,
         messages: &pending,
+        handoffs: &handoffs,
         data_sources: &data_sources,
         budgets: &budgets,
         currency: &currency,

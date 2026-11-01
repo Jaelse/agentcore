@@ -217,6 +217,28 @@ export interface OrgMessage {
   recipients: string[];
 }
 
+/** Work one department hands to another: a specification that waits for
+ * the receiving department until one of its workers takes it. */
+export interface Handoff {
+  id: string;
+  from_department: string;
+  from_department_name: string | null;
+  from_name: string;
+  to_department: string;
+  to_department_name: string | null;
+  title: string;
+  spec: string;
+  status: "held" | "waiting" | "taken" | "done" | "declined" | "cancelled";
+  message_id: string | null;
+  taken_by: string | null;
+  taken_by_name: string | null;
+  taken_at: string | null;
+  /** What the receivers did, or why not. */
+  result: string;
+  closed_at: string | null;
+  created_at: string;
+}
+
 /** Work a department does on its repository: the department keeps it
  * (branch, last checkpoint, pull request); a session borrows it. */
 export interface WorkItem {
