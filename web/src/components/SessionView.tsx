@@ -36,6 +36,7 @@ export function SessionView({ info, me, archived = false, onChanged, onArchivedC
   const [pausing, setPausing] = useState(false);
   const [detail, setDetail] = useState<Detail | null>(null);
   const [delivering, setDelivering] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
   const ended = TERMINAL.includes(info.status);
   const canAct = me.role !== "viewer";
   const ctx = info.context ?? {};
@@ -83,6 +84,17 @@ export function SessionView({ info, me, archived = false, onChanged, onArchivedC
     }
   };
 
+  const detailsToggle = (
+    <button
+      className="btn ghost"
+      onClick={() => setShowDetails(!showDetails)}
+      aria-expanded={showDetails}
+      title="The task and system prompt, who started the session, and its counters"
+    >
+      {showDetails ? "Hide task & details" : "Task & details"}
+    </button>
+  );
+
   return (
     <div className="session">
       <section className="session-header card">
@@ -92,7 +104,6 @@ export function SessionView({ info, me, archived = false, onChanged, onArchivedC
             <StatusPill status={info.status} />
             <span className={`dot ${connected ? "on" : "off"}`} title={connected ? "Live" : "Reconnecting"} />
           </div>
-          <p className="session-task-full">{info.task}</p>
           {(ctx.project_name || ctx.issue || ctx.role) && (
             <div className="context-chips">
               {ctx.project_name && <span className="chip">📁 {ctx.project_name}</span>}
@@ -111,6 +122,9 @@ export function SessionView({ info, me, archived = false, onChanged, onArchivedC
               )}
             </div>
           )}
+          {showDetails && (
+            <>
+              <p className="session-task-full">{info.task}</p>
           <dl className="meta">
             <div>
               <dt>Policy</dt>
@@ -137,6 +151,8 @@ export function SessionView({ info, me, archived = false, onChanged, onArchivedC
               <dd className="mono small">{info.id}</dd>
             </div>
           </dl>
+            </>
+          )}
         </div>
         {canAct && ended && (
           <div className="session-actions">
@@ -158,6 +174,7 @@ export function SessionView({ info, me, archived = false, onChanged, onArchivedC
             >
               {archived ? "Restore" : "Archive"}
             </button>
+            {detailsToggle}
           </div>
         )}
         {canAct && !ended && (
@@ -195,7 +212,11 @@ export function SessionView({ info, me, archived = false, onChanged, onArchivedC
             <span className="stop-icon" aria-hidden />
             {stopping ? "Stopping…" : "STOP AGENT"}
           </button>
+          {detailsToggle}
           </div>
+        )}
+        {!canAct && (
+          <div className="session-actions">{detailsToggle}</div>
         )}
       </section>
 
