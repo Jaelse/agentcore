@@ -75,6 +75,7 @@ announce_on_issue = true                 # comment on the issue at both points
 kind = "pull_request"                    # or "none" (reports, GitHub updates)
 branch = "agent/{issue}-{slug}"
 draft = true
+auto = true                              # deliver on the agent's word (see below)
 
 [[checks]]
 name = "Commit messages follow the convention"
@@ -175,6 +176,14 @@ sequenceDiagram
    agent's branch, opens or updates the pull request (with the issue link and
    an AI disclosure), and moves the card to *In Review*. If they fail, tell the
    agent what to fix and deliver again.
+
+   With `auto = true` under `[delivery]` (the `developer` role has it) nobody
+   clicks *Deliver*: once the agent has called `propose_pull_request` and its
+   turn ends, agentcore runs the checks and opens the (draft) pull request by
+   itself. Failed checks go back to the agent as a message; it fixes them and
+   proposes again, which updates the same pull request. The agent still has no
+   GitHub credentials, and merging stays with people. Set `auto = false` to
+   deliver from the session page instead.
 7. **Code review happens on GitHub**, like for anyone else. To address review
    comments, continue the session and deliver again: the same pull request is
    updated.

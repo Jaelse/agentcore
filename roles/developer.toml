@@ -49,6 +49,9 @@ announce_on_issue = true
 kind = "pull_request"
 branch = "agent/{issue}-{slug}"
 draft = true
+# Open the pull request as soon as the agent proposes it and the checks pass;
+# people review it on GitHub. false: a person delivers from the session page.
+auto = true
 
 [[checks]]
 name = "Commit messages follow the convention"

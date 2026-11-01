@@ -1161,8 +1161,8 @@ pub struct RepoInfo {
     pub base_branch: String,
     /// The worker's own branch, when it has a checkout.
     pub work_branch: Option<String>,
-    /// The role delivers pull requests.
-    pub delivers: bool,
+    /// The role delivers pull requests: what happens after a proposal.
+    pub delivers: Option<&'static str>,
     /// GitHub tools the worker has.
     pub tools: Vec<String>,
     /// The work item the checkout belongs to.
@@ -1326,14 +1326,15 @@ pub fn compose_prompt(
                         ));
                     }
                 }
-                if repo.delivers {
-                    p.push_str(
+                if let Some(after_proposal) = repo.delivers {
+                    p.push_str(&format!(
                         "Your work leaves the sandbox as a pull request that a person reviews: \
-                         when a change is ready, make sure the checks pass, then call \
-                         `propose_pull_request` with a title and description, and tell your \
-                         colleagues. Keep each change focused; start the next one after it is \
-                         delivered.\n",
-                    );
+                         when a change is ready, make sure the checks pass, commit, then call \
+                         `propose_pull_request` with a title and description, end your turn, \
+                         and tell your colleagues. You cannot push yourself: you have no \
+                         credentials, by design. {after_proposal} Keep each change focused; \
+                         start the next one after it is delivered.\n",
+                    ));
                 }
                 if !repo.tools.is_empty() {
                     p.push_str(&format!(
@@ -1813,8 +1814,9 @@ async fn build_agent_session(
         repo = Some(RepoInfo {
             repository: project.repository(),
             base_branch: project.default_branch.clone(),
-            delivers: work_branch.is_some()
-                && role.delivery.kind == agentcore_roles::DeliveryKind::PullRequest,
+            delivers: (work_branch.is_some()
+                && role.delivery.kind == agentcore_roles::DeliveryKind::PullRequest)
+                .then(|| role.delivery.after_proposal()),
             work_branch,
             tools: github_tools,
             work: work.map(|w| WorkPrompt {

@@ -5,10 +5,11 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agentcore_core::{IssueRef, SessionContext, SessionId, SessionStatus};
+use agentcore_core::{IssueRef, Principal, SessionContext, SessionId, SessionStatus};
 use agentcore_roles::{DeliveryKind, IssueContext, Role, Stage, WorkItem, tools_for};
 use agentcore_runtime::{
-    CreateSession, PreparedWorkspace, Session, SessionOptions, ToolHandler, WorkspaceSetup,
+    CreateSession, PreparedWorkspace, RuntimeError, Session, SessionOptions, ToolHandler,
+    WorkspaceSetup,
 };
 use agentcore_store::{BoardConfig, GitHubConfig, GitHubUpdate, Project, ProjectInput};
 use async_trait::async_trait;
@@ -184,7 +185,7 @@ fn all_tool_definitions() -> Vec<Value> {
         ),
         def(
             "propose_pull_request",
-            "Propose the pull request for your committed work: title and description written the way this team writes pull requests. A human reviews and delivers it.",
+            "Propose the pull request for your committed work: title and description written the way this team writes pull requests. The reply says what happens next.",
             json!({ "title": text, "body": text }),
             &["title", "body"],
         ),
@@ -883,10 +884,13 @@ pub struct DeliverRequest {
     pub draft: Option<bool>,
 }
 
+/// Push the session's branch and open (or update) its pull request, after
+/// the team's checks pass. `by` is the person delivering, or agentcore itself
+/// when the role delivers on the agent's word.
 async fn deliver(
     state: &AppState,
     session: &Session,
-    caller: &Caller,
+    by: Principal,
     req: DeliverRequest,
 ) -> ApiResult<Value> {
     let ctx = session.context();
@@ -925,7 +929,7 @@ async fn deliver(
         .unwrap_or_default();
 
     // 1. The team's checks.
-    let (passed, results) = session.run_checks(caller.principal()).await?;
+    let (passed, results) = session.run_checks(by.clone()).await?;
     if !passed {
         return Err(ApiError::with_body(
             StatusCode::CONFLICT,
@@ -975,11 +979,14 @@ async fn deliver(
     {
         full_body.push_str(&format!("\n\nCloses #{}", issue.number));
     }
+    let delivered = match &by {
+        Principal::Human(name) => format!("delivered by {name} after review"),
+        _ => "opened by agentcore once the team's checks passed".to_string(),
+    };
     full_body.push_str(&format!(
-        "\n\n---\n🤖 Prepared by an AI agent in agentcore (role: {}, session `{}`) and delivered by {} after review.",
+        "\n\n---\n🤖 Prepared by an AI agent in agentcore (role: {}, session `{}`) and {delivered}.",
         role.display_title(),
         session.id(),
-        caller.name
     ));
     let base = ctx
         .base_branch
@@ -1016,12 +1023,7 @@ async fn deliver(
             .await?;
         crate::org::notify(&state.store, json!({ "kind": "work_items" })).await;
     }
-    session.record_delivery(
-        caller.principal(),
-        branch.clone(),
-        head.clone(),
-        Some(pr_url.clone()),
-    )?;
+    session.record_delivery(by, branch.clone(), head.clone(), Some(pr_url.clone()))?;
     state.persist(session).await;
     Ok(
         json!({ "branch": branch, "commit": head, "pull_request": { "number": pr_number, "url": pr_url }, "checks": results }),
@@ -1266,12 +1268,83 @@ pub async fn deliver_session(
     let result = deliver(
         &state,
         &session,
-        &caller,
+        caller.principal(),
         body.map(|b| b.0).unwrap_or_default(),
     )
     .await;
     state.delivering.lock().await.remove(&id);
     Ok(Json(result?))
+}
+
+/// Deliver what the agent proposed, without a person: for roles with
+/// `delivery.auto`, once the turn that proposed it has ended. Failed checks
+/// and other refusals go back to the agent as a message, so it can fix them
+/// and propose again; a delivery that worked does not wake it. Returns false when the session was busy and nothing
+/// was tried (the caller tries again when it next waits for input).
+pub(crate) async fn auto_deliver(state: &AppState, session: &Session) -> bool {
+    if session.status() != SessionStatus::AwaitingInput {
+        return false;
+    }
+    let id = session.id();
+    if !state.delivering.lock().await.insert(id) {
+        return true;
+    }
+    let result = deliver(state, session, Principal::System, DeliverRequest::default()).await;
+    state.delivering.lock().await.remove(&id);
+    let err = match result {
+        Ok(done) => {
+            tracing::info!(session = %id, pull_request = %done["pull_request"]["url"], "delivered automatically");
+            return true;
+        }
+        // Busy again (a message started its next turn): after that turn.
+        Err(err) if err.message() == RuntimeError::NotAwaitingInput.to_string() => return false,
+        Err(err) => err,
+    };
+    tracing::warn!(session = %id, error = %err.message(), "automatic delivery failed");
+    let failed: Vec<String> = err
+        .body()
+        .and_then(|b| b["checks"].as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter(|c| c["passed"] == false && c["optional"] != true && c["skipped"] != true)
+        .map(|c| {
+            format!(
+                "- {}: {}",
+                c["name"].as_str().unwrap_or("?"),
+                c["detail"].as_str().unwrap_or_default().trim()
+            )
+        })
+        .collect();
+    let text = if failed.is_empty() {
+        format!(
+            "Your pull request could not be opened: {}. Fix what you can and propose again; \
+             if it is outside your control, tell the people supervising you.",
+            err.message()
+        )
+    } else {
+        format!(
+            "Your pull request was not opened: these checks failed.\n{}\n\nFix them, commit \
+             and call `propose_pull_request` again.",
+            failed.join("\n")
+        )
+    };
+    tell_agent(session, &text);
+    true
+}
+
+/// A note from agentcore to the agent, starting its next turn.
+fn tell_agent(session: &Session, text: &str) {
+    let note = agentcore_core::DeliveredMessage {
+        message_id: uuid::Uuid::now_v7(),
+        from: "agentcore".into(),
+        to: "you".into(),
+        scope: agentcore_core::MessageScope::Internal,
+        text: text.into(),
+        sent_at: chrono::Utc::now(),
+    };
+    if let Err(err) = session.deliver_messages(vec![note]) {
+        tracing::warn!(session = %session.id(), error = %err, "could not tell the agent about its delivery");
+    }
 }
 
 /// A workspace setup that clones `project` into the session's workspace on

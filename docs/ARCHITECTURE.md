@@ -403,6 +403,12 @@ sequenceDiagram
 Delivery is possible while the agent waits for input. After review comments,
 continue the session and deliver again: the same pull request is updated.
 
+Roles with `delivery.auto` skip the operator: when a turn in which the agent
+called `propose_pull_request` ends, the server runs the same steps as
+`System` (`teamwork::auto_deliver`, started from the session follower in
+`sessions.rs`). The outcome (the pull request link, or the failed checks) is
+sent to the agent as a message, which starts its next turn.
+
 ## Persistence
 
 ```mermaid

@@ -101,6 +101,10 @@ pub struct Delivery {
     /// Branch name; `{issue}`, `{slug}` and `{session}` are substituted.
     pub branch: String,
     pub draft: bool,
+    /// Deliver on the agent's word: once it has proposed a pull request and
+    /// its turn ends, agentcore runs the checks, pushes the branch and opens
+    /// the pull request without waiting for a person. Off: a person delivers.
+    pub auto: bool,
 }
 
 impl Default for Delivery {
@@ -109,6 +113,20 @@ impl Default for Delivery {
             kind: DeliveryKind::None,
             branch: "agent/{issue}-{slug}".into(),
             draft: true,
+            auto: false,
+        }
+    }
+}
+
+impl Delivery {
+    /// What happens after `propose_pull_request`, as told to the agent.
+    pub fn after_proposal(&self) -> &'static str {
+        if self.auto {
+            "When your turn ends, agentcore runs the team's checks, pushes your branch and \
+             opens the pull request. If a check fails you get a message saying which: fix \
+             it, commit and propose again. People review the pull request on GitHub."
+        } else {
+            "A human reviews your changes and delivers the pull request."
         }
     }
 }
@@ -429,13 +447,17 @@ pub fn compose_prompt(role: &Role, docs: &[RepoDoc], item: &WorkItem) -> String 
     }
     out.push_str("# When you are done\n\n");
     match role.delivery.kind {
-        DeliveryKind::PullRequest => out.push_str(
-            "Commit your work on the current branch following the team's commit conventions. \
-             Do not push: you have no credentials, by design. Then call the \
-             `propose_pull_request` tool with a title and a description written the way \
-             this team writes pull requests (use the repository's pull request template if \
-             there is one). A human reviews your changes and delivers them.\n",
-        ),
+        DeliveryKind::PullRequest => {
+            out.push_str(
+                "Commit your work on the current branch following the team's commit \
+                 conventions. Do not push: you have no credentials, by design. Then call the \
+                 `propose_pull_request` tool with a title and a description written the way \
+                 this team writes pull requests (use the repository's pull request template \
+                 if there is one), then end your turn. ",
+            );
+            out.push_str(role.delivery.after_proposal());
+            out.push('\n');
+        }
         DeliveryKind::None => out.push_str(
             "Summarise what you did and anything a human should review. Your output stays \
              in agentcore unless you used a tool to publish it.\n",

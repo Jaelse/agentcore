@@ -194,16 +194,38 @@ async fn http(method: &str, url: &str, token: &str, body: Option<Value>) -> (u16
     )
 }
 
-#[tokio::test]
-async fn agent_works_an_issue_and_delivers_a_pull_request() {
-    let Some((_, db)) = agentcore_store::testing::fresh_store().await else {
-        return;
-    };
-    let dir = tempfile::tempdir().unwrap();
-    let bare = remote(dir.path());
-    let log: Log = Arc::default();
-    let api = mock_github(log.clone()).await;
+/// The roles of this repository, with `delivery.auto` set as given (tests of
+/// manual delivery turn it off).
+fn roles(dir: &Path, auto: bool) -> std::path::PathBuf {
+    let src = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../roles"));
+    let out = dir.join(format!("roles-{auto}"));
+    std::fs::create_dir_all(&out).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let path = entry.unwrap().path();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let text = text.replace("\nauto = true", &format!("\nauto = {auto}"));
+        std::fs::write(out.join(path.file_name().unwrap()), text).unwrap();
+    }
+    out
+}
 
+struct IssueSession {
+    state: AppState,
+    base: String,
+    sid: String,
+    branch: String,
+}
+
+/// A server with GitHub connected and a project on `acme/demo`, and an
+/// operator's session on issue #7 (turn one: commit with a bad message and
+/// propose a pull request; `follow_up` for the next turns).
+async fn issue_session(
+    dir: &Path,
+    db: String,
+    api: String,
+    follow_up: &str,
+    auto: bool,
+) -> IssueSession {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let mut config: Config = toml::from_str("").unwrap();
@@ -221,11 +243,11 @@ async fn agent_works_an_issue_and_delivers_a_pull_request() {
         },
     ];
     config.database.url = Some(db);
-    config.secrets.master_key_file = Some(dir.path().join("master.key"));
-    config.storage.data_dir = dir.path().join("data");
+    config.secrets.master_key_file = Some(dir.join("master.key"));
+    config.storage.data_dir = dir.join("data");
     config.storage.audit_fsync = false;
     config.policies.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../policies").into();
-    config.roles.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../roles").into();
+    config.roles.dir = roles(dir, auto);
     config.sandbox = SandboxConfig {
         backend: BackendKind::Process,
         ..Default::default()
@@ -241,7 +263,7 @@ async fn agent_works_an_issue_and_delivers_a_pull_request() {
         env: Default::default(),
         policy: None,
         tty: None,
-        follow_up_args: vec!["-c".into(), TURN_TWO.into(), "{task}".into()],
+        follow_up_args: vec!["-c".into(), follow_up.into(), "{task}".into()],
         ..Default::default()
     }];
     let state = AppState::new(config).await.unwrap();
@@ -250,7 +272,7 @@ async fn agent_works_an_issue_and_delivers_a_pull_request() {
     let base = format!("http://{addr}/api/v1");
 
     // Admin connects GitHub and sets up the project with its board.
-    let github = json!({ "token": "ghp_test_token", "api_url": api, "web_url": format!("file://{}", dir.path().join("remotes").display()),
+    let github = json!({ "token": "ghp_test_token", "api_url": api, "web_url": format!("file://{}", dir.join("remotes").display()),
                          "commit_name": "agentcore[bot]", "commit_email": "bot@example.com" });
     assert_eq!(
         http(
@@ -322,6 +344,29 @@ async fn agent_works_an_issue_and_delivers_a_pull_request() {
         .unwrap()
         .to_string();
     assert_eq!(branch, "agent/7-say-hello");
+    IssueSession {
+        state,
+        base,
+        sid,
+        branch,
+    }
+}
+
+#[tokio::test]
+async fn agent_works_an_issue_and_delivers_a_pull_request() {
+    let Some((_, db)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let bare = remote(dir.path());
+    let log: Log = Arc::default();
+    let api = mock_github(log.clone()).await;
+    let IssueSession {
+        state,
+        base,
+        sid,
+        branch,
+    } = issue_session(dir.path(), db, api, TURN_TWO, false).await;
 
     let wait = |status: &'static str, turns: usize| {
         let base = base.clone();
@@ -561,6 +606,99 @@ async fn agent_works_an_issue_and_delivers_a_pull_request() {
     assert!(grep.stdout.is_empty(), "token leaked into the workspace");
 }
 
+/// Turn two of an agent whose pull request agentcore delivers by itself: it
+/// learns which check failed, fixes the commit and proposes again.
+const TURN_TWO_AUTO: &str = r#"
+mcp() { curl -s -X POST "$AGENTCORE_GATEWAY_URL" -H "Authorization: Bearer $AGENTCORE_GATEWAY_TOKEN" -H 'Content-Type: application/json' -d "$1"; echo; }
+case "$0" in *"Commit messages follow the convention"*) ;; *) echo "unexpected follow-up: $0"; exit 0 ;; esac
+git commit -q --amend -m 'feat: add hello file'
+mcp '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"propose_pull_request","arguments":{"title":"feat: say hello","body":"Adds hello.txt as requested in #7."}}}'
+echo fixed and proposed again
+"#;
+
+#[tokio::test]
+async fn agent_delivers_its_own_pull_request() {
+    let Some((_, db)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let bare = remote(dir.path());
+    let log: Log = Arc::default();
+    let api = mock_github(log.clone()).await;
+    let IssueSession {
+        base, sid, branch, ..
+    } = issue_session(dir.path(), db, api, TURN_TWO_AUTO, true).await;
+
+    // Nobody clicks Deliver: the failed check goes back to the agent, it
+    // fixes the commit and proposes again, and the pull request opens.
+    let mut created = false;
+    for _ in 0..400 {
+        if log.lock().unwrap().iter().any(|(w, _)| w == "create pr") {
+            created = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        created,
+        "no pull request was opened: {:?}",
+        log.lock().unwrap()
+    );
+    assert_eq!(
+        git(
+            &bare,
+            &["log", "--format=%s", "-1", &format!("refs/heads/{branch}")]
+        ),
+        "feat: add hello file"
+    );
+    {
+        let log = log.lock().unwrap();
+        let pr = &log.iter().find(|(w, _)| w == "create pr").unwrap().1;
+        assert_eq!(pr["draft"], true);
+        let body = pr["body"].as_str().unwrap();
+        assert!(
+            body.contains("opened by agentcore once the team's checks passed"),
+            "{body}"
+        );
+        assert!(
+            log.iter()
+                .any(|(w, v)| w == "move card" && v["o"] == "opt-In Review")
+        );
+    }
+
+    // The agent was told which check failed; a delivery that worked does not
+    // wake it again.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (_, events) = http(
+        "GET",
+        &format!("{base}/sessions/{sid}/events"),
+        "alice",
+        None,
+    )
+    .await;
+    let events = events.as_array().unwrap();
+    let told: Vec<&str> = events
+        .iter()
+        .filter(|e| e["event"] == "messages_delivered")
+        .flat_map(|e| e["messages"].as_array().unwrap())
+        .filter_map(|m| m["text"].as_str())
+        .collect();
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert!(
+        told[0].contains("Commit messages follow the convention"),
+        "{}",
+        told[0]
+    );
+    assert_eq!(
+        events.iter().filter(|e| e["event"] == "delivered").count(),
+        1
+    );
+    assert_eq!(
+        events.iter().filter(|e| e["event"] == "turn_ended").count(),
+        2
+    );
+}
+
 /// A department agent: records what it got, and with a checkout commits a
 /// change and proposes a pull request.
 const DEPARTMENT_AGENT: &str = r#"
@@ -600,7 +738,7 @@ async fn departments_work_on_a_linked_repository() {
     config.storage.data_dir = dir.path().join("data");
     config.storage.audit_fsync = false;
     config.policies.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../policies").into();
-    config.roles.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../roles").into();
+    config.roles.dir = roles(dir.path(), false);
     config.templates.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../templates").into();
     config.cluster.node_name = Some("n1".into());
     config.cluster.reconcile_millis = 200;
@@ -812,7 +950,7 @@ async fn department_work_items_survive_sessions() {
     config.storage.data_dir = dir.path().join("data");
     config.storage.audit_fsync = false;
     config.policies.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../policies").into();
-    config.roles.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../roles").into();
+    config.roles.dir = roles(dir.path(), false);
     config.templates.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../templates").into();
     config.cluster.node_name = Some("n1".into());
     config.cluster.reconcile_millis = 200;
@@ -1050,7 +1188,7 @@ async fn work_node(
     config.storage.data_dir = dir.join(format!("data-{name}"));
     config.storage.audit_fsync = false;
     config.policies.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../policies").into();
-    config.roles.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../roles").into();
+    config.roles.dir = roles(dir, false);
     config.templates.dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../templates").into();
     config.cluster.node_name = Some(name.into());
     config.cluster.max_agents = 1;

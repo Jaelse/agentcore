@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use agentcore_audit::AuditLog;
 use agentcore_core::{Event, EventKind, SessionId, SessionInfo, SessionStatus};
@@ -114,6 +115,10 @@ impl AppState {
             let context = session.context();
             let org_member = context.department_id.map(|d| (d, context.org_agent_id));
             let mut approvals = crate::insights::ApprovalClock::default();
+            // A pull request the agent proposed, for agentcore to deliver
+            // once its turn has ended (roles with `delivery.auto`).
+            let auto_delivers = session.role().is_some_and(|r| r.delivery.auto);
+            let proposed = Arc::new(AtomicBool::new(false));
             loop {
                 match rx.recv().await {
                     Ok(event) => match event.kind {
@@ -166,7 +171,19 @@ impl AppState {
                             // A turn ended: keep the latest change snapshot.
                             if status == agentcore_core::SessionStatus::AwaitingInput {
                                 state.persist_changes(&session).await;
+                                if proposed.swap(false, Ordering::SeqCst) {
+                                    let (state, session, proposed) =
+                                        (state.clone(), session.clone(), proposed.clone());
+                                    tokio::spawn(async move {
+                                        if !crate::teamwork::auto_deliver(&state, &session).await {
+                                            proposed.store(true, Ordering::SeqCst);
+                                        }
+                                    });
+                                }
                             }
+                        }
+                        EventKind::PullRequestProposed { .. } if auto_delivers => {
+                            proposed.store(true, Ordering::SeqCst);
                         }
                         EventKind::ActionCompleted { .. }
                         | EventKind::ModelCall { .. }
