@@ -9,12 +9,16 @@ use agentcore_sandbox::SandboxProvider;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::recover::{Recovered, SessionPaths};
 use crate::session::{Session, SessionParams};
 use crate::{AdapterRegistry, RuntimeError, SessionOptions};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
-    /// Root for audit logs (`audit/`) and workspaces (`workspaces/`).
+    /// The data volume: every session keeps its audit log, recording,
+    /// workspace and agent home in one directory here (see
+    /// [`SessionPaths`]). Shared by every node, so any node can carry a
+    /// session on.
     pub data_dir: PathBuf,
     /// Base URL of the tool gateway as reachable from inside the sandbox.
     pub gateway_url: String,
@@ -36,6 +40,25 @@ pub struct CreateSession {
     /// Model to use instead of the agent's own.
     #[serde(default)]
     pub model: Option<String>,
+}
+
+/// What a session runs with: its agent, policy and adapter.
+type Prepared = (
+    AgentSpec,
+    Arc<agentcore_policy::CompiledPolicy>,
+    Arc<dyn agentcore_core::AgentAdapter>,
+);
+
+/// A session to take over from the node that ran it.
+#[derive(Debug, Clone)]
+pub struct Resume {
+    pub id: SessionId,
+    /// Its audit log, as recorded in the session index.
+    pub audit_path: PathBuf,
+    /// Why it is carried on (recorded in the log and shown in its terminal).
+    pub reason: String,
+    /// The node taking it over.
+    pub node: String,
 }
 
 pub struct SessionManager {
@@ -154,6 +177,74 @@ impl SessionManager {
         by: Principal,
         options: SessionOptions,
     ) -> Result<Arc<Session>, RuntimeError> {
+        let task = request.task.clone();
+        let (spec, policy, adapter) = self.prepare(request, &options)?;
+        let id = Uuid::now_v7();
+        let mut paths = SessionPaths::new(&self.config.data_dir, id, options.context.department_id);
+        if let Some(dir) = &options.agent_dir {
+            paths = paths.kept_in(dir);
+        }
+        let audit = AuditLog::open(&paths.audit, self.config.audit_fsync)?;
+        let session = Session::new(SessionParams {
+            id,
+            spec,
+            task,
+            created_by: by,
+            policy,
+            audit,
+            paths,
+            options,
+            recovered: None,
+        })?;
+        self.start(session.clone(), adapter);
+        Ok(session)
+    }
+
+    /// Carry on a session whose node went away (or restarted): same id, same
+    /// audit log (continued), same workspace and agent home, a new sandbox.
+    /// `request` and `options` are built as for a new session; the task,
+    /// policy and creator come from the log. Fails with
+    /// [`RuntimeError::Ended`] when the log already records the end.
+    pub fn resume(
+        &self,
+        request: CreateSession,
+        resume: Resume,
+        options: SessionOptions,
+    ) -> Result<Arc<Session>, RuntimeError> {
+        let mut paths = SessionPaths::of(&self.config.data_dir, resume.id, &resume.audit_path);
+        if let Some(dir) = &options.agent_dir {
+            paths = paths.kept_in(dir);
+        }
+        let log = Recovered::read(&paths.audit)?;
+        let mut request = request;
+        request.policy = Some(log.policy.clone());
+        let (spec, policy, adapter) = self.prepare(request, &options)?;
+        let audit = AuditLog::open(&paths.audit, self.config.audit_fsync)?;
+        let session = Session::new(SessionParams {
+            id: resume.id,
+            spec,
+            task: String::new(),
+            created_by: Principal::System,
+            policy,
+            audit,
+            paths,
+            options,
+            recovered: Some((log, resume.reason.clone())),
+        })?;
+        session.emit(agentcore_core::EventKind::SessionRecovered {
+            node: resume.node,
+            reason: resume.reason,
+        })?;
+        self.start(session.clone(), adapter);
+        Ok(session)
+    }
+
+    /// The agent, policy and adapter a session runs with.
+    fn prepare(
+        &self,
+        request: CreateSession,
+        options: &SessionOptions,
+    ) -> Result<Prepared, RuntimeError> {
         let mut spec = self
             .agent(&request.agent)
             .ok_or_else(|| RuntimeError::UnknownAgent(request.agent.clone()))?;
@@ -177,33 +268,33 @@ impl SessionManager {
             .get(&spec.adapter)
             .ok_or_else(|| RuntimeError::UnknownAdapter(spec.adapter.clone()))?;
 
-        let id = Uuid::now_v7();
-        let audit = AuditLog::open(
-            self.config
-                .data_dir
-                .join("audit")
-                .join(format!("{id}.jsonl")),
-            self.config.audit_fsync,
-        )?;
-        let session = Session::new(SessionParams {
-            id,
-            spec,
-            task: request.task,
-            created_by: by,
-            policy,
-            audit,
-            options,
-        })?;
+        Ok((spec, policy, adapter))
+    }
+
+    fn start(&self, session: Arc<Session>, adapter: Arc<dyn agentcore_core::AgentAdapter>) {
         self.sessions
             .write()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(id, session.clone());
-        tokio::spawn(
-            session
-                .clone()
-                .run(self.provider.clone(), adapter, self.config.clone()),
-        );
-        Ok(session)
+            .insert(session.id(), session.clone());
+        tokio::spawn(session.run(self.provider.clone(), adapter, self.config.clone()));
+    }
+
+    /// Let go of every session without ending them ([`Session::fence`]):
+    /// this node shuts down or lost the database, and other nodes carry the
+    /// sessions on. Returns how many were let go.
+    pub async fn fence_all(&self) -> usize {
+        let live: Vec<_> = self
+            .sessions
+            .write()
+            .unwrap_or_else(|p| p.into_inner())
+            .drain()
+            .map(|(_, s)| s)
+            .filter(|s| !s.status().is_terminal())
+            .collect();
+        for session in &live {
+            session.fence().await;
+        }
+        live.len()
     }
 
     pub fn get(&self, id: SessionId) -> Result<Arc<Session>, RuntimeError> {

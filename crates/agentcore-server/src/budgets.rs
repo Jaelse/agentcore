@@ -73,9 +73,18 @@ pub fn amount(unit: BudgetUnit, n: i64, currency: &str) -> String {
 }
 
 /// Why a model call of work in this department must be refused, if it must.
-pub async fn blocked(state: &AppState, department: Option<DepartmentId>) -> Option<String> {
+/// An agent going off duty (saving its work as its working hours end) may
+/// still finish that; a used-up budget refuses it all the same.
+pub async fn blocked(
+    state: &AppState,
+    department: Option<DepartmentId>,
+    going_off: bool,
+) -> Option<String> {
     let all = statuses(state).await;
     let Some(hit) = all.iter().find(|b| b.blocks() && b.covers(department)) else {
+        if going_off {
+            return None;
+        }
         return closed(state, department).await;
     };
     let currency = state

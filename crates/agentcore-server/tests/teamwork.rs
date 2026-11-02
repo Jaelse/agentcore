@@ -417,10 +417,7 @@ async fn agent_works_an_issue_and_delivers_a_pull_request() {
     );
 
     // The prompt carried the playbook, the repo's own conventions, the issue and project notes.
-    let home = dir
-        .path()
-        .join("data/workspaces")
-        .join(format!("{sid}.home"));
+    let home = session_dir(&dir.path().join("data"), &sid).join("home");
     let prompt = std::fs::read_to_string(home.join("prompt.txt")).unwrap();
     for needle in [
         "Software developer",
@@ -598,7 +595,7 @@ async fn agent_works_an_issue_and_delivers_a_pull_request() {
     .await;
     assert_eq!(verify["valid"], true);
     // The token never reached the agent's workspace.
-    let ws = dir.path().join("data/workspaces").join(&sid);
+    let ws = session_dir(&dir.path().join("data"), &sid).join("workspace");
     let grep = std::process::Command::new("grep")
         .args(["-r", "ghp_test_token", ws.to_str().unwrap()])
         .output()
@@ -874,11 +871,9 @@ async fn departments_work_on_a_linked_repository() {
         assert!(out.contains(tool), "{tool} missing: {out}");
     }
     // The prompt: role playbook, the team's conventions, the department, the repository.
+    let (_, info) = http("GET", &format!("{base}/sessions/{dev}"), "admin", None).await;
     let prompt = std::fs::read_to_string(
-        dir.path()
-            .join("data/workspaces")
-            .join(format!("{dev}.home"))
-            .join("prompt.txt"),
+        agent_home(&dir.path().join("data"), &info["session"]["context"]).join("prompt.txt"),
     )
     .unwrap();
     for part in [
@@ -1118,10 +1113,7 @@ async fn department_work_items_survive_sessions() {
     assert_eq!(info["session"]["context"]["work_branch"], branch.as_str());
     assert_eq!(info["session"]["context"]["work_item_id"], item_id.as_str());
     let prompt = std::fs::read_to_string(
-        dir.path()
-            .join("data/workspaces")
-            .join(format!("{s2}.home"))
-            .join("prompt.txt"),
+        agent_home(&dir.path().join("data"), &info["session"]["context"]).join("prompt.txt"),
     )
     .unwrap();
     assert!(prompt.contains("### Your work item"), "{prompt}");
@@ -1202,7 +1194,7 @@ async fn work_node(
     config.cluster.max_agents = 1;
     config.cluster.reconcile_millis = 200;
     config.cluster.heartbeat_secs = 1;
-    config.cluster.node_timeout_secs = 2;
+    config.cluster.node_timeout_secs = 6;
     config.cluster.checkpoint_secs = 1;
     config.sandbox = SandboxConfig {
         backend: BackendKind::Process,
@@ -1311,23 +1303,46 @@ async fn lost_work_is_carried_on_by_another_node() {
         git(&bare, &["rev-parse", &format!("refs/heads/{branch}")])
     );
 
-    // n2 joins; n1 goes silent (its session lives on, as in a network split).
+    let (_, items) = call(&n1, "GET", "/org/work-items".into(), None).await;
+    let item: uuid::Uuid = items[0]["id"].as_str().unwrap().parse().unwrap();
+
+    // n2 joins; n1 goes silent (as in a network split). n1 lets go of its
+    // session, and n2 carries the same session on, with its work item.
     let (s2, c2, n2) = work_node(dir.path(), &db, "n2").await;
     c1.cancel();
-    let new = agent_on(n2.clone(), "n2").await;
-    assert_ne!(new, old);
-    let (_, info) = call(&n2, "GET", format!("/sessions/{new}"), None).await;
+    let carried = agent_on(n2.clone(), "n2").await;
+    assert_eq!(carried, old, "the same session, not a new one");
+    assert!(s1.manager.get(old.parse().unwrap()).is_err());
+    let (_, info) = call(&n2, "GET", format!("/sessions/{old}"), None).await;
+    assert_eq!(info["live"], true);
     assert_eq!(info["session"]["context"]["work_branch"], branch.as_str());
-    let prompt = std::fs::read_to_string(
-        dir.path()
-            .join("data-n2/workspaces")
-            .join(format!("{new}.home"))
-            .join("prompt.txt"),
+    // The lease moved to n2 under a new generation: what n1 might still try
+    // to save is refused.
+    let held = s2
+        .store
+        .work_item_of_session(old.parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let lease = held.lease.unwrap();
+    assert_eq!((lease.node.as_str(), lease.generation), ("n2", 2));
+    assert!(
+        !s2.store
+            .checkpoint_work_item(item, 1, "stale")
+            .await
+            .unwrap()
+    );
+
+    // It goes on in the same checkout: its next commit builds on what n1
+    // saved, and n2 saves it.
+    let (code, _) = call(
+        &n2,
+        "POST",
+        format!("/sessions/{old}/messages"),
+        Some(json!({ "text": "carry on" })),
     )
-    .unwrap();
-    assert!(prompt.contains("carrying this item on"), "{prompt}");
-    assert!(prompt.contains("lost with node n1"), "{prompt}");
-    // The new session's commit builds on what n1 saved.
+    .await;
+    assert_eq!(code, 202);
     let mut head = saved.clone();
     for _ in 0..200 {
         head = git(&bare, &["rev-parse", &format!("refs/heads/{branch}")]);
@@ -1336,27 +1351,14 @@ async fn lost_work_is_carried_on_by_another_node() {
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert_eq!(git(&bare, &["rev-parse", &format!("{head}^")]), saved);
-
-    // The session left behind on n1 can no longer deliver over it.
-    let stale = s1.manager.get(old.parse().unwrap()).unwrap();
-    assert!(
-        agentcore_server::work_items::checkpoint(&s1, &stale)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    let (code, err) = http(
-        "POST",
-        &format!("{n1}/sessions/{old}/deliver"),
-        "admin",
-        Some(json!({})),
-    )
-    .await;
-    assert_eq!(code, 409, "{err}");
     assert_eq!(
-        git(&bare, &["rev-parse", &format!("refs/heads/{branch}")]),
-        head
+        git(&bare, &["rev-parse", &format!("{head}^")]),
+        saved,
+        "{}",
+        git(
+            &bare,
+            &["log", "--format=%H %s", &format!("refs/heads/{branch}")]
+        )
     );
 
     for s in [&s1, &s2] {
@@ -1365,4 +1367,30 @@ async fn lost_work_is_carried_on_by_another_node() {
             .await;
     }
     c2.cancel();
+}
+
+/// The directory a session keeps its data in (`sessions/<id>` or
+/// `departments/<department>/sessions/<id>` under the data directory).
+fn session_dir(data: &std::path::Path, id: &str) -> std::path::PathBuf {
+    let plain = data.join("sessions").join(id);
+    if plain.is_dir() {
+        return plain;
+    }
+    std::fs::read_dir(data.join("departments"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|d| d.path().join("sessions").join(id))
+        .find(|p| p.is_dir())
+        .unwrap_or(plain)
+}
+
+/// A department agent's home, kept between its sessions
+/// (`departments/<department>/agents/<agent>/home`).
+fn agent_home(data: &std::path::Path, context: &Value) -> std::path::PathBuf {
+    data.join("departments")
+        .join(context["department_id"].as_str().unwrap())
+        .join("agents")
+        .join(context["org_agent_id"].as_str().unwrap())
+        .join("home")
 }

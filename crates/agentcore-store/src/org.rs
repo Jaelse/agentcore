@@ -4,7 +4,7 @@
 
 use agentcore_core::{
     AgentKind, Department, DepartmentId, DepartmentState, Desired, MessageScope, MessageStatus,
-    NodeInfo, OrgAgent, OrgAgentId, OrgMessage, OrgProfile, OrgSettings, RoutingPolicy, SessionId,
+    OrgAgent, OrgAgentId, OrgMessage, OrgProfile, OrgSettings, RoutingPolicy, SessionId,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -224,33 +224,6 @@ impl From<MessageRow> for OrgMessage {
     }
 }
 
-#[derive(sqlx::FromRow)]
-struct NodeRow {
-    name: String,
-    internal_url: String,
-    capacity: i32,
-    version: String,
-    started_at: DateTime<Utc>,
-    last_seen: DateTime<Utc>,
-    agents: i64,
-    alive: bool,
-}
-
-impl From<NodeRow> for NodeInfo {
-    fn from(r: NodeRow) -> Self {
-        Self {
-            name: r.name,
-            internal_url: r.internal_url,
-            capacity: r.capacity.max(0) as u32,
-            version: r.version,
-            started_at: r.started_at,
-            last_seen: r.last_seen,
-            agents: r.agents.max(0) as u32,
-            alive: r.alive,
-        }
-    }
-}
-
 const DEPARTMENT_COLUMNS: &str = "id, name, description, mission, policy, tools, \
     routing_policy, state, template, project_id, role, requires_repository, created_at, updated_by";
 const AGENT_COLUMNS: &str = "id, department_id, name, kind, agent, provider, model, instructions, desired, \
@@ -263,6 +236,55 @@ const MESSAGE_SELECT: &str = "SELECT m.id, m.created_at, m.scope, m.from_agent, 
     FROM org_messages m";
 /// Serialises placement decisions across nodes.
 const PLACEMENT_LOCK: i64 = 0x6167_656e_7463_6f72; // "agentcor"
+
+/// Note of a department agent that waits for a node with room.
+pub const WAITING_FOR_ROOM: &str = "waiting for room: every node runs as many agents as it can";
+
+/// The least loaded live node with room for another agent (load = agents
+/// placed on it ÷ its capacity). Call with the placement lock held.
+async fn pick_node(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    node_timeout_secs: u64,
+) -> Result<Option<String>> {
+    let node: Option<(String,)> = sqlx::query_as(
+        "SELECT n.name FROM nodes n
+         LEFT JOIN org_agents a ON a.node = n.name AND a.desired <> 'stopped'
+         WHERE n.last_seen > now() - make_interval(secs => $1) AND n.capacity > 0
+         GROUP BY n.name, n.capacity
+         HAVING count(a.id) < n.capacity
+         ORDER BY count(a.id)::float8 / n.capacity, n.name
+         LIMIT 1",
+    )
+    .bind(node_timeout_secs as f64)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(node.map(|(n,)| n))
+}
+
+/// What [`Store::reap_nodes`] did.
+#[derive(Debug, Default)]
+pub struct Reaped {
+    /// Nodes that stopped responding, now forgotten.
+    pub nodes: Vec<String>,
+    /// Department agents placed on a live node (their node is the new one).
+    pub moved: Vec<OrgAgent>,
+    /// Department agents that wait for a node with room.
+    pub waiting: Vec<OrgAgent>,
+    /// Live sessions moved to a live node.
+    pub sessions: u64,
+    /// Work items whose session ended with its node.
+    pub released: u64,
+}
+
+impl Reaped {
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+            && self.moved.is_empty()
+            && self.waiting.is_empty()
+            && self.sessions == 0
+            && self.released == 0
+    }
+}
 
 fn routing_json(routing: &RoutingPolicy) -> serde_json::Value {
     serde_json::to_value(routing).unwrap_or_default()
@@ -864,19 +886,7 @@ impl Store {
             Some((d,)) if d != "stopped" => return Ok(None),
             Some(_) => {}
         }
-        let node: Option<(String,)> = sqlx::query_as(
-            "SELECT n.name FROM nodes n
-             LEFT JOIN org_agents a ON a.node = n.name AND a.desired <> 'stopped'
-             WHERE n.last_seen > now() - make_interval(secs => $1) AND n.capacity > 0
-             GROUP BY n.name, n.capacity
-             HAVING count(a.id) < n.capacity
-             ORDER BY count(a.id)::float8 / n.capacity, n.name
-             LIMIT 1",
-        )
-        .bind(node_timeout_secs as f64)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let Some((node,)) = node else {
+        let Some(node) = pick_node(&mut tx, node_timeout_secs).await? else {
             return Err(StoreError::Unavailable(
                 "no node has free capacity to run another agent".into(),
             ));
@@ -1004,28 +1014,6 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(updated.rows_affected() > 0)
-    }
-
-    /// Agents placed on nodes whose heartbeat is older than the timeout are
-    /// stopped: their sandboxes are gone with the node.
-    pub async fn fail_agents_on_dead_nodes(&self, node_timeout_secs: u64) -> Result<Vec<OrgAgent>> {
-        let rows: Vec<AgentRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "UPDATE org_agents a SET desired = 'stopped', status = 'failed',
-                 note = 'node ' || a.node || ' stopped responding', updated_at = now()
-             FROM nodes n
-             WHERE a.node = n.name AND a.desired <> 'stopped'
-               AND n.last_seen < now() - make_interval(secs => $1)
-             RETURNING {}",
-            AGENT_COLUMNS
-                .split(", ")
-                .map(|c| format!("a.{}", c.trim()))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )))
-        .bind(node_timeout_secs as f64)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(Into::into).collect())
     }
 
     // ---- messages ---------------------------------------------------------------
@@ -1321,91 +1309,166 @@ impl Store {
         Ok(())
     }
 
-    pub async fn list_nodes(&self, node_timeout_secs: u64) -> Result<Vec<NodeInfo>> {
-        let rows: Vec<NodeRow> = sqlx::query_as(
-            "SELECT n.name, n.internal_url, n.capacity, n.version, n.started_at, n.last_seen,
-                    (SELECT count(*) FROM org_agents a
-                     WHERE a.node = n.name AND a.desired <> 'stopped') AS agents,
-                    n.last_seen > now() - make_interval(secs => $1) AS alive
-             FROM nodes n ORDER BY n.name",
-        )
-        .bind(node_timeout_secs as f64)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(Into::into).collect())
-    }
-
-    /// Remove a node that stopped responding. Its live sessions are marked
-    /// failed and all its sessions are archived (rows, audit logs and model
-    /// calls are kept); its agents are stopped and detached. A node that is
-    /// still sending heartbeats cannot be removed. Returns
-    /// `(sessions archived, agents detached)`.
-    pub async fn remove_node(
-        &self,
-        name: &str,
-        node_timeout_secs: u64,
-        actor: &str,
-    ) -> Result<(u64, u64)> {
-        let mut tx = self.pool.begin().await?;
-        let found: Option<(bool,)> = sqlx::query_as(
-            "SELECT last_seen > now() - make_interval(secs => $2)
-             FROM nodes WHERE name = $1 FOR UPDATE",
-        )
-        .bind(name)
-        .bind(node_timeout_secs as f64)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let Some((alive,)) = found else {
-            return Err(StoreError::NotFound(format!("node {name}")));
-        };
-        if alive {
-            return Err(StoreError::Conflict(format!(
-                "node `{name}` is still running; only nodes that stopped responding can be removed"
-            )));
-        }
-        sqlx::query(
-            "UPDATE sessions SET status = 'failed', ended_at = now()
-             WHERE node = $1 AND status NOT IN ('stopped', 'completed', 'failed')",
-        )
-        .bind(name)
-        .execute(&mut *tx)
-        .await?;
-        let sessions = sqlx::query(
-            "UPDATE sessions SET archived_at = now() WHERE node = $1 AND archived_at IS NULL",
-        )
-        .bind(name)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-        let agents = sqlx::query(
-            "UPDATE org_agents SET
-                 status = CASE WHEN desired <> 'stopped' THEN 'failed' ELSE status END,
-                 note = CASE WHEN desired <> 'stopped'
-                             THEN 'node ' || $1 || ' was removed' ELSE note END,
-                 desired = 'stopped', node = NULL, session_id = NULL, updated_at = now()
-             WHERE node = $1",
-        )
-        .bind(name)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
+    /// Forget this node: it is shutting down. What it ran is carried on by
+    /// the others ([`Store::reap_nodes`]).
+    pub async fn leave_cluster(&self, name: &str) -> Result<()> {
         sqlx::query("DELETE FROM nodes WHERE name = $1")
             .bind(name)
-            .execute(&mut *tx)
+            .execute(&self.pool)
             .await?;
-        admin_event(
-            &mut tx,
-            actor,
-            "node.remove",
-            name,
-            serde_json::json!({ "sessions": sessions, "agents": agents }),
-        )
-        .await?;
-        tx.commit().await?;
-        Ok((sessions, agents))
+        Ok(())
     }
 
-    /// The node that owns a session, with its URL and whether it is alive.
+    /// Forget the nodes that stopped responding, and move what is left
+    /// without a node to the live ones, in one transaction:
+    ///
+    /// * department agents that want to run are placed on a live node with
+    ///   room (or wait, without a node, until one has room; while no node
+    ///   runs at all, nothing moves);
+    /// * their live sessions follow them; other live sessions go to the live
+    ///   node with the fewest;
+    /// * work leases follow their sessions; leases whose session is gone
+    ///   are released.
+    ///
+    /// The node a session is moved to carries it on from the data volume.
+    /// Any node may call this; the placement lock makes it happen once.
+    pub async fn reap_nodes(&self, node_timeout_secs: u64) -> Result<Reaped> {
+        const LIVE: &str = "s.status NOT IN ('stopped', 'completed', 'failed')";
+        // An agent whose session moves is starting until its new node says
+        // otherwise; asleep and ended ones stay as they are.
+        const MOVING: &str = "status = CASE WHEN status IN ('asleep', 'stopped', 'completed', \
+             'failed') THEN status ELSE 'starting' END";
+        const GONE: &str = "NOT EXISTS (SELECT 1 FROM nodes n WHERE n.name = {col})";
+        let gone = |col: &str| GONE.replace("{col}", col);
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(PLACEMENT_LOCK)
+            .execute(&mut *tx)
+            .await?;
+        let mut reaped = Reaped {
+            nodes: sqlx::query_as::<_, (String,)>(
+                "DELETE FROM nodes WHERE last_seen < now() - make_interval(secs => $1)
+                 RETURNING name",
+            )
+            .bind(node_timeout_secs as f64)
+            .fetch_all(&mut *tx)
+            .await?
+            .into_iter()
+            .map(|(n,)| n)
+            .collect(),
+            ..Default::default()
+        };
+        // Leases whose session is over are released (the item keeps its
+        // last checkpoint), also while no node runs.
+        reaped.released = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE work_items w SET lease_id = NULL, lease_session = NULL, leased_at = NULL,
+                 lease_node = NULL, note = 'its session ended with the node it ran on',
+                 updated_at = now()
+             WHERE w.lease_id IS NOT NULL AND {}
+               AND NOT EXISTS (SELECT 1 FROM sessions s
+                               WHERE s.id = w.lease_session AND {LIVE})",
+            gone("w.lease_node")
+        )))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        // No node runs at all (the only one restarts): everything stays as
+        // it is until a node registers.
+        let (running,): (bool,) = sqlx::query_as("SELECT EXISTS (SELECT 1 FROM nodes)")
+            .fetch_one(&mut *tx)
+            .await?;
+        if !running {
+            tx.commit().await?;
+            return Ok(reaped);
+        }
+        let homeless: Vec<AgentRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {AGENT_COLUMNS} FROM org_agents
+             WHERE desired <> 'stopped' AND (node IS NULL OR {})
+             ORDER BY updated_at FOR UPDATE",
+            gone("org_agents.node")
+        )))
+        .fetch_all(&mut *tx)
+        .await?;
+        for agent in homeless {
+            let row: AgentRow = match pick_node(&mut tx, node_timeout_secs).await? {
+                Some(node) => {
+                    let row: AgentRow = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                        "UPDATE org_agents SET node = $2, updated_at = now(),
+                             note = CASE WHEN note = $3 THEN NULL ELSE note END, {MOVING}
+                         WHERE id = $1 RETURNING {AGENT_COLUMNS}"
+                    )))
+                    .bind(agent.id)
+                    .bind(node)
+                    .bind(WAITING_FOR_ROOM)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                    reaped.moved.push(row.into());
+                    continue;
+                }
+                None if agent.node.is_none() && agent.note.as_deref() == Some(WAITING_FOR_ROOM) => {
+                    continue;
+                }
+                None => {
+                    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                        "UPDATE org_agents SET node = NULL, note = $2, updated_at = now(), {MOVING}
+                         WHERE id = $1 RETURNING {AGENT_COLUMNS}"
+                    )))
+                    .bind(agent.id)
+                    .bind(WAITING_FOR_ROOM)
+                    .fetch_one(&mut *tx)
+                    .await?
+                }
+            };
+            reaped.waiting.push(row.into());
+        }
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE org_agents SET node = NULL
+             WHERE desired = 'stopped' AND node IS NOT NULL AND {}",
+            gone("org_agents.node")
+        )))
+        .execute(&mut *tx)
+        .await?;
+        // Live sessions: with their agent, or to the least busy live node.
+        reaped.sessions = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE sessions s SET node = a.node FROM org_agents a
+             WHERE a.session_id = s.id AND a.node IS NOT NULL AND {LIVE}
+               AND s.node IS DISTINCT FROM a.node AND (s.node IS NULL OR {})",
+            gone("s.node")
+        )))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        reaped.sessions += sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE sessions s SET node = (
+                 SELECT n.name FROM nodes n
+                 ORDER BY (SELECT count(*) FROM sessions x
+                           WHERE x.node = n.name
+                             AND x.status NOT IN ('stopped', 'completed', 'failed')), n.name
+                 LIMIT 1)
+             WHERE {LIVE} AND (s.node IS NULL OR {}) AND EXISTS (SELECT 1 FROM nodes)
+               AND NOT EXISTS (SELECT 1 FROM org_agents a
+                               WHERE a.session_id = s.id AND a.desired <> 'stopped')",
+            gone("s.node")
+        )))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        // Work leases follow their session.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE work_items w SET lease_node = s.node, updated_at = now() FROM sessions s
+             WHERE w.lease_session = s.id AND w.lease_id IS NOT NULL AND {LIVE}
+               AND w.lease_node IS DISTINCT FROM s.node AND NOT {}",
+            gone("s.node")
+        )))
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(reaped)
+    }
+
+    /// The node that runs a live session, with its URL and whether it is
+    /// alive. `None` for sessions that ended (any node serves them from the
+    /// data volume) or that wait for a node.
     pub async fn session_node(
         &self,
         session: SessionId,
@@ -1413,7 +1476,8 @@ impl Store {
     ) -> Result<Option<(String, String, bool)>> {
         Ok(sqlx::query_as(
             "SELECT n.name, n.internal_url, n.last_seen > now() - make_interval(secs => $2)
-             FROM sessions s JOIN nodes n ON n.name = s.node WHERE s.id = $1",
+             FROM sessions s JOIN nodes n ON n.name = s.node
+             WHERE s.id = $1 AND s.status NOT IN ('stopped', 'completed', 'failed')",
         )
         .bind(session)
         .bind(node_timeout_secs as f64)

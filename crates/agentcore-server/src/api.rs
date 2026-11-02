@@ -204,8 +204,11 @@ pub async fn create_session(
         models,
         ..Default::default()
     };
+    let spec = crate::sessions::ResumeSpec::Plain {
+        request: request.clone(),
+    };
     let session = state.manager.create(request, caller.principal(), options)?;
-    state.persist(&session).await;
+    state.persist_new(&session, spec).await;
     state.follow(session.clone());
     Ok((StatusCode::CREATED, Json(json!(session.info()))))
 }

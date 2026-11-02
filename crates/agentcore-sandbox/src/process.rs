@@ -61,11 +61,16 @@ impl SandboxProvider for ProcessProvider {
         tracing::warn!(session = %request.session_id, "using the insecure `process` sandbox backend");
         // HOME lives next to the workspace, so agent state (e.g. opencode's
         // sessions) does not show up as changes in the repository.
-        let name = root
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let home = root.with_file_name(format!("{name}.home"));
+        let home = match &request.home_dir {
+            Some(home) => home.clone(),
+            None => {
+                let name = root
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                root.with_file_name(format!("{name}.home"))
+            }
+        };
         tokio::fs::create_dir_all(&home)
             .await
             .map_err(SandboxError::io("create agent home"))?;
@@ -367,6 +372,7 @@ mod tests {
         .create(&SandboxRequest {
             session_id: uuid::Uuid::new_v4(),
             workspace_dir: dir.to_path_buf(),
+            home_dir: None,
             image: None,
             egress: false,
         })

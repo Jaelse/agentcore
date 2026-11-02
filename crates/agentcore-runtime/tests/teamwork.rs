@@ -186,10 +186,7 @@ async fn repository_session_with_role_turns_checks_and_export() {
 
     // Turn 1 ends and the agent waits for a human.
     wait_for(&session, SessionStatus::AwaitingInput).await;
-    let home = dir
-        .path()
-        .join("workspaces")
-        .join(format!("{}.home", session.id()));
+    let home = session.paths().home.clone().unwrap();
     let prompt = std::fs::read_to_string(home.join("prompt.txt")).unwrap();
     assert!(prompt.contains("## CONTRIBUTING.md"), "{prompt}");
     assert!(prompt.contains("We use Conventional Commits."));

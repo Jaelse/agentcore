@@ -167,8 +167,6 @@ async fn placement_desired_state_and_dead_nodes() {
     // vm-1 is full (capacity 1), so the next agent goes to vm-2.
     let started = store.start_agent(b.id, 30, "alice").await.unwrap().unwrap();
     assert_eq!(started.node.as_deref(), Some("vm-2"));
-    let nodes = store.list_nodes(30).await.unwrap();
-    assert!(nodes.iter().all(|n| n.alive && n.agents == 1));
 
     // Pause the department's running agents, then stop everything.
     let paused = store
@@ -222,7 +220,8 @@ async fn placement_desired_state_and_dead_nodes() {
     assert_eq!(ended.desired, Desired::Stopped);
     assert_eq!(ended.status.as_deref(), Some("completed"));
 
-    // A node that stops sending heartbeats loses its agents.
+    // A node that stops sending heartbeats is forgotten; its agent moves to
+    // a live node and keeps running.
     store.start_agent(b.id, 30, "alice").await.unwrap().unwrap();
     let placed = store.get_agent(b.id).await.unwrap().node.unwrap();
     sqlx::query("UPDATE nodes SET last_seen = now() - interval '5 minutes' WHERE name = $1")
@@ -230,19 +229,14 @@ async fn placement_desired_state_and_dead_nodes() {
         .execute(store.pool())
         .await
         .unwrap();
-    let lost = store.fail_agents_on_dead_nodes(30).await.unwrap();
-    assert_eq!(lost.len(), 1);
-    assert_eq!(lost[0].id, b.id);
-    assert!(
-        lost[0]
-            .note
-            .as_deref()
-            .unwrap()
-            .contains("stopped responding")
-    );
-    // And dead nodes get no new agents.
-    let again = store.start_agent(b.id, 30, "alice").await.unwrap().unwrap();
-    assert_ne!(again.node.as_deref(), Some(placed.as_str()));
+    let reaped = store.reap_nodes(30).await.unwrap();
+    assert_eq!(reaped.nodes, vec![placed.clone()]);
+    assert_eq!(reaped.moved.len(), 1);
+    assert_eq!(reaped.moved[0].id, b.id);
+    let moved = store.get_agent(b.id).await.unwrap();
+    assert_eq!(moved.desired, Desired::Running);
+    assert!(moved.node.is_some() && moved.node.as_deref() != Some(placed.as_str()));
+    assert!(store.reap_nodes(30).await.unwrap().is_empty());
 
     // Departments can be paused, and only deleted once everything stopped.
     assert_eq!(
@@ -401,60 +395,136 @@ async fn messages_fan_out_to_inboxes() {
     ));
 }
 
+fn live_session(node: &str) -> SessionRecord {
+    SessionRecord {
+        info: SessionInfo {
+            id: Uuid::now_v7(),
+            agent: "opencode".into(),
+            task: "x".into(),
+            policy: "default".into(),
+            status: SessionStatus::Running,
+            created_by: Principal::System,
+            created_at: chrono::Utc::now(),
+            ended_at: None,
+            pending_approvals: 0,
+            actions: 0,
+            model_calls: 0,
+            context: Default::default(),
+        },
+        policy_digest: "d".into(),
+        audit_path: "/a".into(),
+        node: Some(node.into()),
+        resume_spec: None,
+    }
+}
+
+async fn silence(store: &Store, node: &str) {
+    sqlx::query("UPDATE nodes SET last_seen = now() - interval '5 minutes' WHERE name = $1")
+        .bind(node)
+        .execute(store.pool())
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
-async fn sessions_remember_their_node() {
+async fn sessions_move_off_nodes_that_are_gone() {
     let Some((store, _)) = fresh_store().await else {
         return;
     };
-    node(&store, "vm-1", 4).await;
-    let id = Uuid::now_v7();
-    store
-        .upsert_session(&SessionRecord {
-            info: SessionInfo {
-                id,
-                agent: "opencode".into(),
-                task: "x".into(),
-                policy: "default".into(),
-                status: SessionStatus::Running,
-                created_by: Principal::System,
-                created_at: chrono::Utc::now(),
-                ended_at: None,
-                pending_approvals: 0,
-                actions: 0,
-                model_calls: 0,
-                context: Default::default(),
-            },
-            policy_digest: "d".into(),
-            audit_path: "/a".into(),
-            node: Some("vm-1".into()),
-        })
-        .await
-        .unwrap();
-    let (name, url, alive) = store.session_node(id, 30).await.unwrap().unwrap();
+    node(&store, "vm-1", 1).await;
+    node(&store, "vm-2", 1).await;
+    let live = live_session("vm-1");
+    store.upsert_session(&live).await.unwrap();
+    let mut ended = live_session("vm-1");
+    ended.info.status = SessionStatus::Completed;
+    store.upsert_session(&ended).await.unwrap();
+    let (name, url, alive) = store.session_node(live.info.id, 30).await.unwrap().unwrap();
     assert_eq!(
         (name.as_str(), url.as_str(), alive),
         ("vm-1", "http://vm-1", true)
     );
-
-    // A node that still sends heartbeats cannot be removed; a dead one can,
-    // and its sessions are failed and archived rather than deleted.
-    assert!(store.remove_node("vm-1", 30, "alice").await.is_err());
-    sqlx::query("UPDATE nodes SET last_seen = now() - interval '5 minutes' WHERE name = 'vm-1'")
-        .execute(store.pool())
-        .await
-        .unwrap();
-    assert_eq!(store.remove_node("vm-1", 30, "alice").await.unwrap().0, 1);
+    // Ended sessions are not run by any node: every node serves them.
     assert!(
         store
-            .list_nodes(30)
+            .session_node(ended.info.id, 30)
             .await
             .unwrap()
-            .iter()
-            .all(|n| n.name != "vm-1")
+            .is_none()
     );
-    let gone = store.get_session(id).await.unwrap().unwrap();
-    assert_eq!(gone.info.status, SessionStatus::Failed);
-    assert!(store.archived_session_ids().await.unwrap().contains(&id));
+
+    // A department agent and its live session, on vm-1 too.
+    let d = store.create_department(dept("Ops"), "alice").await.unwrap();
+    let a = store.add_agent(d.id, worker("dev"), "alice").await.unwrap();
+    let placed = store.start_agent(a.id, 30, "alice").await.unwrap().unwrap();
+    assert_eq!(placed.node.as_deref(), Some("vm-1"));
+    let held = live_session("vm-1");
+    store.upsert_session(&held).await.unwrap();
+    store
+        .agent_session_started(a.id, held.info.id, "running")
+        .await
+        .unwrap();
+    let mine = store.live_sessions_of("vm-1").await.unwrap();
+    assert_eq!(mine.len(), 2);
+    assert!(
+        mine.iter()
+            .any(|(r, managed)| r.info.id == held.info.id && *managed)
+    );
+
+    // vm-1 goes silent: it is forgotten and what it ran moves to vm-2.
+    silence(&store, "vm-1").await;
+    let reaped = store.reap_nodes(30).await.unwrap();
+    assert_eq!(reaped.nodes, ["vm-1"]);
+    assert_eq!(reaped.sessions, 2);
+    for id in [live.info.id, held.info.id] {
+        let moved = store.get_session(id).await.unwrap().unwrap();
+        assert_eq!(moved.node.as_deref(), Some("vm-2"));
+        assert_eq!(moved.info.status, SessionStatus::Running);
+    }
+    let agent = store.get_agent(a.id).await.unwrap();
+    assert_eq!(agent.node.as_deref(), Some("vm-2"));
+    assert_eq!(agent.session_id, Some(held.info.id));
+    let ended = store.get_session(ended.info.id).await.unwrap().unwrap();
+    assert_eq!(
+        ended.node.as_deref(),
+        Some("vm-1"),
+        "history stays as it was"
+    );
+
+    // vm-2 shuts down and no node runs: nothing moves until one starts.
+    store.leave_cluster("vm-2").await.unwrap();
+    let reaped = store.reap_nodes(30).await.unwrap();
+    assert!(reaped.is_empty(), "{reaped:?}");
+    assert_eq!(
+        store.get_agent(a.id).await.unwrap().node.as_deref(),
+        Some("vm-2")
+    );
+    // A node without room: the agent waits without a node; its session
+    // waits with it.
+    node(&store, "vm-3", 0).await;
+    let reaped = store.reap_nodes(30).await.unwrap();
+    assert_eq!(reaped.waiting.len(), 1);
+    let agent = store.get_agent(a.id).await.unwrap();
+    assert_eq!(agent.node, None);
+    assert_eq!(agent.desired, Desired::Running);
+    assert_eq!(
+        agent.note.as_deref(),
+        Some(agentcore_store::WAITING_FOR_ROOM)
+    );
+    assert!(
+        store.reap_nodes(30).await.unwrap().is_empty(),
+        "nothing to report twice"
+    );
+    // A node with room takes both.
+    node(&store, "vm-3", 1).await;
+    let reaped = store.reap_nodes(30).await.unwrap();
+    assert_eq!(reaped.moved.len(), 1);
+    let agent = store.get_agent(a.id).await.unwrap();
+    assert_eq!(agent.node.as_deref(), Some("vm-3"));
+    assert_eq!(agent.note, None);
+    for id in [live.info.id, held.info.id] {
+        let moved = store.get_session(id).await.unwrap().unwrap();
+        assert_eq!(moved.node.as_deref(), Some("vm-3"));
+    }
 }
 
 #[tokio::test]
@@ -981,27 +1051,46 @@ async fn work_items_are_borrowed_by_one_session_at_a_time() {
         Some("its session ended (stopped)")
     );
     assert_eq!(again.item.lease.as_ref().unwrap().generation, 2);
-    store.bind_work_lease(lease2, Uuid::now_v7()).await.unwrap();
+    let s2 = live_session("n2");
+    store.upsert_session(&s2).await.unwrap();
+    store.bind_work_lease(lease2, s2.info.id).await.unwrap();
     assert!(store.has_open_work_items(ana.id).await.unwrap());
     assert!(!store.has_open_work_items(ben.id).await.unwrap());
 
-    // Node n2 stops responding: its lease is released, the work stays.
-    sqlx::query("UPDATE nodes SET last_seen = now() - interval '1 hour' WHERE name = 'n2'")
-        .execute(store.pool())
+    // Node n2 stops responding: its session moves to n1 and keeps the item.
+    // Carrying it on there renews the lease, so n2 can no longer save.
+    silence(&store, "n2").await;
+    let reaped = store.reap_nodes(30).await.unwrap();
+    assert_eq!((reaped.sessions, reaped.released), (1, 0));
+    let held = store
+        .work_item_of_session(s2.info.id)
         .await
+        .unwrap()
         .unwrap();
-    let expired = store.expire_work_leases_on_dead_nodes(30).await.unwrap();
-    assert_eq!(expired.len(), 1);
-    assert_eq!(
-        expired[0].note.as_deref(),
-        Some("its session was lost with node n2")
-    );
+    assert_eq!(held.lease.as_ref().unwrap().node, "n1");
+    let renewed = store
+        .renew_work_lease(s2.info.id, "n1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(renewed.lease.as_ref().unwrap().generation, 3);
     assert!(
         !store
             .checkpoint_work_item(item.id, 2, "late")
             .await
             .unwrap()
     );
+    assert!(store.checkpoint_work_item(item.id, 3, "c2").await.unwrap());
+    // Once that session is over and n1 is gone too, the lease is released.
+    store
+        .end_lost_session(s2.info.id, "n1", SessionStatus::Failed)
+        .await
+        .unwrap();
+    silence(&store, "n1").await;
+    assert_eq!(store.reap_nodes(30).await.unwrap().released, 1);
+    let free = store.get_work_item(item.id).await.unwrap();
+    assert!(free.lease.is_none());
+    assert_eq!(free.head_commit.as_deref(), Some("c2"));
 
     // Work items only go to workers of the item's own department.
     let ops = store.create_department(dept("Ops"), "root").await.unwrap();
@@ -1030,7 +1119,7 @@ async fn work_items_are_borrowed_by_one_session_at_a_time() {
         .unwrap();
     assert!(bens.resumed);
     assert_eq!(bens.item.id, item.id);
-    assert_eq!(bens.item.lease.as_ref().unwrap().generation, 3);
+    assert_eq!(bens.item.lease.as_ref().unwrap().generation, 4);
     assert!(
         store
             .release_work_item(Uuid::nil(), "nothing")

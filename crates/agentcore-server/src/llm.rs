@@ -603,7 +603,9 @@ pub async fn proxy(
     }
 
     // A pausing budget that is used up stops the spending at once.
-    if let Some(message) = crate::budgets::blocked(&state, session.context().department_id).await {
+    let department = session.context().department_id;
+    if let Some(message) = crate::budgets::blocked(&state, department, session.is_going_off()).await
+    {
         return call
             .reject(StatusCode::FORBIDDEN, "permission_error", message)
             .await;

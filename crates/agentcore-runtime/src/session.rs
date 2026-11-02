@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 use crate::approvals::{ApprovalBroker, ApprovalDecision, PendingApproval};
 use crate::live::{LiveHub, PlainLines, Utf8Stream, watch_files};
+use crate::recover::{Recovered, SessionPaths};
 use crate::work::{
     GIT, SessionOptions, ToolHandler, WorkspaceSetup, changes_script, parse_changes, patch_script,
 };
@@ -34,6 +35,16 @@ use crate::{RuntimeError, manager::RuntimeConfig};
 pub const TIME_BUDGET_REASON: &str = "maximum session duration exceeded";
 /// Why the system stops a session nobody talked to for too long.
 pub const IDLE_REASON: &str = "no input from a human within the idle timeout";
+/// Why the system stops a session whose agent went off duty (its working
+/// hours ended).
+pub const OFF_DUTY_REASON: &str = "off duty: its working hours ended";
+/// How long the agent has to save its work before it goes off.
+const WRAP_UP_TIME: Duration = Duration::from_secs(300);
+/// What an agent whose turn was cut off by the loss of its node is told.
+const CARRY_ON: &str = "agentcore: your session moved to another machine because the one it ran \
+on went away, and your last turn was cut off before it finished. Your workspace and this \
+conversation are as you left them (uncommitted changes included). Check where you were and \
+carry on with your task.";
 
 /// Why a session ended, as far as continuing the agent is concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +55,8 @@ pub enum EndCause {
     Idle,
     /// A single-run agent finished its task successfully.
     Finished,
+    /// Its working hours ended ([`Session::go_off`]).
+    OffDuty,
     /// Stopped by a person, failed, finished by a person, ...
     Other,
 }
@@ -74,9 +87,25 @@ enum Inbox {
     Finish(Principal),
 }
 
+/// Where a session taken over from another node picks up.
+struct ResumePoint {
+    /// Last turn that was started.
+    turn: u32,
+    /// That turn ended: the agent was waiting for input.
+    turn_ended: bool,
+    /// The checkout had been prepared.
+    prepared: bool,
+    reason: String,
+}
+
 enum TurnOutcome {
-    Exited { code: Option<i32>, success: bool },
+    Exited {
+        code: Option<i32>,
+        success: bool,
+    },
     Stopped(Option<String>),
+    /// Cut short so the agent can save its work and go off (why).
+    Cut(String),
 }
 
 pub struct Session {
@@ -88,6 +117,15 @@ pub struct Session {
     policy: Arc<CompiledPolicy>,
     gateway_token: String,
     audit: AuditLog,
+    paths: SessionPaths,
+    /// Set when this node let go of the session: another node owns it, so
+    /// nothing more is written here.
+    fenced: AtomicBool,
+    resume: Mutex<Option<ResumePoint>>,
+    continue_conversation: bool,
+    wrap_up: Option<String>,
+    /// Set when the agent has to go off: why.
+    off_duty: watch::Sender<Option<String>>,
     state: Mutex<State>,
     events: broadcast::Sender<Event>,
     approvals: ApprovalBroker,
@@ -132,7 +170,11 @@ pub(crate) struct SessionParams {
     pub created_by: Principal,
     pub policy: Arc<CompiledPolicy>,
     pub audit: AuditLog,
+    pub paths: SessionPaths,
     pub options: SessionOptions,
+    /// A session taken over from another node: what its audit log says,
+    /// and why it moved.
+    pub recovered: Option<(Recovered, String)>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -152,27 +194,61 @@ impl Session {
         if let Some(role) = &options.role {
             context.role.get_or_insert_with(|| role.name.clone());
         }
-        let session = Arc::new(Self {
-            id: params.id,
-            spec: params.spec,
-            task: params.task,
-            created_by: params.created_by,
-            created_at: Utc::now(),
-            policy: params.policy,
-            gateway_token: format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()),
-            audit: params.audit,
-            state: Mutex::new(State {
+        let (mut state, mut created_at, mut counts, mut resume) = (
+            State {
                 seq: 0,
                 status: SessionStatus::Pending,
                 ended_at: None,
                 history: VecDeque::new(),
-            }),
+            },
+            Utc::now(),
+            (0, 0),
+            None,
+        );
+        let mut restored = (None, None, false);
+        let (mut task, mut created_by) = (params.task, params.created_by);
+        if let Some((log, reason)) = params.recovered {
+            let skip = log.history.len().saturating_sub(HISTORY_LIMIT);
+            state.seq = log.records;
+            state.status = log.status;
+            state.history = log.history.into_iter().skip(skip).collect();
+            created_at = log.created_at;
+            counts = (log.actions, log.model_calls);
+            (task, created_by) = (log.task, log.created_by);
+            if let Some((branch, url)) = log.delivery {
+                context.delivery_branch = Some(branch);
+                context.pull_request_url = url.or(context.pull_request_url);
+            }
+            restored = (log.base_commit.clone(), log.proposal, log.paused);
+            resume = Some(ResumePoint {
+                turn: log.turn,
+                turn_ended: log.turn_ended,
+                prepared: log.base_commit.is_some(),
+                reason,
+            });
+        }
+        let session = Arc::new(Self {
+            id: params.id,
+            spec: params.spec,
+            task,
+            created_by,
+            created_at,
+            policy: params.policy,
+            gateway_token: format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()),
+            audit: params.audit,
+            paths: params.paths,
+            fenced: AtomicBool::new(false),
+            resume: Mutex::new(resume),
+            continue_conversation: options.continue_conversation,
+            wrap_up: options.wrap_up,
+            off_duty: watch::channel(None).0,
+            state: Mutex::new(state),
             events,
             approvals: ApprovalBroker::default(),
             sandbox: Mutex::new(None),
             cancel: CancellationToken::new(),
-            actions: AtomicU64::new(0),
-            model_calls: AtomicU64::new(0),
+            actions: AtomicU64::new(counts.0),
+            model_calls: AtomicU64::new(counts.1),
             models: options.models,
             role: options.role,
             workspace: options.workspace,
@@ -182,9 +258,9 @@ impl Session {
             hide_sandbox_tools: options.hide_sandbox_tools,
             agent_label,
             context: Mutex::new(context),
-            base_commit: Mutex::new(None),
+            base_commit: Mutex::new(restored.0),
             last_changes: Mutex::new(None),
-            proposal: Mutex::new(None),
+            proposal: Mutex::new(restored.1),
             turn_active: AtomicBool::new(false),
             keyboard: Mutex::new(None),
             turn: AtomicU32::new(0),
@@ -193,16 +269,20 @@ impl Session {
             inbox,
             inbox_rx: Mutex::new(Some(inbox_rx)),
             live: Arc::new(LiveHub::default()),
-            paused: watch::channel(false).0,
-            resume_status: Mutex::new(None),
+            paused: watch::channel(restored.2).0,
+            // Paused while waiting: waiting again on resume. Paused in a
+            // turn: the turn is carried on on resume and sets the status.
+            resume_status: Mutex::new(restored.2.then_some(SessionStatus::AwaitingInput)),
         });
-        session.emit(EventKind::SessionCreated {
-            agent: session.spec.name.clone(),
-            task: session.task.clone(),
-            policy: session.policy.name().to_string(),
-            policy_digest: session.policy.digest().to_string(),
-            created_by: session.created_by.clone(),
-        })?;
+        if session.lock().seq == 0 {
+            session.emit(EventKind::SessionCreated {
+                agent: session.spec.name.clone(),
+                task: session.task.clone(),
+                policy: session.policy.name().to_string(),
+                policy_digest: session.policy.digest().to_string(),
+                created_by: session.created_by.clone(),
+            })?;
+        }
         Ok(session)
     }
 
@@ -227,6 +307,16 @@ impl Session {
         self.audit.path()
     }
 
+    /// Where the session keeps its data on the data volume.
+    pub fn paths(&self) -> &SessionPaths {
+        &self.paths
+    }
+
+    /// Whether this node let go of the session ([`Session::fence`]).
+    pub fn is_fenced(&self) -> bool {
+        self.fenced.load(Ordering::SeqCst)
+    }
+
     /// Why the session ended (`None` while it runs).
     pub fn end_cause(&self) -> Option<EndCause> {
         let state = self.lock();
@@ -241,6 +331,7 @@ impl Session {
         Some(match (stop, ended) {
             (Some((Principal::System, r)), _) if r == TIME_BUDGET_REASON => EndCause::TimeBudget,
             (Some((Principal::System, r)), _) if r == IDLE_REASON => EndCause::Idle,
+            (Some((Principal::System, r)), _) if r == OFF_DUTY_REASON => EndCause::OffDuty,
             (None, (SessionStatus::Completed, None)) => EndCause::Finished,
             _ => EndCause::Other,
         })
@@ -439,6 +530,12 @@ impl Session {
             timestamp: Utc::now(),
             kind,
         };
+        if self.is_fenced() {
+            // Another node writes this session's log now. Local listeners
+            // still learn that it ended here.
+            let _ = self.events.send(event);
+            return Err(RuntimeError::NotRunning);
+        }
         if let Err(err) = self.audit.append(&event) {
             drop(state);
             tracing::error!(session = %self.id, error = %err, "audit write failed; stopping session");
@@ -549,6 +646,45 @@ impl Session {
         if let Some(sandbox) = self.sandbox() {
             if was_paused {
                 // Some runtimes refuse to remove a frozen container.
+                let _ = sandbox.resume().await;
+            }
+            if let Err(err) = sandbox.kill().await {
+                tracing::error!(session = %self.id, error = %err, "failed to kill sandbox");
+            }
+        }
+    }
+
+    /// Send the agent off duty: a running turn is cut short, the agent gets
+    /// its wrap-up turn to save its work, and the session ends
+    /// ([`EndCause::OffDuty`]); its next session starts where it stopped.
+    pub fn go_off(&self) {
+        if !self.status().is_terminal() {
+            self.off_duty.send_if_modified(|off| {
+                off.get_or_insert_with(|| OFF_DUTY_REASON.into());
+                true
+            });
+        }
+    }
+
+    /// The agent was sent off duty and is saving its work.
+    pub fn is_going_off(&self) -> bool {
+        self.off_duty.borrow().is_some()
+    }
+
+    /// Let go of the session without ending it: kill the sandbox and write
+    /// nothing more (not even its end), so another node can take it over
+    /// from its audit log. Used when this node shuts down or loses the
+    /// database.
+    pub async fn fence(&self) {
+        if self.fenced.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        self.live.abandon_recording();
+        self.cancel.cancel();
+        self.approvals.cancel_all();
+        let was_paused = self.paused.send_replace(false);
+        if let Some(sandbox) = self.sandbox() {
+            if was_paused {
                 let _ = sandbox.resume().await;
             }
             if let Err(err) = sandbox.kill().await {
@@ -747,11 +883,19 @@ impl Session {
     ) -> Result<(SessionStatus, Option<i32>, Option<String>), RuntimeError> {
         let started = Instant::now();
         let limits = self.policy.limits().clone();
-        let deadline = started + Duration::from_secs(limits.max_session_secs);
-        let workspace_dir = config.data_dir.join("workspaces").join(self.id.to_string());
+        // The time budget counts from the session's creation, also when it
+        // was carried on by another node.
+        let elapsed = (Utc::now() - self.created_at).to_std().unwrap_or_default();
+        let deadline =
+            started + Duration::from_secs(limits.max_session_secs).saturating_sub(elapsed);
+        let workspace_dir = self.paths.workspace.clone();
+        let resume = lock(&self.resume).take();
 
         // 1. Check out the repository on the host, before any agent code runs.
-        if let Some(setup) = self.workspace.clone() {
+        //    A session carried on keeps its checkout, unless it is gone (then
+        //    it is checked out again, e.g. from its work item's last save).
+        let checked_out = resume.as_ref().is_some_and(|r| r.prepared) && workspace_dir.is_dir();
+        if let Some(setup) = self.workspace.clone().filter(|_| !checked_out) {
             let prepared = tokio::select! {
                 r = setup.prepare(&workspace_dir) => r.map_err(RuntimeError::Workspace)?,
                 () = self.cancel.cancelled() => return Ok((SessionStatus::Stopped, None, None)),
@@ -773,6 +917,7 @@ impl Session {
         let request = SandboxRequest {
             session_id: self.id,
             workspace_dir: workspace_dir.clone(),
+            home_dir: self.paths.home.clone(),
             image: self.spec.image.clone(),
             egress: adapter.direct_model_access(&self.spec),
         };
@@ -791,15 +936,20 @@ impl Session {
         })?;
 
         // The live view: terminal recording, file changes, processes.
-        let recording = config
-            .data_dir
-            .join("recordings")
-            .join(format!("{}.cast", self.id));
-        if let Err(err) = self
-            .live
-            .start_recording(&recording, &format!("{} · {}", self.spec.name, self.id))
-        {
+        let title = format!("{} · {}", self.spec.name, self.id);
+        let recording = if resume.is_some() {
+            self.live.resume_recording(&self.paths.recording, &title)
+        } else {
+            self.live.start_recording(&self.paths.recording, &title)
+        };
+        if let Err(err) = recording {
             tracing::warn!(error = %err, "cannot record the terminal");
+        }
+        if let Some(resume) = &resume {
+            self.live.terminal(&format!(
+                "\r\n\x1b[44;97m carried on: {} \x1b[0m\r\n",
+                one_line(&resume.reason, 100)
+            ));
         }
         let _watcher = {
             let live = self.live.clone();
@@ -830,103 +980,125 @@ impl Session {
         }
 
         // 3. What the agent is asked to do: the role playbook + team
-        //    conventions + work item, or just the task.
-        let task = self.first_prompt(sandbox.as_ref()).await?;
-        let ctx = LaunchContext {
-            session_id: self.id,
-            task,
-            workspace: WORKSPACE.into(),
-            workdir: sandbox.workdir(),
-            home: sandbox.home(),
-            gateway_url: format!(
-                "{}/mcp/{}",
-                config.gateway_url.trim_end_matches('/'),
-                self.id
-            ),
-            gateway_token: self.gateway_token.clone(),
-            model_gateway_url: format!(
-                "{}/llm/{}",
-                config.gateway_url.trim_end_matches('/'),
-                self.id
-            ),
-            models: self.models.clone(),
+        //    conventions + work item, or just the task. An agent that is
+        //    carried on continues its conversation instead, if it can.
+        let probe = self.launch_context(sandbox.as_ref(), config, String::new());
+        let can_continue = adapter.follow_up(&self.spec, &probe, "")?.is_some();
+        let carry_on = resume.as_ref().filter(|r| r.turn > 0 && can_continue);
+        // A new session of an agent that keeps its home: its conversation
+        // goes on, and the task is the next message in it.
+        let continues = self.continue_conversation
+            && resume.is_none()
+            && can_continue
+            && self.paths.home.as_deref().is_some_and(not_empty);
+        let task = if carry_on.is_some() || continues {
+            self.task.clone()
+        } else {
+            self.first_prompt(sandbox.as_ref()).await?
         };
+        let ctx = self.launch_context(sandbox.as_ref(), config, task);
         let mut plan = adapter.plan(&self.spec, &ctx)?;
-        let can_continue = adapter.follow_up(&self.spec, &ctx, "")?.is_some();
         let mut inbox = lock(&self.inbox_rx)
             .take()
             .ok_or(RuntimeError::NotRunning)?;
 
         // 4. Turns: run the agent; if it can continue, wait for a human.
-        let mut turn = 1u32;
+        let mut turn = resume.as_ref().map_or(1, |r| r.turn + 1);
         let mut said: Option<String> = None;
+        // Carried on while it waited for input: it waits again. Cut off in
+        // a turn: it is told so and carries on.
+        let mut wait_first = false;
+        if continues {
+            plan = adapter
+                .follow_up(&self.spec, &ctx, &self.task)?
+                .ok_or(RuntimeError::NotAwaitingInput)?;
+            said = Some("carries on where it left off".into());
+        }
+        if let Some(resume) = carry_on {
+            if resume.turn_ended {
+                (wait_first, turn) = (true, resume.turn);
+            } else {
+                plan = adapter
+                    .follow_up(&self.spec, &ctx, CARRY_ON)?
+                    .ok_or(RuntimeError::NotAwaitingInput)?;
+                said = Some("carried on after its node went away".into());
+            }
+        }
+        let mut first = true;
+        let mut code = None;
+        let mut off = self.off_duty.subscribe();
         loop {
-            if !self.wait_unpaused().await {
-                return Ok((SessionStatus::Stopped, None, None));
-            }
-            self.decorate(&mut plan, &ctx);
-            let label = match said.take() {
-                Some(text) => format!("turn {turn} · {}", one_line(&text, 80)),
-                None => format!("turn {turn}"),
-            };
-            self.live.marker(&label);
-            self.live
-                .terminal(&format!("\x1b[2m── {label} ──\x1b[0m\r\n"));
-            if turn == 1 {
-                // Arguments are audited; the environment is not (it carries secrets).
-                self.emit(EventKind::AgentStarted {
-                    program: plan.program.clone(),
-                    args: plan.args.iter().map(|a| truncate(a, 2048)).collect(),
-                    direct_model_access: plan.direct_model_access,
+            if !std::mem::take(&mut wait_first) {
+                if !self.wait_unpaused().await {
+                    return Ok((SessionStatus::Stopped, None, None));
+                }
+                self.decorate(&mut plan, &ctx);
+                let label = match said.take() {
+                    Some(text) => format!("turn {turn} · {}", one_line(&text, 80)),
+                    None => format!("turn {turn}"),
+                };
+                self.live.marker(&label);
+                self.live
+                    .terminal(&format!("\x1b[2m── {label} ──\x1b[0m\r\n"));
+                if std::mem::take(&mut first) {
+                    // Arguments are audited; the environment is not (it carries secrets).
+                    self.emit(EventKind::AgentStarted {
+                        program: plan.program.clone(),
+                        args: plan.args.iter().map(|a| truncate(a, 2048)).collect(),
+                        direct_model_access: plan.direct_model_access,
+                    })?;
+                }
+                self.turn.store(turn, Ordering::SeqCst);
+                lock(&self.typists).clear();
+                self.turn_active.store(true, Ordering::SeqCst);
+                self.emit(EventKind::TurnStarted { turn })?;
+                self.set_status(SessionStatus::Running);
+                let outcome = self.run_turn(sandbox.as_ref(), &plan, deadline, true).await;
+                self.turn_active.store(false, Ordering::SeqCst);
+                let success;
+                (code, success) = match outcome? {
+                    TurnOutcome::Stopped(reason) => {
+                        return Ok((SessionStatus::Stopped, None, reason));
+                    }
+                    TurnOutcome::Cut(reason) => {
+                        self.emit(EventKind::TurnEnded {
+                            turn,
+                            exit_code: None,
+                        })?;
+                        let wrap = (sandbox.as_ref(), adapter.as_ref(), &ctx, can_continue);
+                        return self.go_off_now(wrap, turn + 1, &reason).await;
+                    }
+                    TurnOutcome::Exited { code, success } => (code, success),
+                };
+                self.emit(EventKind::TurnEnded {
+                    turn,
+                    exit_code: code,
                 })?;
-            }
-            self.turn.store(turn, Ordering::SeqCst);
-            lock(&self.typists).clear();
-            self.turn_active.store(true, Ordering::SeqCst);
-            self.emit(EventKind::TurnStarted { turn })?;
-            self.set_status(SessionStatus::Running);
-            let outcome = self.run_turn(sandbox.as_ref(), &plan, deadline).await;
-            self.turn_active.store(false, Ordering::SeqCst);
-            let (code, success) = match outcome? {
-                TurnOutcome::Stopped(reason) => return Ok((SessionStatus::Stopped, None, reason)),
-                TurnOutcome::Exited { code, success } => (code, success),
-            };
-            self.emit(EventKind::TurnEnded {
-                turn,
-                exit_code: code,
-            })?;
-            self.snapshot_changes().await;
+                self.snapshot_changes().await;
 
-            if !can_continue {
-                return Ok(if success {
-                    (SessionStatus::Completed, code, None)
-                } else {
-                    (
-                        SessionStatus::Failed,
-                        code,
-                        Some(format!("agent exited with code {code:?}")),
-                    )
-                });
+                if !can_continue {
+                    return Ok(if success {
+                        (SessionStatus::Completed, code, None)
+                    } else {
+                        (
+                            SessionStatus::Failed,
+                            code,
+                            Some(format!("agent exited with code {code:?}")),
+                        )
+                    });
+                }
             }
 
             self.set_status(SessionStatus::AwaitingInput);
             let idle = tokio::time::sleep(Duration::from_secs(limits.idle_timeout_secs));
             let overall = tokio::time::sleep_until(deadline.into());
+            let wrap = (sandbox.as_ref(), adapter.as_ref(), &ctx, can_continue);
             let next = tokio::select! {
                 msg = inbox.recv() => msg,
                 () = self.cancel.cancelled() => return Ok((SessionStatus::Stopped, None, None)),
-                () = idle => {
-                    let reason = IDLE_REASON;
-                    self.before_end().await;
-                    self.stop(Principal::System, reason).await;
-                    return Ok((SessionStatus::Stopped, None, Some(reason.into())));
-                }
-                () = overall => {
-                    let reason = TIME_BUDGET_REASON;
-                    self.before_end().await;
-                    self.stop(Principal::System, reason).await;
-                    return Ok((SessionStatus::Stopped, None, Some(reason.into())));
-                }
+                () = idle => return self.go_off_now(wrap, turn + 1, IDLE_REASON).await,
+                () = overall => return self.go_off_now(wrap, turn + 1, TIME_BUDGET_REASON).await,
+                reason = off_duty(&mut off) => return self.go_off_now(wrap, turn + 1, &reason).await,
             };
             match next {
                 Some(Inbox::Message(text)) => {
@@ -947,6 +1119,79 @@ impl Session {
                 }
                 None => return Ok((SessionStatus::Stopped, None, None)),
             }
+        }
+    }
+
+    /// The system ends the session (idle, time limit, off duty): the agent
+    /// first gets its wrap-up turn to save its work (when it has one and is
+    /// not frozen), then its work is saved once more (the end hook).
+    async fn go_off_now(
+        &self,
+        (sandbox, adapter, ctx, can_continue): (
+            &dyn Sandbox,
+            &dyn AgentAdapter,
+            &LaunchContext,
+            bool,
+        ),
+        turn: u32,
+        reason: &str,
+    ) -> Result<(SessionStatus, Option<i32>, Option<String>), RuntimeError> {
+        let text = self
+            .wrap_up
+            .as_ref()
+            .filter(|_| can_continue && !self.is_paused())
+            .map(|t| t.replace("{reason}", reason));
+        if let Some(text) = text
+            && let Some(mut plan) = adapter.follow_up(&self.spec, ctx, &text)?
+        {
+            self.decorate(&mut plan, ctx);
+            let label = format!("turn {turn} · saving its work before it goes off");
+            self.live.marker(&label);
+            self.live
+                .terminal(&format!("\x1b[2m── {label} ──\x1b[0m\r\n"));
+            self.turn.store(turn, Ordering::SeqCst);
+            lock(&self.typists).clear();
+            self.turn_active.store(true, Ordering::SeqCst);
+            self.emit(EventKind::UserMessage {
+                by: Principal::System,
+                text,
+            })?;
+            self.emit(EventKind::TurnStarted { turn })?;
+            self.set_status(SessionStatus::Running);
+            let outcome = self
+                .run_turn(sandbox, &plan, Instant::now() + WRAP_UP_TIME, false)
+                .await;
+            self.turn_active.store(false, Ordering::SeqCst);
+            let exit_code = match outcome? {
+                TurnOutcome::Stopped(reason) => return Ok((SessionStatus::Stopped, None, reason)),
+                TurnOutcome::Exited { code, .. } => code,
+                TurnOutcome::Cut(_) => None,
+            };
+            self.emit(EventKind::TurnEnded { turn, exit_code })?;
+            self.snapshot_changes().await;
+        }
+        self.before_end().await;
+        self.stop(Principal::System, reason).await;
+        Ok((SessionStatus::Stopped, None, Some(reason.into())))
+    }
+
+    fn launch_context(
+        &self,
+        sandbox: &dyn Sandbox,
+        config: &RuntimeConfig,
+        task: String,
+    ) -> LaunchContext {
+        let gateway = config.gateway_url.trim_end_matches('/');
+        LaunchContext {
+            session_id: self.id,
+            task,
+            workspace: WORKSPACE.into(),
+            workdir: sandbox.workdir(),
+            home: sandbox.home(),
+            gateway_url: format!("{gateway}/mcp/{}", self.id),
+            gateway_token: self.gateway_token.clone(),
+            model_gateway_url: format!("{gateway}/llm/{}", self.id),
+            models: self.models.clone(),
         }
     }
 
@@ -1010,6 +1255,8 @@ impl Session {
         sandbox: &dyn Sandbox,
         plan: &LaunchPlan,
         deadline: Instant,
+        // A regular turn (not the wrap-up): going off duty cuts it short.
+        regular: bool,
     ) -> Result<TurnOutcome, RuntimeError> {
         let AgentProcess {
             mut child,
@@ -1037,6 +1284,7 @@ impl Session {
         let mut pumps_done = false;
         let deadline = tokio::time::sleep_until(deadline.into());
         tokio::pin!(deadline);
+        let mut off = self.off_duty.subscribe();
 
         let result = loop {
             tokio::select! {
@@ -1054,10 +1302,19 @@ impl Session {
                 }
                 () = self.cancel.cancelled() => break TurnOutcome::Stopped(None),
                 () = &mut deadline => {
+                    if !regular {
+                        // The wrap-up turn's own time is up.
+                        break TurnOutcome::Cut(String::new());
+                    }
                     let reason = TIME_BUDGET_REASON;
+                    if self.wrap_up.is_some() {
+                        // An agent that saves its work first gets to.
+                        break TurnOutcome::Cut(reason.into());
+                    }
                     self.stop(Principal::System, reason).await;
                     break TurnOutcome::Stopped(Some(reason.into()));
                 }
+                reason = off_duty(&mut off), if regular => break TurnOutcome::Cut(reason),
             }
         };
         let _ = child.start_kill();
@@ -1651,4 +1908,22 @@ fn truncate(s: &str, max: usize) -> String {
         cut -= 1;
     }
     format!("{} …[truncated]", &s[..cut])
+}
+
+/// Whether a directory exists and holds anything.
+fn not_empty(dir: &std::path::Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|mut d| d.next().is_some())
+}
+
+/// Wait until the agent is sent off duty; why.
+async fn off_duty(off: &mut watch::Receiver<Option<String>>) -> String {
+    let reason = off
+        .wait_for(Option::is_some)
+        .await
+        .map(|reason| reason.clone().unwrap_or_default());
+    match reason {
+        Ok(reason) => reason,
+        // The session is gone: it never goes off.
+        Err(_) => std::future::pending().await,
+    }
 }

@@ -141,7 +141,7 @@ reconnect with `?after=<last seq>`. Event types: `session_created`,
 `turn_started`, `output`, `action_requested`, `policy_evaluated`,
 `approval_requested`, `approval_resolved`, `action_completed`, `model_call`,
 `user_message`, `messages_delivered`, `checks_completed`, `pull_request_proposed`, `delivered`,
-`status_changed`, `paused`, `resumed`, `stop_requested`, `turn_ended`,
+`status_changed`, `paused`, `resumed`, `session_recovered` (another node carried the session on: `{node, reason}`), `stop_requested`, `turn_ended`,
 `recording_closed`, `session_ended`. The same JSON objects form the audit log.
 Session statuses: `pending`, `running`, `awaiting_approval`, `awaiting_input`,
 `paused`, `stopped`, `completed`, `failed`.
@@ -231,15 +231,14 @@ update-client endpoints under `/dist`;
 `dry_run` returns the plan only. A plan that does not fit the limits is
 refused with `409` (the body holds the plan) unless `raise_limits` is set.
 
-`DELETE /org/nodes/{name}` (admin) removes a node that stopped responding
-(`409` while it still sends heartbeats): its unfinished sessions are marked
-failed, all its sessions are archived (nothing is deleted; audit logs and
-model calls stay), and its agents are stopped and detached. Returns
-`{sessions, agents}` (how many of each were archived / detached).
+Nodes are not part of the API: they come and go, and a node that stops is
+forgotten on its own ([Failure handling](MULTI_AGENT.md#failure-handling)).
 
 Session endpoints (`/sessions/{id}/...`) work on any node: a node that does
-not run the session forwards the request (streams included) to the node
-that does, or answers `503` if that node is unreachable.
+not run a live session forwards the request (streams included) to the node
+that does. Sessions that ended are served by any node, from the data
+volume. While a session moves off a node that stopped responding, its
+endpoints answer `503` for a few seconds.
 
 ## Tool gateway (`/mcp/{session}`)
 

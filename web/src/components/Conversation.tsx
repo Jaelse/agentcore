@@ -73,6 +73,14 @@ function build(events: AgentEvent[]): Item[] {
       case "resumed":
         items.push({ kind: "note", text: `Resumed by ${principalLabel(e.by)}`, at: e.timestamp, tone: "ok" });
         break;
+      case "session_recovered":
+        items.push({
+          kind: "note",
+          text: "Carried on after the machine it ran on stopped: the workspace and conversation are as they were",
+          at: e.timestamp,
+          tone: "attention",
+        });
+        break;
       case "stop_requested":
         items.push({ kind: "note", text: `Stopped by ${principalLabel(e.by)}: ${e.reason}`, at: e.timestamp, tone: "bad" });
         break;

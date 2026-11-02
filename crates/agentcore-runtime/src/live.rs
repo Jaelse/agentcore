@@ -7,7 +7,7 @@
 //! goes into the audit log when the recording is closed.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::io::Write;
+use std::io::{Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -72,6 +72,48 @@ impl Recorder {
         });
         recorder.line(&header.to_string())?;
         Ok(recorder)
+    }
+
+    /// Carry on an existing recording (a session taken over by another
+    /// node): its timeline continues after the last event and the digest
+    /// covers the whole file. A missing file starts a new recording.
+    fn resume(path: &Path, title: &str) -> std::io::Result<Self> {
+        let mut content = match std::fs::read(path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Self::create(path, title);
+            }
+            Err(e) => return Err(e),
+        };
+        // A line cut short when the last node died is dropped.
+        let whole = content
+            .iter()
+            .rposition(|b| *b == b'\n')
+            .map_or(0, |i| i + 1);
+        content.truncate(whole);
+        if content.is_empty() {
+            return Self::create(path, title);
+        }
+        let file = std::fs::OpenOptions::new().write(true).open(path)?;
+        file.set_len(content.len() as u64)?;
+        let last = content[..content.len() - 1]
+            .split(|b| *b == b'\n')
+            .next_back()
+            .and_then(|line| serde_json::from_slice::<(f64, String, String)>(line).ok())
+            .map_or(0.0, |(t, _, _)| t);
+        let mut file = std::io::BufWriter::new(file);
+        file.seek(std::io::SeekFrom::End(0))?;
+        let mut hasher = Sha256::new();
+        hasher.update(&content);
+        Ok(Self {
+            path: path.to_path_buf(),
+            file,
+            hasher,
+            bytes: content.len() as u64,
+            started: Instant::now()
+                .checked_sub(Duration::from_secs_f64(last.max(0.0)))
+                .unwrap_or_else(Instant::now),
+        })
     }
 
     fn line(&mut self, line: &str) -> std::io::Result<()> {
@@ -175,6 +217,19 @@ impl LiveHub {
         let recorder = Recorder::create(path, title)?;
         *lock(&self.recorder) = Some(recorder);
         Ok(())
+    }
+
+    /// Append to the recording of a session that is carried on.
+    pub fn resume_recording(&self, path: &Path, title: &str) -> std::io::Result<()> {
+        let recorder = Recorder::resume(path, title)?;
+        *lock(&self.recorder) = Some(recorder);
+        Ok(())
+    }
+
+    /// Stop recording without writing anything more: another node owns the
+    /// session (and its recording) now.
+    pub fn abandon_recording(&self) {
+        lock(&self.recorder).take();
     }
 
     /// Close the recording; `None` when nothing was being recorded.

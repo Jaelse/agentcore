@@ -60,7 +60,7 @@ export function TopBar({ me, card, liveSessions, onStopAll, onShowCard, onSignOu
           <button
             className="btn danger"
             disabled={stopping || liveSessions === 0}
-            title="Immediately kill every running agent, on every node"
+            title="Immediately kill every running agent"
             onClick={async () => {
               setStopping(true);
               await onStopAll();

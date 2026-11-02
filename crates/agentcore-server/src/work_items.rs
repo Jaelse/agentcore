@@ -58,7 +58,7 @@ pub async fn checkpoint(state: &AppState, session: &Session) -> ApiResult<Option
         &config,
         &token,
         &project,
-        &state.mirror_path(session.id()),
+        &state.mirror_path(session),
         &item.branch,
         &bytes,
         &head,

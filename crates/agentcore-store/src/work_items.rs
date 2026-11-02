@@ -1,8 +1,9 @@
 //! Work items: the work a department does on its repository, and the leases
 //! sessions hold on them. The department owns the work (branch, last
-//! checkpoint, pull request); a session borrows it, and when the session
-//! ends, its node restarts or its node is lost, the lease is released and
-//! any worker can carry the item on from its last checkpoint.
+//! checkpoint, pull request); a session borrows it. A session carried on by
+//! another node keeps its lease (renewed, with a new generation); when the
+//! session ends, the lease is released and any worker can carry the item on
+//! from its last checkpoint.
 
 use agentcore_core::{DepartmentId, OrgAgentId, SessionId, WorkItem, WorkItemState, WorkLease};
 use chrono::{DateTime, Utc};
@@ -323,30 +324,25 @@ impl Store {
         Ok(row.map(Into::into))
     }
 
-    /// Release the leases held on nodes whose heartbeat is older than the
-    /// timeout: their sessions are gone with the node. Returns the items.
-    pub async fn expire_work_leases_on_dead_nodes(
+    /// A session carried on by another node keeps its work item: the lease
+    /// moves to that node with a new generation, so the node that lost the
+    /// session (cut off, not dead) can no longer save over the work.
+    pub async fn renew_work_lease(
         &self,
-        node_timeout_secs: u64,
-    ) -> Result<Vec<WorkItem>> {
-        let columns: String = COLUMNS
-            .split(", ")
-            .map(|c| format!("w.{}", c.trim()))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "UPDATE work_items w SET lease_id = NULL, lease_session = NULL, leased_at = NULL,
-                 note = 'its session was lost with node ' || w.lease_node, lease_node = NULL,
-                 updated_at = now()
-             FROM nodes n
-             WHERE w.lease_node = n.name AND w.lease_id IS NOT NULL
-               AND n.last_seen < now() - make_interval(secs => $1)
-             RETURNING {columns}"
+        session: SessionId,
+        node: &str,
+    ) -> Result<Option<WorkItem>> {
+        let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "UPDATE work_items SET lease_node = $2, lease_generation = lease_generation + 1,
+                 leased_at = now(), updated_at = now()
+             WHERE lease_session = $1 AND lease_id IS NOT NULL
+             RETURNING {COLUMNS}"
         )))
-        .bind(node_timeout_secs as f64)
-        .fetch_all(&self.pool)
+        .bind(session)
+        .bind(node)
+        .fetch_optional(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(Into::into).collect())
+        Ok(row.map(Into::into))
     }
 
     /// Hand an item to another worker of its department; it carries the item

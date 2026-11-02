@@ -82,7 +82,13 @@ impl DockerProvider {
     }
 
     /// Arguments for `docker run`, exposed for testing and auditing.
-    pub fn run_args(&self, request: &SandboxRequest, name: &str, workspace: &str) -> Vec<String> {
+    pub fn run_args(
+        &self,
+        request: &SandboxRequest,
+        name: &str,
+        workspace: &str,
+        home: Option<&str>,
+    ) -> Vec<String> {
         let c = &self.config;
         let network = match (&c.egress_network, request.egress) {
             (Some(egress), true) => egress,
@@ -99,10 +105,13 @@ impl DockerProvider {
             "--security-opt=no-new-privileges".into(),
             "--read-only".into(),
             format!("--tmpfs=/tmp:rw,nosuid,nodev,size={}", c.tmpfs_size),
-            format!(
-                "--tmpfs={AGENT_HOME}:rw,nosuid,nodev,size={},uid=1000,gid=1000",
-                c.tmpfs_size
-            ),
+            match home {
+                Some(home) => format!("--volume={home}:{AGENT_HOME}:rw"),
+                None => format!(
+                    "--tmpfs={AGENT_HOME}:rw,nosuid,nodev,size={},uid=1000,gid=1000",
+                    c.tmpfs_size
+                ),
+            },
             format!("--env=HOME={AGENT_HOME}"),
             format!("--user={}", c.user),
             format!("--memory={}", c.memory),
@@ -170,8 +179,37 @@ impl SandboxProvider for DockerProvider {
         let workspace: PathBuf = tokio::fs::canonicalize(&request.workspace_dir)
             .await
             .map_err(SandboxError::io("resolve workspace"))?;
+        let home = match &request.home_dir {
+            Some(dir) => {
+                tokio::fs::create_dir_all(dir)
+                    .await
+                    .map_err(SandboxError::io("create agent home"))?;
+                let (owner, home) = (self.config.user.clone(), dir.clone());
+                tokio::task::spawn_blocking(move || hand_over(&owner, &home))
+                    .await
+                    .map_err(|e| SandboxError::Command(e.to_string()))?;
+                Some(
+                    tokio::fs::canonicalize(dir)
+                        .await
+                        .map_err(SandboxError::io("resolve agent home"))?,
+                )
+            }
+            None => None,
+        };
         let name = format!("agentcore-{}", request.session_id);
-        let args = self.run_args(request, &name, &workspace.to_string_lossy());
+        // A session carried on from a node that died on this Docker host
+        // may have left its container behind; the session is ours now.
+        let _ = Command::new(&self.config.cli)
+            .args(["rm", "--force", "--volumes", &name])
+            .stdin(Stdio::null())
+            .output()
+            .await;
+        let args = self.run_args(
+            request,
+            &name,
+            &workspace.to_string_lossy(),
+            home.as_ref().map(|h| h.to_string_lossy()).as_deref(),
+        );
         let output = Command::new(&self.config.cli)
             .args(&args)
             .stdin(Stdio::null())
@@ -590,10 +628,11 @@ mod tests {
         let request = SandboxRequest {
             session_id: uuid::Uuid::nil(),
             workspace_dir: "/data/ws".into(),
+            home_dir: None,
             image: Some("img:1".into()),
             egress: false,
         };
-        let args = provider.run_args(&request, "agentcore-x", "/data/ws");
+        let args = provider.run_args(&request, "agentcore-x", "/data/ws", None);
         for expected in [
             "--cap-drop=ALL",
             "--security-opt=no-new-privileges",
@@ -609,6 +648,33 @@ mod tests {
     }
 
     #[test]
+    fn the_agent_home_is_kept_when_asked() {
+        let provider = DockerProvider::new(DockerConfig::default());
+        let request = SandboxRequest {
+            session_id: uuid::Uuid::nil(),
+            workspace_dir: "/data/ws".into(),
+            home_dir: None,
+            image: None,
+            egress: false,
+        };
+        let throwaway = provider.run_args(&request, "x", "/data/ws", None);
+        assert!(
+            throwaway
+                .iter()
+                .any(|a| a.starts_with("--tmpfs=/home/agent:"))
+        );
+        // A session's home on the data volume, so another sandbox (on any
+        // node) continues the agent's conversation.
+        let kept = provider.run_args(&request, "x", "/data/ws", Some("/data/home"));
+        assert!(
+            kept.iter()
+                .any(|a| a == "--volume=/data/home:/home/agent:rw")
+        );
+        assert!(!kept.iter().any(|a| a.starts_with("--tmpfs=/home/agent")));
+        assert!(kept.iter().any(|a| a == "--read-only"));
+    }
+
+    #[test]
     fn only_agents_that_need_it_get_the_egress_network() {
         let provider = DockerProvider::new(DockerConfig {
             egress_network: Some("claude-egress".into()),
@@ -617,12 +683,13 @@ mod tests {
         let mut request = SandboxRequest {
             session_id: uuid::Uuid::nil(),
             workspace_dir: "/data/ws".into(),
+            home_dir: None,
             image: None,
             egress: false,
         };
         let network = |r: &SandboxRequest| {
             provider
-                .run_args(r, "x", "/data/ws")
+                .run_args(r, "x", "/data/ws", None)
                 .into_iter()
                 .find(|a| a.starts_with("--network="))
                 .unwrap()

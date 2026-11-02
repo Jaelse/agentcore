@@ -4,7 +4,8 @@ use std::time::Duration;
 use agentcore_core::{Action, ActionOutcome, AgentSpec, EventKind, Principal, SessionStatus};
 use agentcore_policy::{Policy, PolicySet};
 use agentcore_runtime::{
-    AdapterRegistry, ApprovalDecision, CreateSession, RuntimeConfig, Session, SessionManager,
+    AdapterRegistry, ApprovalDecision, CreateSession, Resume, RuntimeConfig, RuntimeError, Session,
+    SessionManager,
 };
 use agentcore_sandbox::process::{ProcessConfig, ProcessProvider};
 
@@ -75,6 +76,22 @@ fn manager(dir: &std::path::Path) -> SessionManager {
                 follow_up_args: vec!["-c".into(), "echo \"got: $0\"".into(), "{task}".into()],
                 ..agent("listener", "echo ready")
             },
+            AgentSpec {
+                follow_up_args: vec!["-c".into(), "echo \"got: $0\"".into(), "{task}".into()],
+                ..agent("slow-listener", "echo started; sleep 60")
+            },
+            AgentSpec {
+                follow_up_args: vec![
+                    "-c".into(),
+                    "echo \"$0\" >> \"$HOME/diary\"; echo \"got: $0 ($(wc -l < \"$HOME/diary\" | tr -d ' ') in the diary)\"; case \"$0\" in SAVE*) echo saved > notes.md ;; esac".into(),
+                    "{task}".into(),
+                ],
+                ..agent("diarist", "echo \"$0\" >> \"$HOME/diary\"; echo draft > work.txt; echo started")
+            },
+            AgentSpec {
+                follow_up_args: vec!["-c".into(), "echo \"got: $0\"".into(), "{task}".into()],
+                ..agent("slow-diarist", "echo started; sleep 60")
+            },
             agent(
                 "asker",
                 "printf 'login code? '; read code; echo \"thanks ${#code}\"",
@@ -97,16 +114,47 @@ fn manager(dir: &std::path::Path) -> SessionManager {
     .unwrap()
 }
 
+fn request(agent: &str) -> CreateSession {
+    CreateSession {
+        agent: agent.into(),
+        task: "the task".into(),
+        policy: None,
+        provider: None,
+        model: None,
+    }
+}
+
+/// Carry a session on in another manager (another node), as a node does
+/// after the one that ran it went away.
+fn carry_on(manager: &SessionManager, gone: &Session) -> Result<Arc<Session>, RuntimeError> {
+    manager.resume(
+        request(&gone.info().agent),
+        Resume {
+            id: gone.id(),
+            audit_path: gone.audit_path().to_path_buf(),
+            reason: "node a went away".into(),
+            node: "b".into(),
+        },
+        Default::default(),
+    )
+}
+
+fn outputs(session: &Session) -> Vec<String> {
+    session
+        .subscribe()
+        .0
+        .into_iter()
+        .filter_map(|e| match e.kind {
+            EventKind::Output { line, .. } => Some(line),
+            _ => None,
+        })
+        .collect()
+}
+
 fn create(manager: &SessionManager, agent: &str) -> Arc<Session> {
     manager
         .create(
-            CreateSession {
-                agent: agent.into(),
-                task: "the task".into(),
-                policy: None,
-                provider: None,
-                model: None,
-            },
+            request(agent),
             Principal::human("alice"),
             Default::default(),
         )
@@ -323,11 +371,7 @@ async fn live_view_pause_resume_and_recording() {
     let manager = manager(dir.path());
     let session = create(&manager, "ticker");
     wait_for(&session, |s| s == SessionStatus::Running).await;
-    let ticks = dir
-        .path()
-        .join("workspaces")
-        .join(session.id().to_string())
-        .join("ticks");
+    let ticks = session.paths().workspace.join("ticks");
     for _ in 0..100 {
         if ticks.exists() {
             break;
@@ -401,7 +445,11 @@ async fn live_view_pause_resume_and_recording() {
             _ => None,
         })
         .unwrap();
-    let cast = std::fs::read(dir.path().join("recordings").join(file)).unwrap();
+    assert_eq!(
+        session.paths().recording.file_name().unwrap(),
+        file.as_str()
+    );
+    let cast = std::fs::read(&session.paths().recording).unwrap();
     use sha2::Digest;
     assert_eq!(hex::encode(sha2::Sha256::digest(&cast)), sha256);
     let cast = String::from_utf8(cast).unwrap();
@@ -506,4 +554,216 @@ async fn messages_wake_an_agent_waiting_for_input() {
         EventKind::Output { line, .. } if line.contains("got: You have 1 new message(s)")
     )));
     session.stop(Principal::human("alice"), "done").await;
+}
+
+#[tokio::test]
+async fn a_waiting_session_is_carried_on_by_another_node() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (manager(dir.path()), manager(dir.path()));
+    let session = create(&a, "listener");
+    wait_for(&session, |s| s == SessionStatus::AwaitingInput).await;
+    session
+        .send_message(Principal::human("alice"), "one".into())
+        .unwrap();
+    for _ in 0..200 {
+        if outputs(&session).iter().any(|l| l == "got: one") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    wait_for(&session, |s| s == SessionStatus::AwaitingInput).await;
+    assert!(outputs(&session).iter().any(|l| l == "got: one"));
+
+    // Node a goes away: it lets go of the session without ending it.
+    assert_eq!(a.fence_all().await, 1);
+    assert!(a.get(session.id()).is_err());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let written = agentcore_audit::read_events(session.audit_path()).unwrap();
+    assert!(
+        !written
+            .iter()
+            .any(|r| r.event.kind.name() == "session_ended")
+    );
+
+    // Node b carries it on: same id and log, waiting for input again,
+    // without running a turn of its own.
+    let moved = carry_on(&b, &session).unwrap();
+    assert_eq!(moved.id(), session.id());
+    assert_eq!(moved.info().created_by, Principal::human("alice"));
+    assert_eq!(
+        wait_for(&moved, |s| s == SessionStatus::AwaitingInput).await,
+        SessionStatus::AwaitingInput
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let turns = |s: &Session| kinds(s).iter().filter(|k| **k == "turn_started").count();
+    assert_eq!(turns(&moved), 2);
+    moved
+        .send_message(Principal::human("alice"), "two".into())
+        .unwrap();
+    for _ in 0..200 {
+        if outputs(&moved).iter().any(|l| l == "got: two") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(outputs(&moved).iter().any(|l| l == "got: two"));
+    assert!(
+        moved
+            .subscribe()
+            .0
+            .iter()
+            .any(|e| matches!(&e.kind, EventKind::TurnStarted { turn: 3 }))
+    );
+    moved.stop(Principal::human("alice"), "done").await;
+    wait_for(&moved, SessionStatus::is_terminal).await;
+
+    // One unbroken log, which records the move once.
+    let log = agentcore_audit::read_events(moved.audit_path()).unwrap();
+    assert!(agentcore_audit::verify_file(moved.audit_path()).is_ok());
+    let names: Vec<_> = log.iter().map(|r| r.event.kind.name()).collect();
+    assert_eq!(names.iter().filter(|n| **n == "session_created").count(), 1);
+    assert_eq!(
+        names.iter().filter(|n| **n == "session_recovered").count(),
+        1
+    );
+    assert_eq!(names.last(), Some(&"session_ended"));
+    assert!(log.iter().enumerate().all(|(i, r)| r.event.seq == i as u64));
+    // The log lives in the session's own directory, with its workspace.
+    let dir_of = moved.audit_path().parent().unwrap();
+    assert_eq!(moved.paths().workspace, dir_of.join("workspace"));
+}
+
+#[tokio::test]
+async fn a_turn_cut_off_is_carried_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (manager(dir.path()), manager(dir.path()));
+    let session = create(&a, "slow-listener");
+    wait_for(&session, |s| s == SessionStatus::Running).await;
+    a.fence_all().await;
+
+    let moved = carry_on(&b, &session).unwrap();
+    wait_for(&moved, |s| s == SessionStatus::AwaitingInput).await;
+    assert!(
+        outputs(&moved)
+            .iter()
+            .any(|l| l.starts_with("got: agentcore: your session moved")),
+        "{:?}",
+        outputs(&moved)
+    );
+    moved.stop(Principal::human("alice"), "done").await;
+}
+
+#[tokio::test]
+async fn an_ended_session_is_not_carried_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let (a, b) = (manager(dir.path()), manager(dir.path()));
+    let session = create(&a, "hello");
+    wait_for(&session, SessionStatus::is_terminal).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(matches!(
+        carry_on(&b, &session),
+        Err(RuntimeError::Ended(SessionStatus::Completed))
+    ));
+}
+
+/// A department agent's options: it keeps its directory, saves before it
+/// goes off, and carries its conversation on.
+fn keeps(dir: &std::path::Path) -> agentcore_runtime::SessionOptions {
+    agentcore_runtime::SessionOptions {
+        agent_dir: Some(dir.join("agent")),
+        continue_conversation: true,
+        wrap_up: Some("SAVE your work ({reason})".into()),
+        ..Default::default()
+    }
+}
+
+async fn ended(session: &Session) -> Vec<String> {
+    wait_for(session, SessionStatus::is_terminal).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    outputs(session)
+}
+
+#[tokio::test]
+async fn an_agent_saves_before_it_goes_off_and_carries_on_next_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = manager(dir.path());
+    let day1 = manager
+        .create(
+            request("diarist"),
+            Principal::human("alice"),
+            keeps(dir.path()),
+        )
+        .unwrap();
+    wait_for(&day1, |s| s == SessionStatus::AwaitingInput).await;
+
+    // Its working hours end: it gets one turn to save, then goes off.
+    day1.go_off();
+    let out = ended(&day1).await;
+    assert!(
+        out.iter()
+            .any(|l| l.starts_with("got: SAVE your work (off duty")),
+        "{out:?}"
+    );
+    assert_eq!(day1.end_cause(), Some(agentcore_runtime::EndCause::OffDuty));
+    let workspace = &day1.paths().workspace;
+    assert_eq!(workspace, &dir.path().join("agent/workspace"));
+    assert!(
+        workspace.join("notes.md").exists(),
+        "saved in its workspace"
+    );
+    // The session's own log stays with the session.
+    assert_ne!(
+        day1.audit_path().parent(),
+        Some(dir.path().join("agent").as_path())
+    );
+
+    // The next day: a new session, the same workspace, and the same
+    // conversation, which the task continues.
+    let day2 = manager
+        .create(
+            request("diarist"),
+            Principal::human("alice"),
+            keeps(dir.path()),
+        )
+        .unwrap();
+    wait_for(&day2, |s| s == SessionStatus::AwaitingInput).await;
+    let out = outputs(&day2);
+    assert!(
+        out.iter().any(|l| l == "got: the task (3 in the diary)"),
+        "{out:?}"
+    );
+    assert!(day2.paths().workspace.join("work.txt").exists());
+    assert!(!kinds(&day2).contains(&"role_applied"));
+    day2.stop(Principal::human("alice"), "done").await;
+}
+
+#[tokio::test]
+async fn going_off_cuts_a_running_turn_short() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = manager(dir.path());
+    let session = manager
+        .create(
+            request("slow-diarist"),
+            Principal::human("alice"),
+            keeps(dir.path()),
+        )
+        .unwrap();
+    wait_for(&session, |s| s == SessionStatus::Running).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    session.go_off();
+    let out = ended(&session).await;
+    assert!(
+        out.iter().any(|l| l.starts_with("got: SAVE your work")),
+        "{out:?}"
+    );
+    assert_eq!(
+        session.end_cause(),
+        Some(agentcore_runtime::EndCause::OffDuty)
+    );
+    // Without a wrap-up, nothing changes: the session just ends when told.
+    let plain = create(&manager, "listener");
+    wait_for(&plain, |s| s == SessionStatus::AwaitingInput).await;
+    plain.go_off();
+    let out = ended(&plain).await;
+    assert!(!out.iter().any(|l| l.contains("SAVE")), "{out:?}");
 }

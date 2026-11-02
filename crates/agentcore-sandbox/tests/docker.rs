@@ -39,6 +39,7 @@ async fn docker_sandbox_lifecycle() {
         .create(&SandboxRequest {
             session_id: uuid::Uuid::new_v4(),
             workspace_dir: dir.path().to_path_buf(),
+            home_dir: None,
             image: None,
             egress: false,
         })
@@ -196,6 +197,7 @@ async fn docker_sandbox_lifecycle() {
         .create(&SandboxRequest {
             session_id: uuid::Uuid::new_v4(),
             workspace_dir: dir.path().to_path_buf(),
+            home_dir: None,
             image: None,
             egress: true,
         })
@@ -211,6 +213,7 @@ async fn docker_sandbox_lifecycle() {
         .create(&SandboxRequest {
             session_id: uuid::Uuid::new_v4(),
             workspace_dir: dir.path().to_path_buf(),
+            home_dir: None,
             image: None,
             egress: false,
         })
