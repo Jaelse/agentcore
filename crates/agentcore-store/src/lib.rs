@@ -48,7 +48,7 @@ pub use launch::{
 };
 pub use org::{
     AgentInput, AgentScope, DepartmentInput, FileInfo, MAX_FILE_BYTES, MessageFilter, NewMessage,
-    ORG_CHANNEL, RESERVED_NAMES, valid_agent_name,
+    ORG_CHANNEL, RESERVED_NAMES, Reaped, WAITING_FOR_ROOM, valid_agent_name,
 };
 pub use outbox::{
     ChannelInput, ChannelUpdate, DEFAULT_DISCLOSURE, MAX_BODY_CHARS, NewOutboxItem, OutboxCounts,
@@ -129,6 +129,7 @@ struct SessionRow {
     audit_path: String,
     context: Json<agentcore_core::SessionContext>,
     node: Option<String>,
+    resume_spec: Option<serde_json::Value>,
 }
 
 /// A session as persisted.
@@ -139,6 +140,9 @@ pub struct SessionRecord {
     pub audit_path: PathBuf,
     /// Node that runs (or ran) the session.
     pub node: Option<String>,
+    /// How another node builds the session again to carry it on (sessions
+    /// started by a person; `None` for department agents and old sessions).
+    pub resume_spec: Option<serde_json::Value>,
 }
 
 impl From<SessionRow> for SessionRecord {
@@ -161,6 +165,7 @@ impl From<SessionRow> for SessionRecord {
             policy_digest: row.policy_digest,
             audit_path: row.audit_path.into(),
             node: row.node,
+            resume_spec: row.resume_spec,
         }
     }
 }
@@ -333,15 +338,22 @@ impl Store {
 
     // ---- sessions -----------------------------------------------------------
 
+    /// Insert or update a session row. Only the node the session is
+    /// assigned to updates it: a node that lost the session to another one
+    /// (it was cut off and the session was carried on elsewhere) cannot
+    /// overwrite what the new node records.
     pub async fn upsert_session(&self, record: &SessionRecord) -> Result<()> {
         let info = &record.info;
         sqlx::query(
             "INSERT INTO sessions (id, agent, task, policy, policy_digest, status, created_by,
-                                   created_at, ended_at, actions, model_calls, audit_path, context, node)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                                   created_at, ended_at, actions, model_calls, audit_path, context,
+                                   node, resume_spec)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
              ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status,
                  ended_at = EXCLUDED.ended_at, actions = EXCLUDED.actions,
-                 model_calls = EXCLUDED.model_calls, context = EXCLUDED.context",
+                 model_calls = EXCLUDED.model_calls, context = EXCLUDED.context,
+                 resume_spec = COALESCE(EXCLUDED.resume_spec, sessions.resume_spec)
+             WHERE sessions.node IS NOT DISTINCT FROM EXCLUDED.node",
         )
         .bind(info.id)
         .bind(&info.agent)
@@ -357,6 +369,7 @@ impl Store {
         .bind(record.audit_path.to_string_lossy().as_ref())
         .bind(Json(&info.context))
         .bind(&record.node)
+        .bind(&record.resume_spec)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -366,7 +379,7 @@ impl Store {
     pub async fn list_sessions(&self, limit: i64, archived: bool) -> Result<Vec<SessionRecord>> {
         let rows: Vec<SessionRow> = sqlx::query_as(
             "SELECT id, agent, task, policy, policy_digest, status, created_by, created_at,
-                    ended_at, actions, model_calls, audit_path, context, node
+                    ended_at, actions, model_calls, audit_path, context, node, resume_spec
              FROM sessions WHERE (archived_at IS NOT NULL) = $2
              ORDER BY created_at DESC LIMIT $1",
         )
@@ -460,7 +473,7 @@ impl Store {
     pub async fn get_session(&self, id: SessionId) -> Result<Option<SessionRecord>> {
         let row: Option<SessionRow> = sqlx::query_as(
             "SELECT id, agent, task, policy, policy_digest, status, created_by, created_at,
-                    ended_at, actions, model_calls, audit_path, context, node
+                    ended_at, actions, model_calls, audit_path, context, node, resume_spec
              FROM sessions WHERE id = $1",
         )
         .bind(id)
@@ -469,22 +482,54 @@ impl Store {
         Ok(row.map(Into::into))
     }
 
-    /// Mark sessions of this node that were live when it last stopped as
-    /// failed and return them, so their audit logs can be closed. Sessions
-    /// of other nodes are left alone (sessions without a node predate
-    /// clustering and belong to whichever node starts first).
-    pub async fn fail_interrupted_sessions(&self, node: &str) -> Result<Vec<SessionRecord>> {
-        let rows: Vec<SessionRow> = sqlx::query_as(
-            "UPDATE sessions SET status = 'failed', ended_at = now()
-             WHERE status NOT IN ('stopped', 'completed', 'failed')
-               AND (node = $1 OR node IS NULL)
-             RETURNING id, agent, task, policy, policy_digest, status, created_by, created_at,
-                       ended_at, actions, model_calls, audit_path, context, node",
+    /// Live sessions assigned to a node: the ones it runs, and the ones it
+    /// has to carry on (moved to it from a node that went away, or its own
+    /// from before it restarted). `true`: a department agent placed on this
+    /// node holds the session, so the reconciler carries it on with the agent.
+    pub async fn live_sessions_of(&self, node: &str) -> Result<Vec<(SessionRecord, bool)>> {
+        #[derive(sqlx::FromRow)]
+        struct Live {
+            #[sqlx(flatten)]
+            row: SessionRow,
+            managed: bool,
+        }
+        let rows: Vec<Live> = sqlx::query_as(
+            "SELECT id, agent, task, policy, policy_digest, status, created_by, created_at,
+                    ended_at, actions, model_calls, audit_path, context, node, resume_spec,
+                    EXISTS (SELECT 1 FROM org_agents a
+                            WHERE a.session_id = s.id AND a.node = s.node
+                              AND a.desired <> 'stopped') AS managed
+             FROM sessions s
+             WHERE node = $1 AND status NOT IN ('stopped', 'completed', 'failed')
+             ORDER BY created_at",
         )
         .bind(node)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(Into::into).collect())
+        Ok(rows
+            .into_iter()
+            .map(|live| (live.row.into(), live.managed))
+            .collect())
+    }
+
+    /// A live session that cannot be carried on is over: record how it
+    /// ended. Only the node it is assigned to may do so.
+    pub async fn end_lost_session(
+        &self,
+        id: SessionId,
+        node: &str,
+        status: SessionStatus,
+    ) -> Result<bool> {
+        let updated = sqlx::query(
+            "UPDATE sessions SET status = $3, ended_at = COALESCE(ended_at, now())
+             WHERE id = $1 AND node = $2 AND status NOT IN ('stopped', 'completed', 'failed')",
+        )
+        .bind(id)
+        .bind(node)
+        .bind(status_str(status))
+        .execute(&self.pool)
+        .await?;
+        Ok(updated.rows_affected() > 0)
     }
 
     // ---- model providers --------------------------------------------------

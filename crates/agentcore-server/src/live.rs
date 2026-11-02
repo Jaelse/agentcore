@@ -135,13 +135,11 @@ pub async fn recording(
     Path(id): Path<SessionId>,
 ) -> ApiResult<impl IntoResponse> {
     // Make sure the session exists (and the caller may see it).
-    state.lookup(id).await?;
     let path = state
-        .config
-        .storage
-        .data_dir
-        .join("recordings")
-        .join(format!("{id}.cast"));
+        .lookup(id)
+        .await?
+        .paths(&state.config.storage.data_dir)
+        .recording;
     let body = match tokio::fs::read(&path).await {
         Ok(body) => body,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {

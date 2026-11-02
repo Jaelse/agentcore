@@ -230,7 +230,7 @@ flowchart LR
     PS -- "polled while watched" --> HUB
     HUB -- "SSE /live" --> UI["Live tab"]
     PTY -- "plain text lines" --> AUD[("Audit log")]
-    HUB -- "asciicast file" --> REC[("recordings/<br/>id.cast")]
+    HUB -- "asciicast file" --> REC[("session directory/<br/>recording.cast")]
     REC -- "SHA-256 on close" --> AUD
 ```
 
@@ -247,7 +247,7 @@ flowchart LR
   terminal output (`terminal_reset`), recent file changes and the current
   processes first, so the screen is complete immediately. A viewer that falls
   behind is told to reconnect (`lagged`) and gets a fresh screen.
-* **Recording.** The terminal is written to `data/recordings/<session>.cast`
+* **Recording.** The terminal is written to `recording.cast` in the session's directory
   (asciicast v2, with a chapter marker per turn and banners for pause, resume
   and stop). When the session ends, its size and SHA-256 are recorded in the
   hash-chained audit log (`recording_closed`), so a replay can be proven to be
@@ -342,8 +342,8 @@ sequenceDiagram
 
 ```mermaid
 flowchart LR
-    GH["GitHub repo"] -- "clone (token)" --> M[("data/repos/{session}.git<br/>bare mirror<br/><i>agentcore only</i>")]
-    M -- "git clone file://" --> W[("data/workspaces/{session}<br/><i>agent's checkout</i>")]
+    GH["GitHub repo"] -- "clone (token)" --> M[("{session dir}/repository.git<br/>bare mirror<br/><i>agentcore only</i>")]
+    M -- "git clone file://" --> W[("{session dir}/workspace<br/><i>agent's checkout</i>")]
     W -- "git bundle base..HEAD<br/>(created in the sandbox)" --> BUN["bundle (bytes)"]
     BUN -- "git fetch" --> M
     M -- "push session branch only (token)" --> GH
@@ -479,10 +479,11 @@ erDiagram
 
 | Data | Where | Why |
 |---|---|---|
-| Session events | `data/audit/<session>.jsonl` | Tamper-evident hash chain; the authoritative record |
-| Organisations, messages, department files, nodes, goals, check-ins, data sources, activity, proposals, prices, budgets, channels, outbox | PostgreSQL (migrations `0004`–`0011`; see [Multi-agent organisations](MULTI_AGENT.md#data-model)) | Shared by every node |
+| A session's data | its directory on the data volume: `data/departments/<department>/sessions/<session>/` (or `data/sessions/<session>/` outside departments), holding `audit.jsonl`, `recording.cast`, `workspace/`, `home/` (the agent's `HOME`) and `repository.git` | One place per session, readable by every node, so any node can carry a session on ([Failure handling](MULTI_AGENT.md#failure-handling)). Sessions from before 0.1.0-beta.20 keep `data/audit/`, `data/recordings/`, `data/workspaces/` and `data/repos/` |
+| A department agent's work | `data/departments/<department>/agents/<agent>/`: `workspace/`, `home/` and `repository.git`, used by all its sessions instead of the session's own | Its next session (after idle, time limit, working hours, a lost node) carries on in the same checkout and conversation ([Sleep, wake and continue](MULTI_AGENT.md#goals-check-ins-and-agents-that-keep-going)) |
+| Session events | `audit.jsonl` in the session's directory | Tamper-evident hash chain; the authoritative record; continued (never restarted) when the session is carried on |
+| Organisations, messages, department files, live nodes, goals, check-ins, data sources, activity, proposals, prices, budgets, channels, outbox | PostgreSQL (migrations `0004`–`0011`; see [Multi-agent organisations](MULTI_AGENT.md#data-model)) | Shared by every node |
 | Sessions, projects, providers, GitHub connection, model calls, changes, admin log | PostgreSQL (migrations in `crates/agentcore-store/migrations`) | Queryable state that survives restarts |
-| Repository mirrors and workspaces | `data/repos/`, `data/workspaces/` | Agent checkouts and agentcore's push source |
 | Master key | `data/master.key` or `$AGENTCORE_MASTER_KEY` | Decrypts provider keys, the GitHub token, data source and channel secrets; back it up |
 
 ## Agents and adapters
@@ -557,7 +558,8 @@ running an app with them in the [Guide](GUIDE.md). Where the code is:
 |---|---|
 | `org.rs` | Organisation API, the `team_*` tools, message routing, the first prompt of a department agent (mission, colleagues, goals, notes, data, channels, budget, pending messages) and starting its session. |
 | `templates.rs` | Department templates and growth paths: plans what to create and suggests what to add next. |
-| `cluster.rs` | Node heartbeat (lost nodes, budgets, check-ins), the `LISTEN/NOTIFY` listener, the reconciler (start, pause, stop, deliver, sleep, wake, continue), request forwarding to the node that owns a session. |
+| `cluster.rs` | Node heartbeat (forgetting lost nodes and moving their work, budgets, check-ins), fencing (letting go of sessions when the database is lost), the `LISTEN/NOTIFY` listener, the reconciler (start, carry on, pause, stop, deliver, sleep, wake, continue), request forwarding to the node that runs a session. |
+| `sessions.rs` | The session index, and carrying on sessions moved to this node (from their audit log, with the request they were started with). |
 | `insights.rs` | `data_*` tools and reading data sources; `insights_*` tools; signals; checking and applying proposals; their API. |
 | `budgets.rs` | Budget evaluation, the gateway's budget check, prices and budgets API. |
 | `outbox.rs` | `outbox_*` tools, sending over SMTP (lettre), Slack and webhooks, the approval flow and channel API. |

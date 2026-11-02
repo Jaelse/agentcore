@@ -34,13 +34,12 @@ pub mod work_items;
 use std::sync::Arc;
 use std::time::Duration;
 
-use agentcore_core::Principal;
 use agentcore_policy::PolicySet;
 use agentcore_runtime::{AdapterRegistry, RuntimeConfig, SessionManager};
 use agentcore_store::{Cipher, Store};
 use anyhow::Context;
 use axum::Router;
-use axum::routing::{any, delete, get, patch, post, put};
+use axum::routing::{any, get, patch, post, put};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::services::{ServeDir, ServeFile};
@@ -116,7 +115,7 @@ impl AppState {
             .await
             .context("connecting to PostgreSQL")?;
         let node = config.node_name();
-        sessions::recover(&store, provider.as_ref(), &node).await;
+        sessions::clean_up_sandboxes(provider.as_ref()).await;
         if config.org.communicator_policy.is_some() {
             tracing::warn!(
                 "[org].communicator_policy is ignored: departments have a message router with \
@@ -266,7 +265,6 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/{name}/check", post(catalog::check))
         .route("/org", get(org::overview))
         .route("/org/stream", get(org::stream))
-        .route("/org/nodes/{name}", delete(org::remove_node))
         .route("/org/templates", get(org::templates))
         .route("/org/suggestions", get(org::suggestions))
         .route("/org/profile", get(org::get_profile).put(org::put_profile))
@@ -490,7 +488,8 @@ fn cors(origins: &[String]) -> CorsLayer {
         .max_age(Duration::from_secs(3600))
 }
 
-/// Run the server until Ctrl-C / SIGTERM, then stop every live session.
+/// Run the server until Ctrl-C / SIGTERM, then hand every live session over
+/// to the other nodes.
 pub async fn serve(config: Config) -> anyhow::Result<()> {
     let bind = config.server.bind;
     if !config.server.ui_dir.join("index.html").exists() {
@@ -509,23 +508,18 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     axum::serve(listener, router(state.clone()))
         .with_graceful_shutdown(shutdown_signal())
         .await?;
-    let stopped = manager
-        .stop_all(Principal::System, "server shutting down")
-        .await;
-    // Give session tasks a moment to record their end and sync to the database.
-    for _ in 0..50 {
-        if manager.list().iter().all(|s| s.status.is_terminal()) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    for info in manager.list() {
-        if let Ok(session) = manager.get(info.id) {
-            state.persist(&session).await;
-        }
-    }
+    // Nodes are ephemeral: hand the sessions over instead of ending them.
+    // Let go of them, leave the cluster, and move them to the other nodes,
+    // which carry them on (or this node, or the next one, when it starts).
+    let handed = manager.fence_all().await;
     cluster.cancel();
-    tracing::info!(stopped, "shutdown complete");
+    if let Err(err) = state.store.leave_cluster(&state.node).await {
+        tracing::warn!(error = %err, "could not leave the cluster; the others will notice");
+    }
+    if let Err(err) = cluster::reap(&state).await {
+        tracing::warn!(error = %err, "could not hand the sessions over");
+    }
+    tracing::info!(sessions = handed, "shutdown complete; sessions handed over");
     Ok(())
 }
 

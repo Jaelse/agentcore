@@ -6,9 +6,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use agentcore_audit::AuditLog;
 use agentcore_core::{Event, EventKind, SessionId, SessionInfo, SessionStatus};
-use agentcore_runtime::Session;
-use agentcore_store::{SessionRecord, Store};
+use agentcore_runtime::{CreateSession, Resume, Session, SessionPaths};
+use agentcore_store::SessionRecord;
 use axum::http::StatusCode;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 use uuid::Uuid;
 
@@ -40,6 +41,14 @@ impl SessionRef {
         match self {
             Self::Live(s) => s.audit_path().to_path_buf(),
             Self::Archived(r) => r.audit_path.clone(),
+        }
+    }
+
+    /// Where the session keeps its data on the data volume.
+    pub fn paths(&self, data_dir: &std::path::Path) -> SessionPaths {
+        match self {
+            Self::Live(s) => s.paths().clone(),
+            Self::Archived(r) => SessionPaths::of(data_dir, r.info.id, &r.audit_path),
         }
     }
 
@@ -78,7 +87,22 @@ pub fn record(session: &Session, node: &str) -> SessionRecord {
         policy_digest: session.policy_digest().to_string(),
         audit_path: session.audit_path().to_path_buf(),
         node: Some(node.to_string()),
+        resume_spec: None,
     }
+}
+
+/// How another node builds a session started by a person again, to carry
+/// it on (department agents are built from their department instead).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResumeSpec {
+    /// `POST /sessions`.
+    Plain { request: CreateSession },
+    /// `POST /projects/{id}/sessions`.
+    Project {
+        project_id: Uuid,
+        request: crate::teamwork::StartRequest,
+    },
 }
 
 impl AppState {
@@ -96,11 +120,25 @@ impl AppState {
     }
 
     pub async fn persist(&self, session: &Session) {
-        if let Err(err) = self
-            .store
-            .upsert_session(&record(session, &self.node))
-            .await
-        {
+        self.persist_record(session, None).await;
+    }
+
+    /// Persist a new session with what another node needs to carry it on.
+    pub async fn persist_new(&self, session: &Session, spec: ResumeSpec) {
+        self.persist_record(session, serde_json::to_value(spec).ok())
+            .await;
+    }
+
+    async fn persist_record(&self, session: &Session, resume_spec: Option<serde_json::Value>) {
+        if session.is_fenced() {
+            // Another node owns the session now.
+            return;
+        }
+        let record = SessionRecord {
+            resume_spec,
+            ..record(session, &self.node)
+        };
+        if let Err(err) = self.store.upsert_session(&record).await {
             tracing::error!(session = %session.id(), error = %err, "failed to persist session");
         }
     }
@@ -231,24 +269,10 @@ impl AppState {
     }
 }
 
-/// After a crash or restart: mark this node's sessions that were live as
-/// failed, close their audit logs with a `session_ended` event, and remove
-/// their sandboxes. Other nodes' sessions are not touched.
-pub async fn recover(store: &Store, sandbox: &dyn agentcore_sandbox::SandboxProvider, node: &str) {
-    match store.fail_interrupted_sessions(node).await {
-        Ok(sessions) => {
-            for record in sessions {
-                let path = record.audit_path.clone();
-                let id = record.info.id;
-                let closed = tokio::task::spawn_blocking(move || close_audit(&path, id)).await;
-                if !matches!(closed, Ok(Ok(()))) {
-                    tracing::error!(session = %id, "could not close the audit log of an interrupted session");
-                }
-                tracing::warn!(session = %id, "session was interrupted by an agentcore restart");
-            }
-        }
-        Err(err) => tracing::error!(error = %err, "failed to recover interrupted sessions"),
-    }
+/// At start: remove sandboxes left behind by a previous run of this node.
+/// Its sessions are not ended: they are carried on ([`carry_on`] and the
+/// reconciler), here or on another node.
+pub async fn clean_up_sandboxes(sandbox: &dyn agentcore_sandbox::SandboxProvider) {
     match sandbox.cleanup_orphans().await {
         Ok(0) => {}
         Ok(n) => tracing::warn!(
@@ -259,13 +283,105 @@ pub async fn recover(store: &Store, sandbox: &dyn agentcore_sandbox::SandboxProv
     }
 }
 
+/// Why a session is carried on, as recorded in its log.
+pub const CARRIED_ON: &str = "the node it ran on stopped; carried on here";
+
+/// Carry on the live sessions assigned to this node that it does not run:
+/// moved here from a node that went away, or this node's own from before it
+/// restarted. Department agents' sessions are carried on by the reconciler,
+/// with their agent. Returns whether anything changed.
+pub async fn carry_on(state: &AppState) -> anyhow::Result<bool> {
+    let mut changed = false;
+    for (record, managed) in state.store.live_sessions_of(&state.node).await? {
+        if managed || state.manager.get(record.info.id).is_ok() {
+            continue;
+        }
+        changed = true;
+        let id = record.info.id;
+        let spec = record
+            .resume_spec
+            .clone()
+            .and_then(|spec| serde_json::from_value::<ResumeSpec>(spec).ok());
+        let resume = Resume {
+            id,
+            audit_path: record.audit_path.clone(),
+            reason: CARRIED_ON.into(),
+            node: state.node.to_string(),
+        };
+        let result = match spec {
+            Some(ResumeSpec::Plain { request }) => {
+                let options = agentcore_runtime::SessionOptions {
+                    models: state.store.enabled_endpoints().await?,
+                    ..Default::default()
+                };
+                state
+                    .manager
+                    .resume(request, resume, options)
+                    .map_err(ApiError::from)
+            }
+            Some(ResumeSpec::Project {
+                project_id,
+                request,
+            }) => match state.project(project_id).await {
+                Ok(project) => {
+                    let by = record.info.created_by.clone();
+                    crate::teamwork::start_session(state, &project, request, by, Some(resume)).await
+                }
+                Err(err) => Err(err),
+            },
+            None => Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "it was started before sessions could move between nodes",
+            )),
+        };
+        match result {
+            Ok(session) => {
+                tracing::info!(session = %id, "carrying on a session");
+                state.persist(&session).await;
+                state.follow(session);
+            }
+            Err(err) => {
+                tracing::warn!(session = %id, error = %err.message(), "cannot carry a session on");
+                end_lost(state, &record, err.message()).await;
+            }
+        }
+    }
+    Ok(changed)
+}
+
+/// A live session that cannot be carried on is over: its audit log gets its
+/// end (failed, interrupted) unless it already has one, and its row says so.
+pub async fn end_lost(state: &AppState, record: &SessionRecord, why: &str) {
+    let (path, id) = (record.audit_path.clone(), record.info.id);
+    let reason = format!("interrupted: its node stopped, and it could not be carried on ({why})");
+    let closed = tokio::task::spawn_blocking(move || close_audit(&path, id, reason)).await;
+    let status = match closed {
+        Ok(Ok(status)) => status,
+        _ => {
+            tracing::error!(session = %id, "could not close the audit log of an interrupted session");
+            SessionStatus::Failed
+        }
+    };
+    if let Err(err) = state.store.end_lost_session(id, &state.node, status).await {
+        tracing::warn!(session = %id, error = %err, "could not record the end of a lost session");
+    }
+}
+
+/// Append the end of an interrupted session, unless the log has it already.
+/// Returns how the session ended.
 fn close_audit(
     path: &std::path::Path,
     session_id: SessionId,
-) -> Result<(), agentcore_audit::AuditError> {
-    let next_seq = agentcore_audit::read_events(path)?
-        .last()
-        .map_or(0, |r| r.event.seq + 1);
+    reason: String,
+) -> Result<SessionStatus, agentcore_audit::AuditError> {
+    let events = agentcore_audit::read_events(path)?;
+    if let Some(status) = events.iter().rev().find_map(|r| match r.event.kind {
+        EventKind::SessionEnded { status, .. } => Some(status),
+        _ => None,
+    }) {
+        return Ok(status);
+    }
+    let next_seq = events.last().map_or(0, |r| r.event.seq + 1);
     let log = AuditLog::open(path, true)?;
     log.append(&Event {
         id: Uuid::now_v7(),
@@ -275,8 +391,8 @@ fn close_audit(
         kind: EventKind::SessionEnded {
             status: SessionStatus::Failed,
             exit_code: None,
-            reason: Some("interrupted: agentcore stopped while the session was running".into()),
+            reason: Some(reason),
         },
     })?;
-    Ok(())
+    Ok(SessionStatus::Failed)
 }

@@ -13,13 +13,15 @@ pub mod adapters;
 mod approvals;
 pub mod live;
 mod manager;
+mod recover;
 mod session;
 pub mod work;
 
 pub use adapters::AdapterRegistry;
 pub use approvals::{ApprovalDecision, PendingApproval};
-pub use manager::{CreateSession, RuntimeConfig, SessionManager};
-pub use session::{EndCause, IDLE_REASON, Session, TIME_BUDGET_REASON};
+pub use manager::{CreateSession, Resume, RuntimeConfig, SessionManager};
+pub use recover::SessionPaths;
+pub use session::{EndCause, IDLE_REASON, OFF_DUTY_REASON, Session, TIME_BUDGET_REASON};
 pub use work::{EndHook, PreparedWorkspace, SessionOptions, ToolHandler, WorkspaceSetup};
 
 #[derive(Debug, thiserror::Error)]
@@ -36,6 +38,8 @@ pub enum RuntimeError {
     ApprovalNotFound(uuid::Uuid),
     #[error("session is not running")]
     NotRunning,
+    #[error("the session already ended ({0:?})")]
+    Ended(agentcore_core::SessionStatus),
     #[error("the agent is not waiting for input")]
     NotAwaitingInput,
     #[error("the agent has no terminal to type into right now")]

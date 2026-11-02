@@ -487,7 +487,7 @@ with the department and is carried on from its last checkpoint.
 flowchart LR
     D[("Department<br/>work item: branch,<br/>last checkpoint, PR")] -- "1 acquire: lease,<br/>checkout of the branch" --> S["Session<br/>(any node)"]
     S -- "2 checkpoint: committed work<br/>pushed while waiting for input" --> D
-    S -- "3 release: session ended,<br/>node restarted or lost" --> D
+    S -- "3 release: session ended" --> D
     S -. "Deliver (a person)" .-> PR["Pull request"]
 ```
 
@@ -500,28 +500,31 @@ flowchart LR
 2. **Checkpoint.** While the agent waits for input, its node pushes the
    *committed* work to the item's branch whenever it changed (every
    `[cluster].checkpoint_secs`, default 60), and once more when the system
-   ends the session for its time limit or for idleness. Uncommitted changes
-   are not saved; agents are told to commit often. A person's **STOP** does
-   not wait for a save.
-3. **Release.** When the session ends, its node restarts or its node is
-   lost, the lease is released and the item keeps its last checkpoint.
-   **Continue** (time limit), **wake** (a message) and a restart start the
-   next session on the same item.
+   ends the session (time limit, idleness, end of its working hours), right
+   after the agent's [wrap-up turn](#goals-check-ins-and-agents-that-keep-going)
+   in which it commits everything. The checkout itself is kept in the agent's
+   directory, so its next session continues it as it was (uncommitted
+   changes included). A person's **STOP** does not wait for a save.
+3. **Release.** When the session ends, the lease is released and the item
+   keeps its last checkpoint. **Continue** (time limit) and **wake** (a
+   message) start the next session on the same item. A session that is
+   [carried on by another node](#failure-handling) keeps its lease, renewed
+   for that node.
 
 Who carries the work on:
 
 | The session ended because | What happens to the work |
 |---|---|
 | its time limit, or it slept and was woken | the same worker carries the item on in its next session |
-| its node restarted | the node starts the worker again at once, on the item |
-| its node was lost | another node notices (heartbeat), releases the lease and places the worker on a live node, which carries the item on |
+| its node stopped, restarted or was lost | it did not end: the same session is carried on by a live node, in the same checkout (uncommitted changes included), and keeps the item under a renewed lease |
 | a person stopped it, or it failed | the item waits; it is carried on when the worker is started again, or a person or a colleague hands it to another worker |
 
 **Fencing.** Each acquisition gets a new lease generation. Checkpoints and
 delivery push only while the session still holds the lease, and only over the
 branch's last checkpoint (`--force-with-lease`), so a session that lost its
 item (for example on a node cut off from the others) cannot overwrite newer
-work: its push and its delivery are refused.
+work: its push and its delivery are refused. Carrying a session on renews
+its lease the same way.
 
 **Handing work over.** A worker sees its item with `team_work_item` (and
 names it after what it does). When the item is delivered and done, it closes
@@ -564,18 +567,31 @@ now, turn it off, or delete it.
 
 | The session ended because | The agent |
 |---|---|
-| nobody wrote to it within `idle_timeout_secs`, or a single-run agent finished | **sleeps** (`status = asleep`): no session, no sandbox, no cost. The next message (from a colleague, a person or a check-in) wakes it in a fresh session with the messages in its prompt. |
-| it reached `max_session_secs` | **continues** at once in a fresh session (in a paused department: sleeps until resumed). |
+| nobody wrote to it within `idle_timeout_secs`, or a single-run agent finished | **sleeps** (`status = asleep`): no session, no sandbox, no cost. The next message (from a colleague, a person or a check-in) wakes it in a new session with the messages. |
+| its department's [working hours](#spending-and-budgets) ended | **goes off duty** and sleeps; when the hours begin, the department is told so, which wakes it. |
+| it reached `max_session_secs` | **continues** at once in a new session (in a paused department: sleeps until resumed). |
 | a person stopped it, it failed, ... | is stopped, as before. |
 
-A fresh session starts from the agent's notes: workers with department files
-keep `notes/<agent>.md` (what they are working on, decisions, next steps),
-and the prompt of a continued or woken session says *"You are continuing"*
-and asks the agent to read its notes and recent messages first. On a linked
-repository it carries its [work item](#work-items-the-department-keeps-the-work)
-on: its checkout continues from the item's last checkpoint. Sleeping agents survive a node restart
-(they have nothing running); pausing or stopping works on them as on any
-agent.
+**It saves before it goes off, and picks up where it stopped.** Before the
+system ends a session (idle, time limit, off duty) the agent gets one last
+turn of at most 5 minutes: it is told to commit all its changes and update
+its notes (where it stopped, what comes next). A turn still running when the
+time limit is reached or the hours end is cut short for it. Then agentcore
+saves the work item on GitHub. A person's **STOP** skips all of this.
+
+Every department agent has its own directory on the data volume,
+`departments/<department>/agents/<agent>/`, which outlives its sessions:
+its **workspace** (the checkout of its work item, uncommitted changes
+included), its **home** (the agent's own conversation, e.g. what `claude
+--continue` and `opencode run --continue` pick up) and its repository
+mirror. Each session is still its own unit (audit log, recording, time
+budget), but a continued or woken session works in the same directory and
+**continues the conversation**: the prompt, saying *"You are continuing"*,
+is its next message rather than a new start. Workers with department files
+also keep `notes/<agent>.md`. If its work item changed (closed, handed
+over), the workspace is checked out again for the new one. Sleeping agents
+survive a node restart (they have nothing running); pausing or stopping
+works on them as on any agent.
 
 To stop a loop (an agent that ends at once and is woken again, two agents
 waking each other), a node starts one agent automatically at most 6 times an
@@ -764,8 +780,11 @@ a timezone (an IANA name such as `Europe/Berlin`). An end before the start
 runs past midnight into the next day. Without a schedule, or with it turned
 off, a department works at any time. Each node checks the schedules on its
 heartbeat: when the hours end the department is **paused** (marked as paused
-by the hours) and the model gateway **refuses** its calls with `403`; when
-they begin it is resumed. The hours never resume a department a person or a
+by the hours), its agents **save their work and go off duty** (they sleep;
+nothing stays frozen overnight), and the model gateway **refuses** its calls
+with `403` (except an agent's last turn to save its work). When they begin
+it is resumed and its agents are woken with a message from `working hours`;
+they carry on where they stopped. The hours never resume a department a person or a
 budget paused, and a used-up budget keeps a department paused until it has
 room again. The schedule is enforced on every heartbeat, so a department
 resumed by hand outside its hours is paused again: change the hours or turn
@@ -850,7 +869,7 @@ Everything a person can do, at every level:
 
 | | Agent | Department | Organisation |
 |---|---|---|---|
-| **See** | Live view, timeline, model calls, approvals, audit log (the existing session view) | Room: all members with status, every message in and out, department files | Overview: all departments, all agents, node health, organisation-wide message feed |
+| **See** | Live view, timeline, model calls, approvals, audit log (the existing session view) | Room: all members with status, every message in and out, department files | Overview: all departments, all agents, organisation-wide message feed |
 | **Talk** | Message an agent (wakes it) | Post in the department room (every member receives it) | Message any department |
 | **Pause / resume** | ✅ | ✅ every agent in it, and new starts wait | ✅ (`Pause all`) |
 | **Stop** | ✅ | ✅ every agent in it | ✅ **Stop all agents** (on every node) |
@@ -881,23 +900,27 @@ runs at the same time.
 ## Running on several VMs
 
 Every VM runs the same `agentcore serve` binary with its own
-`[cluster].node_name`. All nodes use one PostgreSQL database. There is no
-separate control-plane process: any node can serve the web UI and the API.
+`[cluster].node_name`. All nodes use one PostgreSQL database and mount one
+data volume. There is no separate control-plane process: any node can serve
+the web UI and the API. Nodes are **ephemeral and stateless**: what a
+session keeps is on the data volume, everything else is in PostgreSQL. A
+node that stops or disappears is forgotten, and its sessions move to the
+nodes that are left, which carry them on. Nodes are not shown in the UI.
 
 ```mermaid
 flowchart TB
     U["Browser"] --> LB["Load balancer / any node"]
     subgraph VM1["VM 1 · node vm-1"]
         N1["agentcore serve<br/>API · UI · gateways ·<br/>reconciler"] --> SB1["sandboxes<br/>(agents placed here)"]
-        D1[("audit logs ·<br/>recordings ·<br/>workspaces")]
     end
     subgraph VM2["VM 2 · node vm-2"]
         N2["agentcore serve"] --> SB2["sandboxes"]
-        D2[("audit logs · ...")]
     end
     LB --> N1 & N2
-    N1 <-- "SQL + LISTEN/NOTIFY" --> PG[("PostgreSQL<br/>desired state · messages ·<br/>department files · node registry")]
+    N1 <-- "SQL + LISTEN/NOTIFY" --> PG[("PostgreSQL<br/>desired state · messages ·<br/>department files · live nodes")]
     N2 <-- "SQL + LISTEN/NOTIFY" --> PG
+    SB1 & SB2 -. "workspace · home" .-> VOL[("Data volume<br/>departments/&lt;id&gt;/sessions/&lt;id&gt;:<br/>audit log · recording ·<br/>workspace · agent home")]
+    N1 & N2 -- "audit logs · recordings" --> VOL
     N1 <-. "proxied session API<br/>(internal_url)" .-> N2
     SB1 -- "MCP + LLM gateway<br/>(own node only)" --> N1
     SB2 -- "MCP + LLM gateway" --> N2
@@ -913,14 +936,22 @@ flowchart TB
    pass (every 2 s) catches anything a dropped connection missed. So commands
    are level-triggered: a missed notification delays a command, it never loses
    it.
-2. **A session is owned by exactly one node**, the one it was placed on. Its
-   sandbox, audit log, recording and the agent's gateways live there. The
-   agent only ever talks to its own node.
+2. **A session runs on exactly one node at a time**, the one it is assigned
+   to. Its sandbox and the agent's gateways are there; the agent only ever
+   talks to that node. Its data is not: the audit log and the recording are
+   in the session's directory on the data volume
+   (`departments/<department>/sessions/<session>/`, or `sessions/<session>/`
+   outside departments), and the workspace and the agent's home in the
+   session's directory too, or for a department agent in its own directory
+   (`departments/<department>/agents/<agent>/`), which all its sessions
+   share. So any node can carry the session on.
 3. **Any node answers any request.** Session endpoints
    (`/api/v1/sessions/{id}/...`: details, events, live view, pause, stop,
    approvals, audit) are forwarded to the owning node's `internal_url`,
    including streams (SSE). The caller's token is forwarded and checked again
    by the owner, so every node needs the same `[[server.operators]]`.
+   Sessions that ended are served by whichever node is asked, from the data
+   volume.
 
 ### Placement
 
@@ -946,11 +977,11 @@ flowchart TD
     L --> D{"session waiting for input<br/>and unread inbox?"}
     D -- yes --> DELIVER["deliver: new turn"]
     L --> E{"session ended"}
-    E -- "time budget" --> CONT["continue in a fresh session"]
+    E -- "time budget" --> CONT["continue in a new session<br/>(same workspace and conversation)"]
     E -- "idle / finished" --> SLEEP["asleep (no sandbox)"]
     E -- "stopped, failed" --> DONE["desired = stopped,<br/>last status recorded"]
     L --> F{"asleep with mail,<br/>department active?"}
-    F -- yes --> WAKE["start a fresh session<br/>with the messages"]
+    F -- yes --> WAKE["start a new session where it<br/>stopped, with the messages"]
 ```
 
 Automatic starts (continue, wake) are limited to 6 per agent per hour; past
@@ -960,7 +991,8 @@ that the agent is stopped with a note, to stop loops.
 
 Every `heartbeat_secs` each node, besides reporting that it is alive:
 
-1. marks the agents of nodes that stopped responding as stopped;
+1. forgets the nodes that stopped responding and moves what they ran to live
+   nodes (see [Failure handling](#failure-handling));
 2. checks the **budgets** (warn, pause, resume; see
    [Spending and budgets](#spending-and-budgets));
 3. sends the **check-ins** that are due.
@@ -970,16 +1002,52 @@ nodes nothing happens twice; with one node, the same loop does it all.
 
 ### Failure handling
 
+**Carrying a session on.** When a node is forgotten, in one transaction
+(any node may do it; it happens once): its department agents are placed on
+live nodes with room, their live sessions move with them, other live
+sessions go to the live node with the fewest, and work leases follow their
+sessions. An agent for which no node has room waits ("waiting for room")
+without a node, its session with it, until a node has room. While no node
+runs at all, nothing moves. The node a session is moved to (or the same
+node, after a restart) carries it on:
+
+```mermaid
+flowchart LR
+    LOG[("audit log<br/>on the volume")] -- "read back, verified" --> R["same session id<br/>log continued<br/>(session_recovered)"]
+    R --> SB["new sandbox on the same<br/>workspace and agent home"]
+    SB --> Q{"when its node<br/>went away"}
+    Q -- "waiting for input" --> W["waits again<br/>(no extra turn)"]
+    Q -- "in a turn" --> C["told its turn was cut off;<br/>continues the conversation"]
+    Q -- "never ran" --> F["starts as new"]
+```
+
+The agent's own conversation is in its home (for example `claude
+--continue` and `opencode run --continue` pick it up), so it continues where
+it was. Agents that cannot continue a conversation (single-run commands) run
+again from the start, in the same workspace. The time budget counts from
+when the session was created. A work item the session held stays with it,
+under a renewed lease. Sessions started before this release, or whose log
+already records their end, are ended (`failed`, "interrupted") instead.
+
+**Fencing.** A session must never run on two nodes. A node that has not
+been able to confirm its heartbeat for half-way between `heartbeat_secs` and
+`node_timeout_secs` lets go of all its sessions (kills their sandboxes,
+writes nothing more to their logs), well before the others forget it. A
+node writes a session's row only while the session is assigned to it, and a
+renewed work lease refuses checkpoints and deliveries under the old one.
+
 | What fails | What happens |
 |---|---|
-| A node crashes or loses the database | Its heartbeat goes stale (`node_timeout_secs`). Any other node marks that node's agents `stopped` (status `failed`, "node lost") and releases the work items their sessions held. Workers with open work items are placed on a live node at once and carry their items on from the last checkpoint: their work is in the department, not in the lost sandbox. Other agents are not restarted elsewhere; a person starts them again. |
-| A node restarts | Its interrupted sessions are closed in their audit logs (`session_ended`, interrupted) and its leftover sandboxes are removed. Only its *own* sessions: other nodes' live sessions are untouched. Agents that were **asleep** stay asleep (nothing was running) and wake on their next message; workers that held a work item start again on it; other agents that were working are marked stopped ("interrupted: its node restarted"). |
-| A node is cut off but its sessions run on | Their work items are released and carried on elsewhere; the cut-off sessions' checkpoints and deliveries are refused (lease generation, `--force-with-lease`), so they cannot overwrite the newer work. |
+| A node crashes or loses the database | It lets go of its sessions (fencing). After `node_timeout_secs` the other nodes forget it, and its agents and sessions move to live nodes, which carry them on. |
+| A node is shut down (`SIGTERM`) | It lets go of its sessions without ending them, leaves the cluster and moves them to the other nodes at once. With no other node, they wait and are carried on when a node starts. |
+| A node restarts | Leftover sandboxes are removed; its sessions (still assigned to it) are carried on, here. Sleeping agents stay asleep. |
+| Every node is full | Agents moved off a lost node wait ("waiting for room") until a node has room. |
+| A node is cut off but its sessions run on | It lets go of them before the others carry them on; its late writes are refused (session rows, work leases). |
 | A budget runs out | `pause` budgets pause the departments in scope and the model gateway refuses their calls; they resume when the period ends or the limit is raised. |
 | An outward channel fails | The message is marked `failed` with the error; people fix the channel and retry it. Nothing is retried automatically. |
-| Several nodes run the heartbeat | Check-ins, budget steps, proposal and outbox decisions are claimed with conditional updates (`SKIP LOCKED`, revision checks): each happens once. |
+| Several nodes run the heartbeat | Moving sessions, check-ins, budget steps, proposal and outbox decisions are claimed with locks and conditional updates (`SKIP LOCKED`, revision checks): each happens once. |
 | A NOTIFY is lost | The periodic reconcile pass applies the change within 2 s. |
-| The owning node is unreachable when a session page is opened | `503 node <name> is unreachable`; the organisation views (served from PostgreSQL) keep working. |
+| A session's node stopped responding and was not forgotten yet | Its session page answers `503` for a few seconds, until the session moves; the organisation views (served from PostgreSQL) keep working. |
 | Stop all agents | Writes `desired = stopped` for every agent and broadcasts `stop_all`; every node also stops sessions that do not belong to an organisation. |
 
 ### Security between nodes
@@ -1023,7 +1091,7 @@ erDiagram
     org_messages ||--o{ org_inbox : "one per recipient"
     org_agents ||--o{ org_inbox : "inbox"
     nodes ||--o{ org_agents : "placed on"
-    nodes ||--o{ sessions : "owns"
+    nodes ||--o{ sessions : "runs (live ones)"
     departments ||--o{ org_goals : "owns (optional)"
     org_proposals }o--o| org_agents : "proposed by"
     departments ||--o{ budgets : "limits (or the whole org)"

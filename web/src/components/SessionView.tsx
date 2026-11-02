@@ -525,6 +525,10 @@ function LifecycleRow({ event }: { event: AgentEvent }) {
     case "resumed":
       text = `Resumed by ${principalLabel(event.by)}`;
       break;
+    case "session_recovered":
+      text = "Carried on after the machine it ran on stopped: same workspace and conversation, new sandbox";
+      tone = "attention";
+      break;
     case "recording_closed":
       text = `Terminal recording saved (${(event.bytes / 1024).toFixed(1)} KiB, sha256:${event.sha256.slice(0, 12)}…)`;
       break;

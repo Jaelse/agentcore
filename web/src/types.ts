@@ -86,7 +86,6 @@ export interface OrgAgent {
   model: string | null;
   instructions: string;
   desired: Desired;
-  node: string | null;
   session_id: string | null;
   status: string | null;
   note: string | null;
@@ -113,17 +112,6 @@ export interface Department {
   created_at: string;
   updated_by: string;
   agents: OrgAgent[];
-}
-
-export interface NodeInfo {
-  name: string;
-  internal_url: string;
-  capacity: number;
-  version: string;
-  started_at: string;
-  last_seen: string;
-  agents: number;
-  alive: boolean;
 }
 
 export interface OrgGoal {
@@ -153,7 +141,6 @@ export interface CheckIn {
 }
 
 export interface OrgOverview {
-  node: string;
   profile: OrgProfile;
   settings: OrgSettings;
   departments: Department[];
@@ -165,7 +152,6 @@ export interface OrgOverview {
   outbox_pending: number;
   products: Product[];
   releases_pending: number;
-  nodes: NodeInfo[];
 }
 
 /** Which departments a department may exchange messages with. */
@@ -250,7 +236,7 @@ export interface WorkItem {
   base_branch: string;
   assignee: string | null;
   assignee_id: string | null;
-  in_session: { session_id: string | null; node: string; since: string } | null;
+  in_session: { session_id: string | null; since: string } | null;
   last_checkpoint: string | null;
   checkpoint_at: string | null;
   pull_request: string | null;
@@ -485,6 +471,7 @@ export type EventKind =
   | { event: "stop_requested"; by: Principal; reason: string }
   | { event: "paused"; by: Principal }
   | { event: "resumed"; by: Principal }
+  | { event: "session_recovered"; node: string; reason: string }
   | { event: "recording_closed"; file: string; bytes: number; sha256: string }
   | { event: "session_ended"; status: SessionStatus; exit_code: number | null; reason: string | null };
 

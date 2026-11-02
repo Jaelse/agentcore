@@ -761,22 +761,6 @@ impl std::str::FromStr for HandoffStatus {
     }
 }
 
-/// A node of the cluster (one agentcore process, usually one VM).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NodeInfo {
-    pub name: String,
-    pub internal_url: String,
-    pub capacity: u32,
-    pub version: String,
-    pub started_at: DateTime<Utc>,
-    pub last_seen: DateTime<Utc>,
-    /// Agents placed on the node and not stopped.
-    #[serde(default)]
-    pub agents: u32,
-    #[serde(default)]
-    pub alive: bool,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

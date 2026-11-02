@@ -114,6 +114,14 @@ case "$0" in
 esac
 "###;
 
+/// Keeps a diary in its home (its conversation, as far as agentcore can
+/// tell) and says when it is asked to save its work.
+const DIARIST: &str = r#"
+printf '%s\n' "$(printf %s "$0" | head -c 60 | tr '\n' ' ')" >> "$HOME/diary"
+echo "diary: $(wc -l < "$HOME/diary" | tr -d ' ') entries"
+case "$0" in *"save your work"*) echo SAVED ;; esac
+"#;
+
 /// Calls the model once per turn (25 input and 15 output tokens).
 const SPENDER: &str = r#"
 curl -sN "$ANTHROPIC_BASE_URL/v1/messages" -H "x-api-key: $ANTHROPIC_API_KEY" \
@@ -176,7 +184,7 @@ fn config(dir: &std::path::Path, db_url: &str, bind: std::net::SocketAddr, node:
     config.cluster.node_name = Some(node.into());
     config.cluster.reconcile_millis = 200;
     config.cluster.heartbeat_secs = 1;
-    config.cluster.node_timeout_secs = 3;
+    config.cluster.node_timeout_secs = 6;
     config.agents = vec![
         agent("analyst-bot", ANALYST),
         agent("dev-bot", DEV),
@@ -187,6 +195,7 @@ fn config(dir: &std::path::Path, db_url: &str, bind: std::net::SocketAddr, node:
         agent("drafter", DRAFTER),
         agent("pm-bot", PM),
         agent("builder-bot", BUILDER),
+        agent("diarist", DIARIST),
     ];
     config
 }
@@ -997,13 +1006,15 @@ async fn handoffs_wait_for_the_receiving_department() {
 }
 
 #[tokio::test]
-async fn agents_spread_over_nodes_and_nodes_can_be_lost() {
+async fn agents_spread_over_nodes_and_sessions_outlive_them() {
     let Some((_, db_url)) = agentcore_store::testing::fresh_store().await else {
         return;
     };
     let dir = tempfile::tempdir().unwrap();
-    let n1 = start(dir.path(), &db_url, "n1", 1).await;
-    let n2 = start(dir.path(), &db_url, "n2", 1).await;
+    // Every node mounts the same data volume.
+    let shared = |c: &mut Config| c.storage.data_dir = dir.path().join("data");
+    let n1 = start_with(dir.path(), &db_url, "n1", 1, shared).await;
+    let n2 = start_with(dir.path(), &db_url, "n2", 1, shared).await;
 
     let dept = n1
         .ok(
@@ -1076,14 +1087,9 @@ async fn agents_spread_over_nodes_and_nodes_can_be_lost() {
         },
         ["n1", "n2"]
     );
+    // Nodes are not part of the organisation people see.
     let overview = n2.ok("GET", "/org", None).await;
-    assert!(
-        overview["nodes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|n| n["alive"] == true && n["agents"] == 1)
-    );
+    assert!(overview.get("nodes").is_none() && overview.get("node").is_none());
 
     // Each node answers for sessions on the other one (forwarded).
     let (on_n2, other) = if comm["node"] == "n2" {
@@ -1109,23 +1115,73 @@ async fn agents_spread_over_nodes_and_nodes_can_be_lost() {
         .await;
     n2.wait_session(remote, |s| s == "awaiting_input").await;
 
-    // n2 disappears: its agent is marked lost, its sessions unreachable.
+    // n2 disappears. Cut off from the database, it lets go of its session
+    // (half-way to the node timeout); the others forget it once it timed out.
     n2.cluster.cancel();
-    let lost = n1
-        .wait_agent(on_n2["id"].as_str().unwrap(), "agent lost", |a| {
-            a["desired"] == "stopped" && a["status"] == "failed"
+    let id: uuid::Uuid = remote.parse().unwrap();
+    for _ in 0..200 {
+        if n2.state.manager.get(id).is_err() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        n2.state.manager.get(id).is_err(),
+        "n2 still runs the session"
+    );
+    // n1 is full: the agent waits for room, its session with it.
+    let waiting = n1
+        .wait_agent(on_n2["id"].as_str().unwrap(), "agent waits", |a| {
+            a["node"].is_null()
         })
         .await;
-    assert!(
-        lost["note"]
-            .as_str()
-            .unwrap()
-            .contains("n2 stopped responding")
-    );
-    let (code, err) = n1
-        .call("GET", &format!("/sessions/{remote}"), "viewer-token", None)
+    assert_eq!(waiting["desired"], "running");
+    assert_eq!(waiting["session_id"], remote);
+    // A new node joins: it carries the same session on, from the volume.
+    let n3 = start_with(dir.path(), &db_url, "n3", 1, shared).await;
+    let moved = n3
+        .wait_agent(on_n2["id"].as_str().unwrap(), "agent carried on", |a| {
+            a["node"] == "n3" && a["status"] == "awaiting_input"
+        })
         .await;
-    assert_eq!(code, 503, "{err}");
+    assert_eq!(moved["session_id"], remote, "same session, not a new one");
+    assert_eq!(moved["desired"], "running");
+    assert_eq!(moved["note"], Value::Null);
+    assert!(n3.state.manager.get(id).is_ok());
+    // Any node serves it (n1 forwards to n3), with one unbroken log.
+    let info = n1.ok("GET", &format!("/sessions/{remote}"), None).await;
+    assert_eq!(info["live"], true, "{info}");
+    let events = n1.events(remote).await;
+    let recovered: Vec<_> = events
+        .iter()
+        .filter(|e| e["event"] == "session_recovered")
+        .collect();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0]["node"], "n3");
+    let (_, verify) = n1
+        .call(
+            "GET",
+            &format!("/sessions/{remote}/audit/verify"),
+            "viewer-token",
+            None,
+        )
+        .await;
+    assert_eq!(verify["valid"], true, "{verify}");
+    // It goes on talking: a message starts its next turn on n3.
+    n1.ok(
+        "POST",
+        &format!("/sessions/{remote}/messages"),
+        Some(json!({ "text": "still there?" })),
+    )
+    .await;
+    for _ in 0..200 {
+        if output(&n3.events(remote).await).contains("got: still there?") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(output(&n3.events(remote).await).contains("got: still there?"));
+
     // The agent on n1 is unaffected; stop-all from n1 stops it.
     let survivor = n1.agent(other["id"].as_str().unwrap()).await;
     assert_eq!(survivor["desired"], "running");
@@ -1134,12 +1190,19 @@ async fn agents_spread_over_nodes_and_nodes_can_be_lost() {
         a["status"] == "stopped"
     })
     .await;
+    n3.wait_agent(on_n2["id"].as_str().unwrap(), "moved agent stopped", |a| {
+        a["status"] == "stopped"
+    })
+    .await;
     // Leave nothing running in this process.
-    n2.state
-        .manager
-        .stop_all(agentcore_core::Principal::System, "test over")
-        .await;
+    for node in [&n1, &n2, &n3] {
+        node.state
+            .manager
+            .stop_all(agentcore_core::Principal::System, "test over")
+            .await;
+    }
     n1.cluster.cancel();
+    n3.cluster.cancel();
 }
 
 #[tokio::test]
@@ -3373,4 +3436,87 @@ async fn releases_reach_people_through_a_page_briefs_and_tracked_links() {
     node.ok("POST", &format!("/org/agents/{aid}/stop"), None)
         .await;
     node.cluster.cancel();
+}
+
+#[tokio::test]
+async fn agents_save_their_work_when_the_day_ends_and_carry_on_the_next() {
+    let Some((_, db_url)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let node = start(dir.path(), &db_url, "n1", 2).await;
+    let dept = node
+        .ok("POST", "/org/departments", Some(department("Night", &[])))
+        .await;
+    let dept_id = dept["id"].as_str().unwrap();
+    let agent = node
+        .ok(
+            "POST",
+            &format!("/org/departments/{dept_id}/agents"),
+            Some(json!({ "name": "owl", "agent": "diarist" })),
+        )
+        .await;
+    let id = agent["id"].as_str().unwrap();
+    node.ok("POST", &format!("/org/agents/{id}/start"), None)
+        .await;
+    let working = node
+        .wait_agent(id, "working", |a| a["status"] == "awaiting_input")
+        .await;
+    let day1 = working["session_id"].as_str().unwrap().to_string();
+
+    // The working day ends: the agent saves its work, then goes off (asleep).
+    node.ok(
+        "PUT",
+        &format!("/org/departments/{dept_id}/hours"),
+        Some(json!({ "enabled": true, "timezone": "UTC", "windows": [closed_today()] })),
+    )
+    .await;
+    let off = node
+        .wait_agent(id, "off duty", |a| a["status"] == "asleep")
+        .await;
+    assert_eq!(off["desired"], "running");
+    let events = node.events(&day1).await;
+    let out = output(&events);
+    assert!(out.contains("SAVED"), "{out}");
+    assert!(out.contains("diary: 2 entries"), "{out}");
+    let ended = events.last().unwrap();
+    assert_eq!(ended["event"], "session_ended");
+    assert!(
+        ended["reason"].as_str().unwrap().contains("off duty"),
+        "{ended}"
+    );
+    // Nothing was frozen overnight.
+    assert!(
+        node.state
+            .manager
+            .list()
+            .iter()
+            .all(|s| s.status.is_terminal())
+    );
+
+    // The next day begins: the agent is woken and carries on in a new
+    // session, with the conversation and the workspace it left.
+    node.ok("DELETE", &format!("/org/departments/{dept_id}/hours"), None)
+        .await;
+    let back = node
+        .wait_agent(id, "back at work", |a| {
+            a["status"] == "awaiting_input" && a["session_id"] != day1.as_str()
+        })
+        .await;
+    let day2 = back["session_id"].as_str().unwrap();
+    let out = output(&node.events(day2).await);
+    assert!(out.contains("diary: 3 entries"), "{out}");
+    // Its next message to the conversation, not a first prompt.
+    assert!(out.contains("diarist got:"), "{out}");
+    assert!(out.contains("working hours began"), "{out}");
+    node.ok("POST", &format!("/org/agents/{id}/stop"), None)
+        .await;
+    node.cluster.cancel();
+}
+
+/// Working hours on another day of the week than today (UTC): closed now.
+fn closed_today() -> Value {
+    use chrono::Datelike;
+    let today = chrono::Utc::now().weekday().number_from_monday();
+    json!({ "days": [today % 7 + 1], "start": "09:00", "end": "17:00" })
 }

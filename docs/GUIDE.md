@@ -187,5 +187,6 @@ do not want work to continue.
 | Outbox: *reached its limit of N messages today* | The channel's daily limit. | Wait until tomorrow (UTC), or raise the limit. |
 | `data_query` errors in a session | Wrong SQL, a path outside the allowed ones, or the source was turned off. | *Try it* on the source with the same query. |
 | Nothing happens for days | No check-ins, no goals, nobody writing to the departments. | Add goals and *daily* check-ins; the dashboard flags idle departments. |
-| Agent *interrupted: its node restarted* | The VM restarted while it worked. | Start it again; sleeping agents are not affected. |
+| Agent *waiting for room* | The machine it ran on stopped and every other node runs as many agents as it can. | Add a node or raise `[cluster].max_agents`; it carries on by itself once there is room. |
+| Session *interrupted: its node stopped, and it could not be carried on* | It was started before sessions could move between machines, or its agent is no longer configured. | Start it again. |
 | Agent waits for a long time | An action waits for approval, or its department is paused. | Sessions → the agent's session → approvals; resume the department. |

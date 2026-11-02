@@ -163,6 +163,13 @@ pub enum EventKind {
     Resumed {
         by: Principal,
     },
+    /// The session's node went away and another node (or the same one,
+    /// restarted) took the session over: a new sandbox on the same
+    /// workspace, the same audit log, the conversation carried on.
+    SessionRecovered {
+        node: String,
+        reason: String,
+    },
     /// The terminal recording (asciicast v2) of the session was closed.
     RecordingClosed {
         file: String,
@@ -204,6 +211,7 @@ impl EventKind {
             Self::StopRequested { .. } => "stop_requested",
             Self::Paused { .. } => "paused",
             Self::Resumed { .. } => "resumed",
+            Self::SessionRecovered { .. } => "session_recovered",
             Self::RecordingClosed { .. } => "recording_closed",
             Self::SessionEnded { .. } => "session_ended",
         }

@@ -61,6 +61,17 @@ pub struct SessionOptions {
     /// name), e.g. `Research/analyst`.
     pub agent_label: Option<String>,
     pub end_hook: Option<Arc<dyn EndHook>>,
+    /// A directory that outlives the session (a department agent's own):
+    /// the workspace, the agent's home and the repository mirror are kept
+    /// there, so the agent's next session starts where this one stopped.
+    pub agent_dir: Option<std::path::PathBuf>,
+    /// Carry on the conversation the agent left in its home (`agent_dir`)
+    /// instead of starting a new one: the task is its next message.
+    pub continue_conversation: bool,
+    /// Told to the agent before the system ends the session (idle, time
+    /// limit, going off duty), so it saves its work first: one last turn of
+    /// at most a few minutes. `{reason}` is replaced by why it ends.
+    pub wrap_up: Option<String>,
 }
 
 /// Git configuration forced on every git command agentcore runs, so nothing

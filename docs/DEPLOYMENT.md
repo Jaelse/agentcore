@@ -83,9 +83,12 @@ For untrusted agents, install [gVisor](https://gvisor.dev) on the host and set
 
 One VM runs everything shown above. To run more agents than one VM can hold,
 run the same agentcore on several VMs ("nodes") that share one PostgreSQL
-database. There is no separate controller: every node serves the UI and API,
-runs its own sandboxes, and agents are placed on the least loaded node. How
-it works: [Multi-agent organisations](MULTI_AGENT.md#running-on-several-vms).
+database and one data volume. There is no separate controller: every node
+serves the UI and API, runs its own sandboxes, and agents are placed on the
+least loaded node. Nodes are ephemeral and keep nothing of their own:
+when one stops or disappears, it is forgotten and its sessions are carried
+on by the others. How it works:
+[Multi-agent organisations](MULTI_AGENT.md#running-on-several-vms).
 
 ```mermaid
 flowchart TB
@@ -96,50 +99,60 @@ flowchart TB
         N2["VM 2: agentcore<br/>node vm-2 + its sandboxes"]
         N3["VM 3: agentcore<br/>node vm-3 + its sandboxes"]
         PG[("PostgreSQL<br/>(managed or its own VM)")]
+        VOL[("Data volume<br/>(NFS, EFS, CephFS, ...)")]
     end
     N1 & N2 & N3 -- "TLS, dedicated role" --> PG
+    N1 & N2 & N3 -- "same path on every node" --> VOL
     N1 <-. "internal_url :8080" .-> N2 <-. "internal_url" .-> N3
 ```
 
 1. **Database.** One PostgreSQL ≥ 14 reachable from every VM (a managed
    instance, or the `postgres` service of one compose file exposed on the
    private network only). Use TLS (`?sslmode=require`) and a dedicated role.
-2. **The same secrets everywhere.** Copy `master.key` from the first node to
+2. **One data volume, mounted on every node at the same path** (an NFS
+   export, EFS, CephFS, a cluster file system): set `$AGENTCORE_DATA` (or
+   `[storage].data_dir`) to it on every node. Sessions keep everything there,
+   in their department's directory: the audit log, the terminal recording,
+   the workspace and the agent's home (its conversation). That is what lets
+   another node carry a session on. With Docker, the path must also be the
+   same on the host, as for one VM.
+3. **The same secrets everywhere.** Copy `master.key` from the first node to
    the others (or set the same `$AGENTCORE_MASTER_KEY` on all), so every node
    can decrypt the provider keys stored in the database.
-3. **The same configuration everywhere**, except `[cluster]`: identical
+4. **The same configuration everywhere**, except `[cluster]`: identical
    `[[server.operators]]` (a request forwarded to another node is
    authenticated again there), `[[agents]]`, policies, roles and templates.
-4. **Per node**, in `agentcore.toml`:
+5. **Per node**, in `agentcore.toml`:
 
    ```toml
    [database]
    url = "postgres://agentcore:…@db.internal:5432/agentcore?sslmode=require"
 
    [cluster]
-   node_name = "vm-2"                        # unique
+   node_name = "vm-2"                        # unique (default: $HOSTNAME)
    internal_url = "http://10.0.0.12:8080"    # reachable from the other nodes
    max_agents = 20                           # department agents on this VM
    ```
 
    Size `max_agents` to the VM: each agent is a sandbox container with the
    CPU and memory limits from `[sandbox.docker]`.
-5. **Network.** Nodes must reach each other's `internal_url` (port 8080) on
+6. **Network.** Nodes must reach each other's `internal_url` (port 8080) on
    the private network; sandboxes still only reach their own node. Do not
    expose `internal_url` publicly.
-6. **Start** each node. With the bundled compose file, nodes that use an
+7. **Start** each node. With the bundled compose file, nodes that use an
    external database start only agentcore: `docker compose up -d --no-deps
-   agentcore` (the `postgres` service runs on the database VM only). The Organisation page
-   lists the nodes, whether they are alive and how many agents each runs.
+   agentcore` (the `postgres` service runs on the database VM only). Nodes
+   are not shown anywhere in the UI; the logs say when one joins, leaves or
+   is forgotten, and where agents moved.
 
-Adding a node later: start it with a new `node_name`; new agents are placed
-on it as soon as its heartbeat arrives. Removing a node: stop the agents
-placed on it (or let them finish), then shut it down; if it disappears
-unannounced, its agents are marked failed after `node_timeout_secs`.
-
-Data stays on the node that ran the session: audit logs, recordings and
-workspaces are in that VM's `$AGENTCORE_DATA`. Back up every node's data
-directory. Viewing a session from another node works while its node is up.
+Adding a node: start it; new agents (and agents that waited for room) are
+placed on it as soon as its heartbeat arrives. Removing a node: shut it down
+(`SIGTERM`). It hands its sessions over instead of ending them, leaves the
+cluster, and the other nodes carry the sessions on at once. A node that
+disappears unannounced is forgotten after `node_timeout_secs`, and the same
+happens. Nodes can therefore be replaced freely (autoscaling groups,
+rolling upgrades, spot instances), as long as every node mounts the data
+volume. Back up the data volume, not the nodes.
 
 ## Local development
 
@@ -192,13 +205,13 @@ everything and creates the release with generated notes. Tags with a suffix
 
 | Task | How |
 |---|---|
-| Backups | PostgreSQL (`pg_dump`: sessions, organisation, goals, proposals, outbox, prices and budgets, encrypted secrets), `$AGENTCORE_DATA/audit` and `$AGENTCORE_DATA/recordings`, and the master key, stored **separately** from the database backup |
+| Backups | PostgreSQL (`pg_dump`: sessions, organisation, goals, proposals, outbox, prices and budgets, encrypted secrets), the data volume (`$AGENTCORE_DATA`: each session's audit log, recording, workspace and agent home, under `departments/<id>/sessions/` and `sessions/`), and the master key, stored **separately** from the database backup |
 | Network | Sandboxes need no egress (gateways). The **server** needs outbound access to LLM providers, GitHub, the business data sources you add (databases, APIs) and the outward channels (SMTP, Slack, webhooks). |
 | Upgrades | Pull, rebuild, `docker compose up -d`. Database migrations run automatically at startup. |
-| Restarts | Sessions that were running on the restarted node are marked failed, their audit logs closed, leftover sandbox containers removed. Department agents that were working there are marked stopped ("its node restarted"); start them again from the Organisation page. Agents that were asleep stay asleep and wake on their next message. Check-ins that fell due while all nodes were down are sent once when a node is back. Other nodes are not affected. |
+| Restarts | A node that is shut down (`SIGTERM`) hands its sessions over: the other nodes carry them on, or the node itself when it starts again (with one node, sessions wait until it is back). A crashed node is forgotten after `node_timeout_secs`, and its sessions are carried on in the same way. A session carried on keeps its id, audit log, workspace and the agent's conversation; a session that was waiting for input waits again, and one whose turn was cut off is told so and carries on. Leftover sandbox containers are removed at start. Check-ins that fell due while all nodes were down are sent once when a node is back. |
 | Upgrades with several nodes | Upgrade one node at a time; migrations run on the first node that starts the new version, so read the release notes for changes that older nodes cannot handle. |
 | Logs | `docker compose logs agentcore` (JSON with `--log-format json`); filter with `AGENTCORE_LOG`. |
-| Audit verification | UI (session → Audit → Verify) or `agentcore audit verify $AGENTCORE_DATA/audit/*.jsonl` |
+| Audit verification | UI (session → Audit → Verify) or `agentcore audit verify $AGENTCORE_DATA/departments/*/sessions/*/audit.jsonl $AGENTCORE_DATA/sessions/*/audit.jsonl` (sessions from before 0.1.0-beta.20: `$AGENTCORE_DATA/audit/*.jsonl`) |
 | Emergency | **Stop all agents** in the UI, or `POST /api/v1/stop-all`: stops every agent on every node. To stop only outward messages, turn the channels off (Outbox → Channels); to stop spending, set a `pause` budget. |
 | First week with an organisation | Follow the [Guide](GUIDE.md): budget first, approval on every channel, a daily look at the Outbox and Improvements. |
 

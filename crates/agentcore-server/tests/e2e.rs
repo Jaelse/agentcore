@@ -321,8 +321,13 @@ async fn agent_uses_tool_gateway_under_policy() {
 
     let info = server.wait(&id, terminal).await;
     assert_eq!(info["session"]["status"], "completed", "{info}");
-    let written =
-        std::fs::read_to_string(dir.path().join("workspaces").join(&id).join("hello.txt")).unwrap();
+    let written = std::fs::read_to_string(
+        dir.path()
+            .join("sessions")
+            .join(&id)
+            .join("workspace/hello.txt"),
+    )
+    .unwrap();
     assert_eq!(written, "hi from agent");
 
     let events = server.events(&id).await;
@@ -510,7 +515,7 @@ async fn stop_aborts_streaming_model_call() {
 }
 
 #[tokio::test]
-async fn restart_recovers_interrupted_sessions() {
+async fn restart_carries_interrupted_sessions_on() {
     let Some((_, db)) = agentcore_store::testing::fresh_store().await else {
         return;
     };
@@ -521,23 +526,29 @@ async fn restart_recovers_interrupted_sessions() {
         .wait(&id, |i| i["session"]["status"] == "running")
         .await;
 
-    // A second agentcore on the same database = restart after a crash.
+    // agentcore dies: the session stops without an end in its log.
+    first.state.manager.fence_all().await;
+    // It starts again on the same database and data volume, and carries
+    // the session on: same id, same log.
     let second = start(dir.path(), &db).await;
-    let (code, info) = http(
-        "GET",
-        &format!("{}/api/v1/sessions/{id}", second.base),
-        Some("viewer-token"),
-        None,
-    )
-    .await;
-    assert_eq!(code, 200);
-    assert_eq!(info["live"], false);
-    assert_eq!(info["session"]["status"], "failed");
+    let cluster = agentcore_server::cluster::start(&second.state)
+        .await
+        .unwrap();
+    let info = second
+        .wait(&id, |i| {
+            i["live"] == true && i["session"]["status"] == "running"
+        })
+        .await;
+    assert_eq!(info["session"]["created_by"]["id"], "alice");
 
     let events = second.events(&id).await;
-    let last = events.last().unwrap();
-    assert_eq!(last["event"], "session_ended");
-    assert!(last["reason"].as_str().unwrap().contains("interrupted"));
+    let kinds: Vec<&str> = events.iter().filter_map(|e| e["event"].as_str()).collect();
+    assert_eq!(kinds.iter().filter(|k| **k == "session_created").count(), 1);
+    assert_eq!(
+        kinds.iter().filter(|k| **k == "session_recovered").count(),
+        1
+    );
+    assert!(!kinds.contains(&"session_ended"), "{kinds:?}");
     let (_, verify) = http(
         "GET",
         &format!("{}/api/v1/sessions/{id}/audit/verify", second.base),
@@ -547,19 +558,18 @@ async fn restart_recovers_interrupted_sessions() {
     .await;
     assert_eq!(verify["valid"], true, "{verify}");
 
-    let (_, list) = http(
-        "GET",
-        &format!("{}/api/v1/sessions", second.base),
-        Some("viewer-token"),
-        None,
+    let (code, _) = http(
+        "POST",
+        &format!("{}/api/v1/sessions/{id}/stop", second.base),
+        Some("alice-token"),
+        Some(json!({ "reason": "done" })),
     )
     .await;
-    assert!(
-        list.as_array()
-            .unwrap()
-            .iter()
-            .any(|s| s["id"] == id.as_str())
-    );
+    assert_eq!(code, 200);
+    second
+        .wait(&id, |i| i["session"]["status"] == "stopped")
+        .await;
+    cluster.cancel();
 }
 
 #[tokio::test]

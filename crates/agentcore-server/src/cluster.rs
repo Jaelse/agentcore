@@ -1,10 +1,16 @@
 //! Running agentcore on several VMs.
 //!
 //! Every node is the same `agentcore serve` process with its own
-//! `[cluster].node_name`, sharing one PostgreSQL database:
+//! `[cluster].node_name`, sharing one PostgreSQL database and one data
+//! volume. Nodes are ephemeral and keep nothing of their own: sessions live
+//! on the data volume, everything else in PostgreSQL.
 //!
-//! * **Heartbeat**: each node keeps its row in `nodes` fresh; agents placed
-//!   on a node that stopped responding are marked stopped by the others.
+//! * **Heartbeat**: each node keeps its row in `nodes` fresh. A node that
+//!   stopped responding is forgotten by the others, and its agents and live
+//!   sessions are moved to live nodes, which carry them on.
+//! * **Fencing**: a node that cannot reach the database lets go of its
+//!   sessions long before the others give up on it, so a session never runs
+//!   on two nodes.
 //! * **Notifications**: changes are announced with `NOTIFY agentcore_org`;
 //!   every node listens, forwards them to its `/org/stream` clients and wakes
 //!   its reconciler.
@@ -16,6 +22,7 @@
 //!   session; other nodes forward requests (and streams) to it.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -64,57 +71,77 @@ pub async fn start(state: &AppState) -> anyhow::Result<CancellationToken> {
         .await?;
     tracing::info!(node = %state.node, url = %state.config.internal_url(), "node registered");
     let cancel = CancellationToken::new();
-    tokio::spawn(heartbeat(state.clone(), cancel.clone()));
+    let alive = Arc::new(AtomicU64::new(now_millis()));
+    // Not tied to `cancel`: a node that stopped sending heartbeats must let
+    // go of its sessions in any case.
+    tokio::spawn(watchdog(state.clone(), alive.clone()));
+    tokio::spawn(heartbeat(state.clone(), cancel.clone(), alive));
     tokio::spawn(listen(state.clone(), cancel.clone()));
     tokio::spawn(reconciler(state.clone(), cancel.clone()));
     tokio::spawn(checkpointer(state.clone(), cancel.clone()));
     Ok(cancel)
 }
 
-async fn heartbeat(state: AppState, cancel: CancellationToken) {
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// Let go of every session when the database has not confirmed this node's
+/// heartbeat for a while: longer than between two heartbeats, shorter than
+/// the node timeout (halfway), so by the time the other nodes give up on this
+/// one and carry its sessions on, nothing runs here any more.
+async fn watchdog(state: AppState, alive: Arc<AtomicU64>) {
+    let cluster = &state.config.cluster;
+    let limit = (cluster.node_timeout_secs + cluster.heartbeat_secs) * 1000 / 2;
+    let mut tick = tokio::time::interval(Duration::from_millis(250));
+    loop {
+        tick.tick().await;
+        let silent = now_millis().saturating_sub(alive.load(Ordering::SeqCst));
+        if silent > limit && state.manager.list().iter().any(|s| !s.status.is_terminal()) {
+            let n = state.manager.fence_all().await;
+            tracing::error!(
+                sessions = n,
+                silent_ms = silent,
+                "lost the database: let go of this node's sessions so other nodes can carry them on"
+            );
+        }
+    }
+}
+
+async fn heartbeat(state: AppState, cancel: CancellationToken, alive: Arc<AtomicU64>) {
     let cluster = state.config.cluster.clone();
     let mut tick = tokio::time::interval(Duration::from_secs(cluster.heartbeat_secs));
+    let timeout = Duration::from_secs(cluster.heartbeat_secs.max(1));
+    let url = state.config.internal_url();
     loop {
         tokio::select! {
             _ = tick.tick() => {}
             () = cancel.cancelled() => return,
         }
-        if let Err(err) = state
-            .store
-            .heartbeat(
-                &state.node,
-                &state.config.internal_url(),
-                cluster.max_agents,
-                env!("CARGO_PKG_VERSION"),
-                false,
-            )
-            .await
-        {
-            tracing::warn!(error = %err, "heartbeat failed");
-            continue;
-        }
-        // Any node may notice that another one is gone.
-        match state
-            .store
-            .fail_agents_on_dead_nodes(cluster.node_timeout_secs)
-            .await
-        {
-            Ok(lost) => {
-                for agent in &lost {
-                    tracing::warn!(
-                        agent = %agent.name,
-                        node = agent.node.as_deref().unwrap_or("?"),
-                        "agent lost with its node"
-                    );
-                }
-                if let Err(err) = resume_lost(&state, &lost).await {
-                    tracing::warn!(error = %err, "resuming lost work failed");
-                }
-                if !lost.is_empty() {
-                    org::notify(&state.store, json!({ "kind": "agents" })).await;
-                }
+        let sent = now_millis();
+        let beat = state.store.heartbeat(
+            &state.node,
+            &url,
+            cluster.max_agents,
+            env!("CARGO_PKG_VERSION"),
+            false,
+        );
+        match tokio::time::timeout(timeout, beat).await {
+            Ok(Ok(())) => alive.store(sent, Ordering::SeqCst),
+            Ok(Err(err)) => {
+                tracing::warn!(error = %err, "heartbeat failed");
+                continue;
             }
-            Err(err) => tracing::warn!(error = %err, "checking for lost nodes failed"),
+            Err(_) => {
+                tracing::warn!("heartbeat timed out");
+                continue;
+            }
+        }
+        // Any node may notice that another one is gone; the move happens once.
+        if let Err(err) = reap(&state).await {
+            tracing::warn!(error = %err, "checking for lost nodes failed");
         }
         // Any node may check budgets; each step is claimed by one node.
         if let Err(err) = crate::budgets::evaluate(&state).await {
@@ -135,38 +162,40 @@ async fn heartbeat(state: AppState, cancel: CancellationToken) {
     }
 }
 
-/// Release the work items held on lost nodes, and place the workers that
-/// were lost with them on a live node again: their work is in the
-/// department (the item's last checkpoint), not in the lost sandbox.
-async fn resume_lost(state: &AppState, lost: &[OrgAgent]) -> anyhow::Result<()> {
-    let cluster = &state.config.cluster;
-    let expired = state
+/// Forget the nodes that stopped responding and move what they ran to live
+/// nodes ([`agentcore_store::Store::reap_nodes`]); the nodes it moved to
+/// carry it on at once.
+pub async fn reap(state: &AppState) -> anyhow::Result<()> {
+    let reaped = state
         .store
-        .expire_work_leases_on_dead_nodes(cluster.node_timeout_secs)
+        .reap_nodes(state.config.cluster.node_timeout_secs)
         .await?;
-    if !expired.is_empty() {
+    if reaped.is_empty() {
+        return Ok(());
+    }
+    for node in &reaped.nodes {
+        tracing::warn!(node = %node, "node stopped responding; forgotten");
+    }
+    for agent in &reaped.moved {
+        tracing::info!(
+            agent = %agent.name,
+            node = agent.node.as_deref().unwrap_or("?"),
+            "agent moved to another node"
+        );
+    }
+    for agent in &reaped.waiting {
+        tracing::warn!(agent = %agent.name, "agent waits for a node with room");
+    }
+    if reaped.sessions > 0 {
+        tracing::info!(
+            sessions = reaped.sessions,
+            "live sessions moved to another node"
+        );
+    }
+    if reaped.released > 0 {
         org::notify(&state.store, json!({ "kind": "work_items" })).await;
     }
-    for agent in lost.iter().filter(|a| a.kind == AgentKind::Worker) {
-        if !state.store.has_open_work_items(agent.id).await? {
-            continue;
-        }
-        match state
-            .store
-            .start_agent(agent.id, cluster.node_timeout_secs, "agentcore")
-            .await
-        {
-            Ok(Some(placed)) => tracing::info!(
-                agent = %agent.name,
-                node = placed.node.as_deref().unwrap_or("?"),
-                "carrying on lost work on another node"
-            ),
-            Ok(None) => {}
-            Err(err) => {
-                tracing::warn!(agent = %agent.name, error = %err, "could not place lost work")
-            }
-        }
-    }
+    org::notify(&state.store, json!({ "kind": "agents" })).await;
     Ok(())
 }
 
@@ -290,12 +319,22 @@ async fn reconciler(state: AppState, cancel: CancellationToken) {
 /// One pass: make the sessions on this node match the desired state.
 pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
     let store = &state.store;
+    // Sessions moved here (or left by this node before it restarted).
+    let mut changed = match crate::sessions::carry_on(state).await {
+        Ok(changed) => changed,
+        Err(err) => {
+            tracing::warn!(error = %err, "carrying sessions on failed");
+            false
+        }
+    };
     let mine = store.agents_on_node(&state.node).await?;
     if mine.is_empty() {
+        if changed {
+            org::notify(store, json!({ "kind": "agents", "node": &*state.node })).await;
+        }
         return Ok(());
     }
     let org = Org::load(store).await?;
-    let mut changed = false;
     let mut waiting: Vec<(Uuid, Arc<Session>)> = Vec::new();
     let mut models = None;
 
@@ -382,6 +421,22 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
                 // Workers of a department that needs a repository are held
                 // (paused) until one is linked, then carry on.
                 let held = agent.kind == AgentKind::Worker && dept.blocked().is_some();
+                // Its working hours ended: the agent saves its work and goes
+                // off (it sleeps until the hours begin again), rather than
+                // being frozen overnight.
+                if dept.state == DepartmentState::Paused
+                    && dept.updated_by == "hours"
+                    && agent.desired == Desired::Running
+                    && !held
+                {
+                    if session.is_paused()
+                        && let Err(err) = session.resume(org::principal("hours")).await
+                    {
+                        tracing::warn!(agent = %agent.name, error = %err, "resume failed");
+                    }
+                    session.go_off();
+                    continue;
+                }
                 let dept_paused = dept.state == DepartmentState::Paused || held;
                 let pause = agent.desired == Desired::Paused || dept_paused;
                 let by = if agent.desired == Desired::Paused {
@@ -408,9 +463,10 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
             }
             Some(session) => {
                 // The session is over. A long-running agent carries on: in a
-                // fresh session when time ran out, asleep until the next
-                // message when there was nothing to do. Otherwise it is
-                // stopped now.
+                // new session when time ran out, asleep until the next
+                // message when there was nothing to do or it went off duty
+                // (its next session starts where this one stopped).
+                // Otherwise it is stopped now.
                 let status = status_str(session.status());
                 let wanted = agent.desired == Desired::Running;
                 release_work(
@@ -442,7 +498,7 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
                         }
                         changed = true;
                     }
-                    Some(EndCause::Idle | EndCause::Finished) if wanted => {
+                    Some(EndCause::Idle | EndCause::Finished | EndCause::OffDuty) if wanted => {
                         changed |= store.agent_asleep(agent.id, session.id()).await?;
                     }
                     _ => {
@@ -458,10 +514,22 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
                 }
             }
             None => match agent.session_id {
-                // Its session is not in this process: the node restarted.
+                // Its session is not in this process: it was moved here from
+                // a node that went away, or this node restarted. A live one
+                // is carried on here.
                 Some(id) => {
-                    let released =
-                        release_work(state, id, "interrupted: its node restarted").await?;
+                    let live = store.get_session(id).await?.filter(|r| {
+                        !r.info.status.is_terminal() && r.node.as_deref() == Some(&*state.node)
+                    });
+                    if let Some(record) = live {
+                        let models = endpoints(store, &mut models).await?;
+                        resume_agent(state, &org, agent, models, &record).await?;
+                        changed = true;
+                        continue;
+                    }
+                    // It is over without having ended here (it could not be
+                    // carried on): workers with work start again on it.
+                    let released = release_work(state, id, "interrupted: its node stopped").await?;
                     if released
                         && agent.kind == AgentKind::Worker
                         && agent.desired != Desired::Stopped
@@ -476,8 +544,8 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
                             agent,
                             models,
                             Some(
-                                "Your previous session was interrupted when its node \
-                                 restarted.",
+                                "Your previous session was interrupted when the machine it \
+                                 ran on stopped, and could not be carried on.",
                             ),
                         )
                         .await?;
@@ -493,7 +561,7 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
                                 agent.id,
                                 Some(id),
                                 "failed",
-                                Some("interrupted: its node restarted"),
+                                Some("interrupted: its node stopped"),
                             )
                             .await?;
                         changed = true;
@@ -593,6 +661,43 @@ fn forget_starts(agent: Uuid) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&agent);
+}
+
+/// Carry an agent's session on here (see [`org::resume_agent_session`]).
+/// When that fails, the session is ended, and the agent goes on as after
+/// any interrupted session in the next pass.
+async fn resume_agent(
+    state: &AppState,
+    org: &Org,
+    agent: &OrgAgent,
+    models: Vec<agentcore_core::ModelEndpoint>,
+    record: &agentcore_store::SessionRecord,
+) -> anyhow::Result<()> {
+    let Some(dept) = org.department(agent.department_id) else {
+        return Ok(());
+    };
+    let reason = crate::sessions::CARRIED_ON;
+    match org::resume_agent_session(state, org, agent, dept, models, record, reason).await {
+        Ok(session) => {
+            tracing::info!(
+                agent = %agent.name,
+                department = %dept.name,
+                session = %session.id(),
+                "carrying on a department agent's session"
+            );
+            state
+                .store
+                .agent_status(agent.id, session.id(), &status_str(session.status()))
+                .await?;
+            state.persist(&session).await;
+            state.follow(session);
+        }
+        Err(err) => {
+            tracing::warn!(agent = %agent.name, error = %err.message(), "cannot carry the session on");
+            crate::sessions::end_lost(state, record, err.message()).await;
+        }
+    }
+    Ok(())
 }
 
 async fn start_agent(
@@ -698,7 +803,10 @@ pub async fn forward_sessions(
     if !alive {
         return ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
-            format!("node {node}, which runs this session, is unreachable"),
+            format!(
+                "the machine running this session ({node}) stopped responding; the session \
+                 moves to another one shortly"
+            ),
         )
         .into_response();
     }

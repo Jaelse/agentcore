@@ -751,7 +751,7 @@ pub fn work_item_json(org: &Org, item: &WorkItem) -> Value {
         "assignee": assignee,
         "assignee_id": item.assignee,
         "in_session": item.lease.as_ref().map(|l| json!({
-            "session_id": l.session_id, "node": l.node, "since": l.since,
+            "session_id": l.session_id, "since": l.since,
         })),
         "last_checkpoint": item.head_commit,
         "checkpoint_at": item.checkpoint_at,
@@ -1295,9 +1295,10 @@ pub fn compose_prompt(
                         "\n### Your work item\n\nThe branch belongs to your department's work \
                          item \"{}\": the department keeps it, not your sandbox. While you wait \
                          for input, your **committed** work is saved to the branch on GitHub \
-                         (every {} seconds when something changed), and once more when your \
-                         session reaches its time limit; uncommitted changes are not saved, so \
-                         commit often. If \
+                         (every {} seconds when something changed), and once more before you go \
+                         off (idle, time limit, end of your working hours), after you were asked \
+                         to commit everything. Your workspace is kept between your sessions, but \
+                         only what is committed reaches GitHub, so commit often. If \
                          this session ends for any reason, you (or a colleague) carry the item \
                          on from the last save. `team_work_item` shows it and renames it after \
                          what you are doing; when it is delivered and done, close it with \
@@ -1544,22 +1545,22 @@ pub fn compose_prompt(
     if agent.kind == AgentKind::Worker && dept.grants(TOOL_FILES) {
         p.push_str(&format!(
             "\n## Your notes\n\nKeep your working notes in the department file `{}`: what you \
-             are working on, decisions, and the next steps. Sessions have a time limit; when one \
-             ends you continue in a fresh session, starting from these notes.\n",
+             are working on, decisions, and the next steps. Sessions end (time limit, nothing to \
+             do, end of your working hours); before one does you are asked to save your work and \
+             update these notes, and your next session carries on from there, in the same \
+             workspace and conversation.\n",
             notes_path(agent)
         ));
     }
     if let Some(why) = start.continuing {
         p.push_str(&format!(
-            "\n## You are continuing\n\n{why} This is a fresh session: your earlier sandbox is \
-             gone{}. Start by reading your notes",
+            "\n## You are continuing\n\n{why} This is a new session, but you carry on where you \
+             stopped: your workspace is kept between sessions{}, and so is your conversation if \
+             you keep one. Start by reading your notes",
             match repo.and_then(|r| r.work.as_ref()) {
-                Some(w) if w.resumed_from.is_some() => {
-                    ", but your work item's branch is checked out again from its last save"
-                }
-                Some(_) => " and you have a fresh checkout",
-                None if repo.and_then(|r| r.work_branch.as_ref()).is_some() => {
-                    " and you have a fresh checkout (deliver work before a session ends)"
+                Some(_) => {
+                    " (with your work item's checkout; if it had to be set up again, its branch \
+                     is checked out from its last save)"
                 }
                 None => "",
             }
@@ -1617,14 +1618,7 @@ pub async fn start_agent_session(
     models: Vec<agentcore_core::ModelEndpoint>,
     continuing: Option<&str>,
 ) -> Result<Arc<Session>, ApiError> {
-    let linked = match (agent.kind, dept.project_id) {
-        (AgentKind::Worker, Some(project_id)) => {
-            let project = state.project(project_id).await?;
-            let role = state.role(dept.role.as_deref().unwrap_or(&project.role))?;
-            Some((project, role))
-        }
-        _ => None,
-    };
+    let linked = linked_project(state, agent, dept).await?;
     let mut work = None;
     if let Some((project, role)) = &linked
         && dept.grants(TOOL_SANDBOX)
@@ -1663,6 +1657,7 @@ pub async fn start_agent_session(
         continuing,
         linked,
         work.as_ref().map(|(_, a)| a),
+        None,
     )
     .await;
     if let Some((lease, _)) = work {
@@ -1676,6 +1671,69 @@ pub async fn start_agent_session(
     result
 }
 
+/// The project and role a worker of a department linked to a repository
+/// works with.
+async fn linked_project(
+    state: &AppState,
+    agent: &OrgAgent,
+    dept: &Department,
+) -> Result<Option<(agentcore_store::Project, Arc<agentcore_roles::Role>)>, ApiError> {
+    Ok(match (agent.kind, dept.project_id) {
+        (AgentKind::Worker, Some(project_id)) => {
+            let project = state.project(project_id).await?;
+            let role = state.role(dept.role.as_deref().unwrap_or(&project.role))?;
+            Some((project, role))
+        }
+        _ => None,
+    })
+}
+
+/// Carry an agent's session on on this node, after the node that ran it
+/// went away (or this node restarted): the same session, on its workspace
+/// and conversation, with its work item's lease renewed for this node.
+pub async fn resume_agent_session(
+    state: &AppState,
+    org: &Org,
+    agent: &OrgAgent,
+    dept: &Department,
+    models: Vec<agentcore_core::ModelEndpoint>,
+    record: &agentcore_store::SessionRecord,
+    reason: &str,
+) -> Result<Arc<Session>, ApiError> {
+    let linked = linked_project(state, agent, dept).await?;
+    let mut work = None;
+    if linked.is_some()
+        && let Some(item) = state
+            .store
+            .renew_work_lease(record.info.id, &state.node)
+            .await?
+    {
+        notify(&state.store, json!({ "kind": "work_items" })).await;
+        work = Some(Acquired {
+            item,
+            resumed: true,
+        });
+    }
+    let resume = agentcore_runtime::Resume {
+        id: record.info.id,
+        audit_path: record.audit_path.clone(),
+        reason: reason.to_string(),
+        node: state.node.to_string(),
+    };
+    build_agent_session(
+        state,
+        org,
+        agent,
+        dept,
+        models,
+        None,
+        linked,
+        work.as_ref(),
+        Some(resume),
+    )
+    .await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn build_agent_session(
     state: &AppState,
@@ -1686,6 +1744,7 @@ async fn build_agent_session(
     continuing: Option<&str>,
     linked: Option<(agentcore_store::Project, Arc<agentcore_roles::Role>)>,
     work: Option<&Acquired>,
+    resume: Option<agentcore_runtime::Resume>,
 ) -> Result<Arc<Session>, ApiError> {
     let policy = dept.policy.clone();
     let label = format!("{}/{}", dept.name, agent.name);
@@ -1699,6 +1758,11 @@ async fn build_agent_session(
     let mut options = SessionOptions {
         models,
         hide_sandbox_tools: !dept.grants(TOOL_SANDBOX),
+        // The agent's workspace and conversation outlive its sessions: each
+        // one starts where the last stopped, after it saved its work.
+        agent_dir: Some(state.agent_dir(dept.id, agent.id)),
+        continue_conversation: continuing.is_some(),
+        wrap_up: Some(wrap_up_prompt(agent, dept)),
         agent_label: Some(label),
         ..Default::default()
     };
@@ -1855,25 +1919,58 @@ async fn build_agent_session(
         products: &products,
         announces: &announces,
     };
-    let session = state.manager.create(
-        CreateSession {
-            agent: agent.agent.clone(),
-            task: compose_prompt(org, agent, dept, &start),
-            policy: Some(policy),
-            provider: agent.provider.clone(),
-            model: agent.model.clone(),
-        },
-        principal(&agent.changed_by),
-        options,
-    )?;
+    let request = CreateSession {
+        agent: agent.agent.clone(),
+        task: compose_prompt(org, agent, dept, &start),
+        policy: Some(policy),
+        provider: agent.provider.clone(),
+        model: agent.model.clone(),
+    };
+    let carried_on = resume.is_some();
+    let session = match resume {
+        Some(resume) => state.manager.resume(request, resume, options)?,
+        None => state
+            .manager
+            .create(request, principal(&agent.changed_by), options)?,
+    };
     if let Some(cell) = mirror_cell {
-        let _ = cell.set(state.mirror_path(session.id()));
+        let _ = cell.set(state.mirror_path(&session));
     }
-    if !pending.is_empty() {
+    // A session carried on did not get a new prompt: its mail is delivered
+    // as usual once it waits for input.
+    if !pending.is_empty() && !carried_on {
         let ids: Vec<Uuid> = pending.iter().map(|m| m.id).collect();
         state.store.mark_delivered(agent.id, &ids).await?;
     }
     Ok(session)
+}
+
+/// What an agent is told before the system ends its session, so it saves
+/// its work and its next session starts exactly there (`{reason}`: why it
+/// ends).
+fn wrap_up_prompt(agent: &OrgAgent, dept: &Department) -> String {
+    let mut steps = Vec::new();
+    if dept.grants(TOOL_SANDBOX) {
+        steps.push(
+            "commit all your changes in the workspace, with messages that say what they do"
+                .to_string(),
+        );
+    }
+    if agent.kind == AgentKind::Worker && dept.grants(TOOL_FILES) {
+        steps.push(format!(
+            "update your notes `{}` (`team_write_file`): what you did, where you stopped and \
+             what comes next",
+            notes_path(agent)
+        ));
+    } else {
+        steps.push("write down where you stopped and what comes next".into());
+    }
+    format!(
+        "agentcore: your session ends now ({{reason}}). Before you go, save your work so you \
+         can pick it up exactly here next time: {}. Do only that, then stop: there is no time \
+         to start anything new.",
+        steps.join("; ")
+    )
 }
 
 /// Whether a running worker session was set up before its department's
@@ -1936,7 +2033,6 @@ pub async fn overview(State(state): State<AppState>, _caller: Caller) -> ApiResu
         .map(|d| department_json(d, &org.members(d.id).collect::<Vec<_>>()))
         .collect();
     Ok(Json(json!({
-        "node": &*state.node,
         "profile": org.profile,
         "settings": state.store.org_settings().await?,
         "departments": departments,
@@ -1954,29 +2050,7 @@ pub async fn overview(State(state): State<AppState>, _caller: Caller) -> ApiResu
             .iter()
             .filter(|p| p.status.is_pending())
             .count(),
-        "nodes": state.store.list_nodes(state.config.cluster.node_timeout_secs).await?,
     })))
-}
-
-/// Remove a node that stopped responding, with its sessions and agents.
-pub async fn remove_node(
-    State(state): State<AppState>,
-    caller: Caller,
-    Path(name): Path<String>,
-) -> ApiResult<Json<Value>> {
-    caller.require_admin()?;
-    if name == *state.node {
-        return Err(ApiError::new(
-            StatusCode::CONFLICT,
-            "this node is running; it cannot remove itself",
-        ));
-    }
-    let (sessions, agents) = state
-        .store
-        .remove_node(&name, state.config.cluster.node_timeout_secs, &caller.name)
-        .await?;
-    notify(&state.store, json!({ "kind": "node", "node": name })).await;
-    Ok(Json(json!({ "sessions": sessions, "agents": agents })))
 }
 
 // ---- goals and check-ins ----------------------------------------------------------

@@ -18,7 +18,7 @@ use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use base64::Engine;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -81,12 +81,22 @@ impl AppState {
             .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, format!("unknown role `{name}`")))
     }
 
-    pub(crate) fn mirror_path(&self, session: SessionId) -> PathBuf {
+    /// A department agent's own directory on the data volume: its workspace,
+    /// home (conversation) and repository mirror, kept between sessions.
+    pub(crate) fn agent_dir(&self, department: Uuid, agent: Uuid) -> PathBuf {
         self.config
             .storage
             .data_dir
-            .join("repos")
-            .join(format!("{session}.git"))
+            .join("departments")
+            .join(department.to_string())
+            .join("agents")
+            .join(agent.to_string())
+    }
+
+    /// The bare mirror of a session's repository, in its directory on the
+    /// data volume (so a node carrying the session on finds it).
+    pub(crate) fn mirror_path(&self, session: &Session) -> PathBuf {
+        session.paths().mirror.clone()
     }
 }
 
@@ -523,6 +533,23 @@ struct GitRepoSetup {
 #[async_trait]
 impl WorkspaceSetup for GitRepoSetup {
     async fn prepare(&self, dir: &Path) -> Result<PreparedWorkspace, String> {
+        // A department agent keeps its workspace between sessions: its
+        // checkout of this work branch is used as it left it, uncommitted
+        // changes included.
+        if let Some(base_commit) = self.kept_checkout(dir).await {
+            return Ok(PreparedWorkspace {
+                repository: format!("{}/{}", self.owner, self.repo),
+                branch: self.branch.clone(),
+                base_commit,
+            });
+        }
+        // Anything else there (another work item's checkout, saved before
+        // the agent went off) makes way for a fresh one.
+        if tokio::fs::symlink_metadata(dir).await.is_ok() {
+            tokio::fs::remove_dir_all(dir)
+                .await
+                .map_err(|e| format!("could not clear the workspace: {e}"))?;
+        }
         let url = clone_url(&self.config, &self.owner, &self.repo);
         if let Some(parent) = self.mirror.parent() {
             tokio::fs::create_dir_all(parent)
@@ -633,6 +660,43 @@ impl WorkspaceSetup for GitRepoSetup {
     }
 }
 
+impl GitRepoSetup {
+    /// The base commit of the checkout of this work branch left in `dir`, if
+    /// there is one (and its mirror). Only files are read in the workspace:
+    /// the agent controls it, so git never runs there on the host; the base
+    /// is found in the mirror, which only agentcore writes.
+    async fn kept_checkout(&self, dir: &Path) -> Option<String> {
+        let head = dir.join(".git").join("HEAD");
+        if !tokio::fs::symlink_metadata(&head).await.ok()?.is_file()
+            || !tokio::fs::metadata(self.mirror.join("HEAD"))
+                .await
+                .ok()?
+                .is_file()
+        {
+            return None;
+        }
+        let head = tokio::fs::read_to_string(&head).await.ok()?;
+        if head.trim() != format!("ref: refs/heads/{}", self.work_branch) {
+            return None;
+        }
+        let mirror = self.mirror.to_string_lossy().into_owned();
+        let work = format!("refs/heads/{}", self.work_branch);
+        let base = format!("refs/heads/{}", self.branch);
+        match git(
+            &["--git-dir", &mirror, "merge-base", &work, &base],
+            None,
+            None,
+        )
+        .await
+        {
+            Ok(fork) => Some(fork),
+            Err(_) => git(&["--git-dir", &mirror, "rev-parse", &base], None, None)
+                .await
+                .ok(),
+        }
+    }
+}
+
 fn stage_column(cfg: &BoardConfig, stage: Stage) -> &str {
     match stage {
         Stage::Ready => &cfg.columns.ready,
@@ -675,7 +739,7 @@ async fn announce(
 
 // ---- starting work -----------------------------------------------------------------
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StartRequest {
     #[serde(default)]
     pub issue_number: Option<u64>,
@@ -689,12 +753,19 @@ pub struct StartRequest {
     pub policy: Option<String>,
 }
 
+/// Start a session on a project, or (with `resume`) carry one on that the
+/// node it ran on can no longer run.
 pub async fn start_session(
     state: &AppState,
     project: &Project,
     req: StartRequest,
-    caller: &Caller,
+    by: Principal,
+    resume: Option<agentcore_runtime::Resume>,
 ) -> ApiResult<Arc<Session>> {
+    let spec = crate::sessions::ResumeSpec::Project {
+        project_id: project.id,
+        request: req.clone(),
+    };
     let role = state.role(req.role.as_deref().unwrap_or(&project.role))?;
     let (gh, config, token) = state.require_github().await?;
     let issue = match req.issue_number {
@@ -775,29 +846,55 @@ pub async fn start_session(
             mirror: PathBuf::new(),
         },
     };
-    let session = state.manager.create(
-        CreateSession {
-            agent: req.agent.unwrap_or_else(|| project.agent.clone()),
-            task,
-            policy: req.policy,
-            provider: None,
-            model: None,
-        },
-        caller.principal(),
-        SessionOptions {
-            models,
-            role: Some(role.clone()),
-            workspace: Some(Arc::new(setup)),
-            tools: Some(Arc::new(tools)),
-            work_item: Some(work_item),
-            context,
-            ..Default::default()
-        },
-    )?;
-    let _ = mirror_cell.set(state.mirror_path(session.id()));
-    state.persist(&session).await;
-    state.follow(session.clone());
+    let request = CreateSession {
+        agent: req.agent.unwrap_or_else(|| project.agent.clone()),
+        task,
+        policy: req.policy,
+        provider: None,
+        model: None,
+    };
+    let options = SessionOptions {
+        models,
+        role: Some(role.clone()),
+        workspace: Some(Arc::new(setup)),
+        tools: Some(Arc::new(tools)),
+        work_item: Some(work_item),
+        context,
+        ..Default::default()
+    };
+    let Some(resume) = resume else {
+        let session = state.manager.create(request, by.clone(), options)?;
+        let _ = mirror_cell.set(state.mirror_path(&session));
+        state.persist_new(&session, spec).await;
+        state.follow(session.clone());
+        announce_start(
+            state,
+            gh,
+            project,
+            &role,
+            issue.map(|i| i.number),
+            &by,
+            &session,
+        );
+        return Ok(session);
+    };
+    // Carried on: the caller persists and follows it; the issue already
+    // knows about it.
+    let session = state.manager.resume(request, resume, options)?;
+    let _ = mirror_cell.set(state.mirror_path(&session));
+    Ok(session)
+}
 
+/// Tell the issue that an agent started working on it.
+fn announce_start(
+    state: &AppState,
+    gh: GitHub,
+    project: &Project,
+    role: &Arc<Role>,
+    issue_number: Option<u64>,
+    by: &Principal,
+    session: &Session,
+) {
     let link = state
         .config
         .server
@@ -811,13 +908,16 @@ pub async fn start_session(
             )
         })
         .unwrap_or_default();
+    let supervisor = match by {
+        Principal::Human(name) => name.clone(),
+        other => other.to_string(),
+    };
     let comment = format!(
-        "🤖 An AI agent ({} role, agentcore) started working on this issue, supervised by {}{link}.",
+        "🤖 An AI agent ({} role, agentcore) started working on this issue, supervised by \
+         {supervisor}{link}.",
         role.display_title(),
-        caller.name
     );
-    let project = project.clone();
-    let issue_number = issue.map(|i| i.number);
+    let (project, role) = (project.clone(), role.clone());
     tokio::spawn(async move {
         announce(
             &gh,
@@ -829,7 +929,6 @@ pub async fn start_session(
         )
         .await;
     });
-    Ok(session)
 }
 
 /// Wraps [`GitRepoSetup`] so the mirror path can be set after the session id
@@ -964,7 +1063,7 @@ async fn deliver(
         &config,
         &token,
         &project,
-        &state.mirror_path(session.id()),
+        &state.mirror_path(session),
         &branch,
         &bundle,
         &head,
@@ -1182,7 +1281,7 @@ pub async fn start_project_session(
 ) -> ApiResult<impl IntoResponse> {
     caller.require_operator()?;
     let project = state.project(id).await?;
-    let session = start_session(&state, &project, req, &caller).await?;
+    let session = start_session(&state, &project, req, caller.principal(), None).await?;
     Ok((StatusCode::CREATED, Json(json!(session.info()))))
 }
 

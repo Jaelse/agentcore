@@ -695,6 +695,7 @@ pub async fn check(
             .create(&SandboxRequest {
                 session_id: id,
                 workspace_dir: dir.clone(),
+                home_dir: None,
                 image: spec.image.clone(),
                 egress: false,
             })

@@ -86,6 +86,10 @@ pub struct SandboxRequest {
     pub session_id: SessionId,
     /// Host directory mounted as the workspace.
     pub workspace_dir: PathBuf,
+    /// Host directory kept as the agent's `HOME` (its conversation, logins,
+    /// caches), so a new sandbox on the same session carries on where the
+    /// last one stopped. `None`: a throwaway home.
+    pub home_dir: Option<PathBuf>,
     /// Image override (container backends).
     pub image: Option<String>,
     /// The agent reaches its model provider itself (e.g. Claude Code logged

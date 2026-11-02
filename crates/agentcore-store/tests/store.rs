@@ -26,11 +26,12 @@ fn session(status: SessionStatus) -> SessionRecord {
         policy_digest: "abc".into(),
         audit_path: "/data/audit/x.jsonl".into(),
         node: Some("n1".into()),
+        resume_spec: None,
     }
 }
 
 #[tokio::test]
-async fn sessions_persist_and_interrupted_ones_fail() {
+async fn sessions_persist_and_only_their_node_writes_them() {
     let Some((store, _)) = fresh_store().await else {
         return;
     };
@@ -49,20 +50,50 @@ async fn sessions_persist_and_interrupted_ones_fail() {
     assert_eq!(got.policy_digest, "abc");
     assert_eq!(got.info.created_by, Principal::human("alice"));
 
-    // A session running on another node is not this node's to recover.
+    // How to build it again is kept by later updates that do not say.
+    let mut spec = updated.clone();
+    spec.resume_spec = Some(serde_json::json!({ "kind": "plain" }));
+    store.upsert_session(&spec).await.unwrap();
+    store.upsert_session(&updated).await.unwrap();
+    let got = store.get_session(live.info.id).await.unwrap().unwrap();
+    assert_eq!(
+        got.resume_spec,
+        Some(serde_json::json!({ "kind": "plain" }))
+    );
+
+    // Only the node a session is assigned to writes it: a node that lost
+    // the session to another one cannot overwrite it.
+    let mut stale = updated.clone();
+    stale.node = Some("n2".into());
+    stale.info.status = SessionStatus::Failed;
+    store.upsert_session(&stale).await.unwrap();
+    let got = store.get_session(live.info.id).await.unwrap().unwrap();
+    assert_eq!(got.info.status, SessionStatus::Running);
+
+    // A node finds the live sessions assigned to it, and ends the ones it
+    // cannot carry on.
     let mut elsewhere = session(SessionStatus::Running);
     elsewhere.node = Some("n2".into());
     store.upsert_session(&elsewhere).await.unwrap();
-
-    let interrupted = store.fail_interrupted_sessions("n1").await.unwrap();
-    assert_eq!(interrupted.len(), 1);
-    assert_eq!(interrupted[0].info.id, live.info.id);
+    let mine = store.live_sessions_of("n1").await.unwrap();
+    assert_eq!(mine.len(), 1);
+    assert_eq!(mine[0].0.info.id, live.info.id);
+    assert!(!mine[0].1, "no department agent holds it");
+    assert!(
+        !store
+            .end_lost_session(live.info.id, "n2", SessionStatus::Failed)
+            .await
+            .unwrap()
+    );
+    assert!(
+        store
+            .end_lost_session(live.info.id, "n1", SessionStatus::Failed)
+            .await
+            .unwrap()
+    );
+    assert!(store.live_sessions_of("n1").await.unwrap().is_empty());
     let list = store.list_sessions(10, false).await.unwrap();
     assert_eq!(list.len(), 3);
-    assert_eq!(
-        list.iter().filter(|s| !s.info.status.is_terminal()).count(),
-        1
-    );
     let other = store.get_session(elsewhere.info.id).await.unwrap().unwrap();
     assert_eq!(other.node.as_deref(), Some("n2"));
     assert_eq!(other.info.status, SessionStatus::Running);

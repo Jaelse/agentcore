@@ -234,7 +234,6 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
         )}
 
         <Limits org={org} canEdit={isAdmin} onSaved={load} onError={onError} />
-        <Nodes org={org} canEdit={isAdmin} onChanged={load} onError={onError} />
       </aside>
 
       <main className="main">
@@ -423,55 +422,6 @@ function Limits({ org, canEdit, onSaved, onError }: { org: OrgOverview; canEdit:
           </div>
         </dl>
       )}
-    </div>
-  );
-}
-
-function Nodes({
-  org,
-  canEdit,
-  onChanged,
-  onError,
-}: {
-  org: OrgOverview;
-  canEdit: boolean;
-  onChanged: () => void;
-  onError: (err: unknown) => void;
-}) {
-  return (
-    <div className="card side-panel">
-      <h3 className="section-title">Nodes</h3>
-      <ul className="file-list">
-        {org.nodes.map((n) => (
-          <li key={n.name} title={`${n.internal_url} · last seen ${new Date(n.last_seen).toLocaleTimeString()}`}>
-            <span className={`dot ${n.alive ? "on" : "off"}`} />
-            <code>
-              {n.name}
-              {n.name === org.node && " (this one)"}
-            </code>
-            <span className="muted small">
-              {n.alive ? `${n.agents}/${n.capacity} agents` : "unreachable"}
-            </span>
-            {canEdit && !n.alive && (
-              <button
-                className="link small danger-text"
-                title="Remove this node; its sessions are failed and archived, its agents stopped"
-                onClick={async () => {
-                  if (!confirm(`Remove node ${n.name}? Its sessions are archived and its agents stopped.`)) return;
-                  try {
-                    await api.removeNode(n.name);
-                    onChanged();
-                  } catch (err) {
-                    onError(err);
-                  }
-                }}
-              >
-                remove
-              </button>
-            )}
-          </li>
-        ))}
-      </ul>
     </div>
   );
 }
@@ -746,10 +696,7 @@ function AgentCard({
           {label}
         </span>
       </div>
-      <div className="muted small">
-        {agent.agent}
-        {agent.node && live && ` · on ${agent.node}`}
-      </div>
+      <div className="muted small">{agent.agent}</div>
       {agent.instructions && <div className="session-task small">{agent.instructions}</div>}
       {agent.note && <div className="small attention-text">{agent.note}</div>}
       <div className="row">
@@ -1387,7 +1334,7 @@ function WorkItems({
               {i.last_checkpoint
                 ? ` · saved ${i.last_checkpoint.slice(0, 8)}${i.checkpoint_at ? ` at ${new Date(i.checkpoint_at).toLocaleString()}` : ""}`
                 : " · nothing saved yet"}
-              {i.in_session && ` · on ${i.in_session.node}`}
+              {i.in_session && " · in a session now"}
             </div>
             {i.note && <div className="muted small">{i.note}</div>}
             <div className="work-item-actions">
