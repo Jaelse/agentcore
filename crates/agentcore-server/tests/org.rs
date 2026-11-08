@@ -2107,7 +2107,15 @@ async fn budgets_price_calls_and_stop_spending() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_eq!(out.matches("MODEL-ANSWER").count(), 4, "{out}");
-    let spending = node.ok("GET", "/org/spending", None).await;
+    // The answer reaches the agent before the call's cost is recorded.
+    let mut spending = Value::Null;
+    for _ in 0..200 {
+        spending = node.ok("GET", "/org/spending", None).await;
+        if spending["budgets"][0]["spent_micros"] == 1_600_000 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     assert_eq!(spending["budgets"][0]["spent_micros"], 1_600_000);
     assert!(
         spending["budgets"][0]["paused_departments"]
@@ -3583,4 +3591,98 @@ async fn log_export_asks_every_node() {
         )
         .await;
     assert_eq!(code, 403);
+}
+
+#[tokio::test]
+async fn an_agent_on_a_deleted_provider_asks_for_another_before_it_starts() {
+    let Some((_, db_url)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let node = start(dir.path(), &db_url, "n1", 10).await;
+    let upstream = mock_model().await;
+    for name in ["old", "new"] {
+        node.ok(
+            "POST",
+            "/providers",
+            Some(json!({
+                "name": name, "kind": "anthropic", "base_url": upstream,
+                "api_key": "sk-real-key", "allowed_models": ["claude-*"],
+            })),
+        )
+        .await;
+    }
+    let ops = node
+        .ok("POST", "/org/departments", Some(department("Ops", &[])))
+        .await;
+    let ops_id = ops["id"].as_str().unwrap().to_string();
+    let lead = node
+        .ok(
+            "POST",
+            &format!("/org/departments/{ops_id}/agents"),
+            Some(json!({
+                "name": "lead", "agent": "spender", "provider": "old", "model": "claude-test",
+            })),
+        )
+        .await;
+    let id = lead["id"].as_str().unwrap().to_string();
+    let route = |org: &Value| org["departments"][0]["agents"][0]["model_route"].clone();
+    let org = node.ok("GET", "/org", None).await;
+    assert_eq!(route(&org)["provider"], "old");
+    assert_eq!(route(&org)["source"], "member");
+    assert_eq!(route(&org)["problem"], Value::Null);
+
+    node.ok("DELETE", "/providers/old", None).await;
+    let org = node.ok("GET", "/org", None).await;
+    let problem = route(&org)["problem"].as_str().unwrap().to_string();
+    assert!(problem.contains("`old` no longer exists"), "{problem}");
+
+    let (code, body) = node
+        .call(
+            "POST",
+            &format!("/org/agents/{id}/start"),
+            "admin-token",
+            None,
+        )
+        .await;
+    assert_eq!(code, 409, "{body}");
+    assert_eq!(body["code"], "provider_unavailable");
+    assert_eq!(body["provider"], "old");
+    assert_eq!(node.agent(&id).await["desired"], "stopped");
+
+    // A model the provider does not allow is caught the same way.
+    node.ok(
+        "PUT",
+        &format!("/org/agents/{id}"),
+        Some(json!({ "provider": "new", "model": "gpt-x" })),
+    )
+    .await;
+    let (code, body) = node
+        .call(
+            "POST",
+            &format!("/org/agents/{id}/start"),
+            "admin-token",
+            None,
+        )
+        .await;
+    assert_eq!(code, 409, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("does not allow the model `gpt-x`")
+    );
+
+    node.ok(
+        "PUT",
+        &format!("/org/agents/{id}"),
+        Some(json!({ "provider": "new", "model": "claude-test" })),
+    )
+    .await;
+    node.ok("POST", &format!("/org/agents/{id}/start"), None)
+        .await;
+    node.wait_agent(&id, "lead waiting", |a| a["status"] == "awaiting_input")
+        .await;
+    node.ok("POST", &format!("/org/agents/{id}/stop"), None)
+        .await;
 }

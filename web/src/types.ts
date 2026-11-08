@@ -91,6 +91,19 @@ export interface OrgAgent {
   note: string | null;
   changed_by: string;
   created_at: string;
+  /** Where its model calls go (in the org overview). */
+  model_route?: ModelRoute;
+}
+
+/** The provider and model a department agent's sessions use. */
+export interface ModelRoute {
+  /** null: the first provider that fits its agent. */
+  provider: string | null;
+  /** member: chosen for this agent; agent: its agent's default. */
+  source: "member" | "agent" | null;
+  model: string | null;
+  /** Why its sessions could not reach a model, if they could not. */
+  problem: string | null;
 }
 
 export interface Department {
