@@ -34,7 +34,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::sse::{self, KeepAlive, Sse};
 use futures::{Stream, StreamExt};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio_stream::wrappers::BroadcastStream;
 use uuid::Uuid;
@@ -1746,6 +1746,11 @@ async fn build_agent_session(
     work: Option<&Acquired>,
     resume: Option<agentcore_runtime::Resume>,
 ) -> Result<Arc<Session>, ApiError> {
+    // Without a model its sessions would fail at once, over and over.
+    let providers = state.store.list_providers().await?;
+    if let Some(err) = route_error(agent, &model_route(state, agent, &providers)) {
+        return Err(err);
+    }
     let policy = dept.policy.clone();
     let label = format!("{}/{}", dept.name, agent.name);
     let mut context = SessionContext {
@@ -2018,19 +2023,39 @@ pub fn principal(name: &str) -> Principal {
 
 // ---- API ------------------------------------------------------------------------------
 
-fn department_json(dept: &Department, agents: &[&OrgAgent]) -> Value {
+fn department_json(
+    state: &AppState,
+    providers: &[agentcore_store::ProviderInfo],
+    dept: &Department,
+    agents: &[&OrgAgent],
+) -> Value {
     let mut value = json!(dept);
-    value["agents"] = json!(agents);
+    value["agents"] = agents
+        .iter()
+        .map(|a| {
+            let mut agent = json!(a);
+            agent["model_route"] = json!(model_route(state, a, providers));
+            agent
+        })
+        .collect();
     value["blocked"] = json!(dept.blocked());
     value
 }
 
 pub async fn overview(State(state): State<AppState>, _caller: Caller) -> ApiResult<Json<Value>> {
     let org = Org::load(&state.store).await?;
+    let providers = state.store.list_providers().await?;
     let departments: Vec<Value> = org
         .departments
         .iter()
-        .map(|d| department_json(d, &org.members(d.id).collect::<Vec<_>>()))
+        .map(|d| {
+            department_json(
+                &state,
+                &providers,
+                d,
+                &org.members(d.id).collect::<Vec<_>>(),
+            )
+        })
         .collect();
     Ok(Json(json!({
         "profile": org.profile,
@@ -2269,7 +2294,12 @@ pub async fn create_department(
     let agents = state.store.list_agents(Some(dept.id)).await?;
     Ok((
         StatusCode::CREATED,
-        Json(department_json(&dept, &agents.iter().collect::<Vec<_>>())),
+        Json(department_json(
+            &state,
+            &state.store.list_providers().await?,
+            &dept,
+            &agents.iter().collect::<Vec<_>>(),
+        )),
     ))
 }
 
@@ -2391,6 +2421,95 @@ pub async fn delete_department(
     )
     .await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Where a department agent's model calls go: the provider its sessions
+/// use and why they could not reach a model through it, if they could not.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ModelRoute {
+    /// Provider named for it; `None`: the first one that fits its agent.
+    pub provider: Option<String>,
+    /// Where the name comes from: `member` (chosen for this agent) or
+    /// `agent` (the default of the agent it runs).
+    pub source: Option<&'static str>,
+    pub model: Option<String>,
+    /// What stops its sessions from reaching a model, in words for people.
+    pub problem: Option<String>,
+}
+
+/// The [`ModelRoute`] of a department agent, given the configured providers.
+pub(crate) fn model_route(
+    state: &AppState,
+    agent: &OrgAgent,
+    providers: &[agentcore_store::ProviderInfo],
+) -> ModelRoute {
+    let spec = state.manager.agent(&agent.agent);
+    let chosen = |own: &Option<String>| {
+        own.as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(String::from)
+    };
+    let (provider, source) = match chosen(&agent.provider) {
+        Some(p) => (Some(p), Some("member")),
+        None => match spec.as_ref().and_then(|s| chosen(&s.provider)) {
+            Some(p) => (Some(p), Some("agent")),
+            None => (None, None),
+        },
+    };
+    let model = chosen(&agent.model).or_else(|| spec.as_ref().and_then(|s| chosen(&s.model)));
+    let problem = provider.as_deref().and_then(|name| {
+        match providers.iter().find(|p| p.name == name) {
+            None => Some(format!(
+                "model provider `{name}` no longer exists: choose another provider for {}",
+                agent.name
+            )),
+            Some(p) if !p.enabled => Some(format!(
+                "model provider `{name}` is disabled: enable it or choose another provider for {}",
+                agent.name
+            )),
+            Some(p) => match &model {
+                Some(m)
+                    if !p.allowed_models.is_empty()
+                        && !p.allowed_models.iter().any(|glob| {
+                            globset::Glob::new(glob)
+                                .map(|g| g.compile_matcher().is_match(m))
+                                .unwrap_or(false)
+                        }) =>
+                {
+                    Some(format!(
+                        "model provider `{name}` does not allow the model `{m}` (it allows {}): \
+                         choose another model or provider for {}",
+                        p.allowed_models.join(", "),
+                        agent.name
+                    ))
+                }
+                _ => None,
+            },
+        }
+    });
+    ModelRoute {
+        provider,
+        source,
+        model,
+        problem,
+    }
+}
+
+/// Starting an agent whose sessions could not reach a model fails at once,
+/// with the agent and provider in the body so the UI can offer another one.
+fn route_error(agent: &OrgAgent, route: &ModelRoute) -> Option<ApiError> {
+    let problem = route.problem.as_ref()?;
+    Some(ApiError::with_body(
+        StatusCode::CONFLICT,
+        json!({
+            "error": problem,
+            "code": "provider_unavailable",
+            "agent": agent.id,
+            "provider": route.provider,
+            "model": route.model,
+        }),
+    ))
 }
 
 /// The provider a department agent was told to use must be a known, enabled
@@ -2519,8 +2638,16 @@ pub(crate) async fn control_agents(
                 AgentScope::Department(d) => store.list_agents(Some(d)).await?,
                 AgentScope::All => store.list_agents(None).await?,
             };
+            let providers = store.list_providers().await?;
             let mut started = Vec::new();
             for agent in candidates {
+                if let Some(err) = route_error(&agent, &model_route(state, &agent, &providers)) {
+                    if matches!(scope, AgentScope::Agent(_)) {
+                        return Err(err);
+                    }
+                    failed.push(json!({ "agent": agent.name, "error": err.message() }));
+                    continue;
+                }
                 match store
                     .start_agent(agent.id, state.config.cluster.node_timeout_secs, by)
                     .await

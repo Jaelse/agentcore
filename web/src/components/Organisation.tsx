@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, streamOrg } from "../api";
+import { ApiError, api, streamOrg } from "../api";
 import { useInterval } from "../hooks";
 import {
   OPEN_ROUTING,
@@ -27,7 +27,7 @@ import { Dashboard } from "./Dashboard";
 import { DataSources } from "./DataSources";
 import { Improvements } from "./Improvements";
 import { Spending } from "./Spending";
-import { type AgentChoice, AgentModelPicker, useModelChoices } from "./AgentModelPicker";
+import { type AgentChoice, AgentModelPicker, ProviderSwitch, useModelChoices } from "./AgentModelPicker";
 import { OfficeFloor } from "./OfficeFloor";
 import { Outbox } from "./Outbox";
 import { Releases } from "./Releases";
@@ -450,6 +450,7 @@ function DepartmentRoom({
   const [editing, setEditing] = useState(false);
   const [adding, setAdding] = useState(false);
   const [repo, setRepo] = useState<Project | null>(null);
+  const choices = useModelChoices(onError);
   useEffect(() => {
     if (!dept.project_id) {
       setRepo(null);
@@ -632,7 +633,15 @@ function DepartmentRoom({
         />
         <div className="member-grid">
           {dept.agents.map((a) => (
-            <AgentCard key={a.id} agent={a} dept={dept} canOperate={canOperate} act={act} onOpenSession={onOpenSession} />
+            <AgentCard
+              key={a.id}
+              agent={a}
+              dept={dept}
+              canOperate={canOperate}
+              act={act}
+              choices={choices}
+              onOpenSession={onOpenSession}
+            />
           ))}
         </div>
       </section>
@@ -664,15 +673,32 @@ function AgentCard({
   dept,
   canOperate,
   act,
+  choices,
   onOpenSession,
 }: {
   agent: OrgAgent;
   dept: Department;
   canOperate: boolean;
   act: (fn: () => Promise<unknown>) => Promise<void>;
+  choices: ReturnType<typeof useModelChoices>;
   onOpenSession: (id: string) => void;
 }) {
+  // Switching the provider: on request, or because starting needs another one.
+  const [switching, setSwitching] = useState<null | { reason?: string; start: boolean }>(null);
+  const route = agent.model_route;
   const live = agent.desired !== "stopped";
+  const start = () =>
+    act(async () => {
+      try {
+        await api.controlAgent(agent.id, "start");
+      } catch (err) {
+        if (err instanceof ApiError && err.body?.code === "provider_unavailable") {
+          setSwitching({ reason: err.message, start: true });
+          return;
+        }
+        throw err;
+      }
+    });
   const label = !live
     ? agent.status && agent.status !== "stopped"
       ? `stopped · ${agent.status}`
@@ -697,6 +723,39 @@ function AgentCard({
         </span>
       </div>
       <div className="muted small">{agent.agent}</div>
+      {route && (
+        <div className={`model-route small ${route.problem ? "broken" : ""}`}>
+          <span className="muted">Model</span>{" "}
+          <strong>{route.provider ?? "default provider"}</strong>
+          {" · "}
+          {route.model ?? "agent default"}
+          {route.source === "agent" && <span className="muted"> (agent default)</span>}
+          {canOperate && !switching && (
+            <button className="link small" onClick={() => setSwitching({ start: false })}>
+              change
+            </button>
+          )}
+        </div>
+      )}
+      {route?.problem && !switching && <div className="small attention-text">⚠ {route.problem}</div>}
+      {switching && (
+        <ProviderSwitch
+          agent={agent}
+          providers={choices.providers}
+          known={choices.known}
+          reason={switching.reason}
+          startAfter={switching.start || (!live && !!route?.problem)}
+          onCancel={() => setSwitching(null)}
+          onSave={async (provider, model) => {
+            const andStart = switching.start || (!live && !!route?.problem);
+            await act(async () => {
+              await api.updateAgent(agent.id, { provider, model });
+              setSwitching(null);
+              if (andStart) await api.controlAgent(agent.id, "start");
+            });
+          }}
+        />
+      )}
       {agent.instructions && <div className="session-task small">{agent.instructions}</div>}
       {agent.note && <div className="small attention-text">{agent.note}</div>}
       <div className="row">
@@ -705,8 +764,8 @@ function AgentCard({
             {live ? "👁 Watch" : "History"}
           </button>
         )}
-        {canOperate && !live && (
-          <button className="btn small-btn primary" onClick={() => act(() => api.controlAgent(agent.id, "start"))}>
+        {canOperate && !live && !switching && (
+          <button className="btn small-btn primary" onClick={() => void start()}>
             ▶ Start
           </button>
         )}
