@@ -653,3 +653,18 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
 /* Lifted off the floor while dragged; it follows the pointer through an inline transform. */
 .room.dragging { scale: 1.03; box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35); cursor: grabbing; will-change: transform; }
 .room.dragging .drag-handle { cursor: grabbing; }
+
+/* Log export */
+.log-export { display: grid; gap: 14px; }
+.log-export h2, .log-export p { margin: 0; }
+.log-export-field { display: grid; gap: 6px; }
+.log-export-field > .label { font-weight: 600; font-size: 12px; color: var(--muted); }
+.log-export-field .inline-check > span { font-weight: 500; }
+.log-export-actions { justify-content: space-between; }
+.log-export-download select { width: auto; }
+.session-logs { display: grid; gap: 6px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.session-logs p { margin: 0; }
+@media (max-width: 640px) {
+  .log-export-actions > .btn, .log-export-download { flex: 1 1 100%; }
+  .log-export-download select, .log-export-download .btn { flex: 1 1 0; }
+}

@@ -664,3 +664,162 @@ async fn live_view_shows_screen_and_model_stream_and_can_pause() {
         assert_eq!(event["by"]["id"], "alice", "{event}");
     }
 }
+
+async fn get_text(url: &str, token: &str) -> (u16, String) {
+    let out = tokio::process::Command::new("curl")
+        .args(["-s", "-w", "\n%{http_code}", "-H"])
+        .arg(format!("Authorization: Bearer {token}"))
+        .arg(url)
+        .output()
+        .await
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    let (body, code) = text.rsplit_once('\n').unwrap();
+    (code.parse().unwrap(), body.to_string())
+}
+
+#[tokio::test]
+async fn admins_export_logs_from_everywhere() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    // Other tests in this binary may have installed it already.
+    let _ = tracing_subscriber::registry()
+        .with(agentcore_server::logs::capture())
+        .try_init();
+    let Some((_, db)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (upstream, _) = mock_anthropic().await;
+    let server = start(dir.path(), &db).await;
+    server.add_provider(&upstream).await;
+    let base = &server.base;
+    let tools = server.create("tools-agent").await;
+    let model = server.create("model-agent").await;
+    server.wait(&tools, terminal).await;
+    server.wait(&model, terminal).await;
+    let marker = uuid::Uuid::new_v4().to_string();
+    tracing::warn!(marker = %marker, "disk almost full on the test node");
+    let url = |query: &str| format!("{base}/api/v1/logs/export?{query}");
+
+    for token in ["alice-token", "viewer-token"] {
+        assert_eq!(get_text(&url("format=md"), token).await.0, 403);
+    }
+    assert_eq!(get_text(&url("sources=nope"), "admin-token").await.0, 400);
+    assert_eq!(
+        get_text(
+            &url("since=2026-02-01T00:00:00Z&until=2026-01-01T00:00:00Z"),
+            "admin-token"
+        )
+        .await
+        .0,
+        400
+    );
+
+    // Markdown, for a model: context, the sessions, problems, the timeline.
+    let (code, md) = get_text(&url("format=md"), "admin-token").await;
+    assert_eq!(code, 200, "{md}");
+    for expected in [
+        "## About agentcore and this export",
+        "## Sessions",
+        &tools,
+        &model,
+        "## Problems",
+        "policy denied",
+        "disk almost full on the test node",
+        "## Timeline",
+    ] {
+        assert!(md.contains(expected), "missing {expected}:\n{md}");
+    }
+
+    // JSON Lines: a meta line, then every record.
+    let (code, jsonl) = get_text(&url("format=jsonl"), "admin-token").await;
+    assert_eq!(code, 200);
+    let lines: Vec<Value> = jsonl
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines[0]["type"], "meta");
+    assert_eq!(lines[0]["meta"]["generated_by"], "root");
+    assert_eq!(lines[0]["meta"]["records"], lines.len() - 1);
+    let records = &lines[1..];
+    let of = |source: &str| records.iter().filter(|r| r["source"] == source).count();
+    assert!(of("audit") > 0 && of("server") > 0 && of("admin") > 0);
+    assert!(records.iter().any(|r| r["source"] == "server"
+        && r["level"] == "warn"
+        && r["fields"]["marker"] == marker.as_str()));
+    assert!(records.iter().any(|r| r["kind"] == "model_call"));
+    // The model agent printed its (per-session) key; it is redacted.
+    let printed = records
+        .iter()
+        .find(|r| r["kind"] == "output" && r["message"].as_str().unwrap().starts_with("key="))
+        .expect("the agent's output");
+    assert_eq!(printed["message"], "key=[REDACTED]");
+    assert!(!jsonl.contains("sk-real-key"));
+
+    // One session only; warnings and up.
+    let (_, jsonl) = get_text(
+        &url(&format!("format=jsonl&session={tools}&level=warn")),
+        "admin-token",
+    )
+    .await;
+    let records: Vec<Value> = jsonl
+        .lines()
+        .skip(1)
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert!(!records.is_empty());
+    assert!(records.iter().all(|r| r["session"] == tools.as_str()));
+    assert!(
+        records
+            .iter()
+            .all(|r| r["level"] == "warn" || r["level"] == "error")
+    );
+
+    let (_, csv) = get_text(&url("format=csv&sources=audit"), "admin-token").await;
+    assert!(csv.starts_with("time,source,level,node,session,agent,kind,message,fields\n"));
+    // Cells may span lines (quoted); records start with their timestamp.
+    let starts: Vec<&str> = csv
+        .lines()
+        .skip(1)
+        .filter(|l| l.len() > 25 && l.as_bytes()[10] == b'T' && l[..30].contains("Z,"))
+        .collect();
+    assert!(!starts.is_empty());
+    assert!(starts.iter().all(|l| l.contains(",audit,")), "{csv}");
+    let (_, json) = get_text(&url("format=json"), "admin-token").await;
+    let json: Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(json["sessions"].as_array().unwrap().len(), 2);
+    let (_, txt) = get_text(&url("format=txt"), "admin-token").await;
+    assert!(txt.starts_with("# agentcore "));
+
+    // Exports are in the change history.
+    let (_, history) = http(
+        "GET",
+        &format!("{base}/api/v1/admin-events"),
+        Some("admin-token"),
+        None,
+    )
+    .await;
+    assert!(
+        history
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["action"] == "logs.export" && e["actor"] == "root")
+    );
+
+    // Warnings outlive the node: they are saved to PostgreSQL.
+    agentcore_server::logs::persist(&server.state).await;
+    let now = chrono::Utc::now();
+    let saved = server
+        .state
+        .store
+        .node_logs(now - chrono::Duration::hours(1), now, 10_000)
+        .await
+        .unwrap();
+    assert!(
+        saved
+            .iter()
+            .any(|l| l.fields.0["marker"] == marker.as_str() && l.level == "warn")
+    );
+}

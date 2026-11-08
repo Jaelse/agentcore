@@ -1144,3 +1144,20 @@ export interface FeedPage {
   items: FeedItem[];
   has_more: boolean;
 }
+
+/** Formats of the log export (`md` is written for a model to read). */
+export type LogFormat = "md" | "jsonl" | "json" | "csv" | "txt";
+export type LogSource = "server" | "audit" | "admin" | "activity";
+export type LogLevel = "debug" | "info" | "warn" | "error";
+
+export interface LogExportOptions {
+  format: LogFormat;
+  /** RFC 3339; the server defaults to the last 24 hours. */
+  since?: string;
+  until?: string;
+  sources?: LogSource[];
+  level?: LogLevel;
+  session?: string;
+  /** Size budget of the Markdown format, in characters. */
+  max_chars?: number;
+}
