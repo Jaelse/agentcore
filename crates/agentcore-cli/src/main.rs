@@ -5,6 +5,8 @@ use agentcore_policy::{PolicySet, normalize_action};
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[derive(Parser)]
 #[command(
@@ -80,10 +82,15 @@ enum AuditCommand {
 fn init_tracing(format: LogFormat) {
     let filter = EnvFilter::try_from_env("AGENTCORE_LOG")
         .unwrap_or_else(|_| EnvFilter::new("info,tower_http=info"));
-    let builder = tracing_subscriber::fmt().with_env_filter(filter);
+    // Besides printing, each node keeps its log for the log export.
+    let registry = tracing_subscriber::registry()
+        .with(filter)
+        .with(agentcore_server::logs::capture());
     match format {
-        LogFormat::Pretty => builder.init(),
-        LogFormat::Json => builder.json().flatten_event(true).init(),
+        LogFormat::Pretty => registry.with(tracing_subscriber::fmt::layer()).init(),
+        LogFormat::Json => registry
+            .with(tracing_subscriber::fmt::layer().json().flatten_event(true))
+            .init(),
     }
 }
 

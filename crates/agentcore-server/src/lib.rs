@@ -21,6 +21,7 @@ pub mod insights;
 pub mod launch;
 pub mod live;
 pub mod llm;
+pub mod logs;
 pub mod mcp;
 pub mod org;
 pub mod outbox;
@@ -229,6 +230,8 @@ pub fn router(state: AppState) -> Router {
             post(api::test_pool_token),
         )
         .route("/admin-events", get(api::admin_events))
+        .route("/logs/export", get(logs::export))
+        .route("/logs/node", get(logs::node_records))
         .route("/roles", get(teamwork::list_roles))
         .route(
             "/integrations/github",
@@ -500,6 +503,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     }
     let state = AppState::new(config).await?;
     let cluster = cluster::start(&state).await?;
+    logs::spawn_persister(state.clone(), cluster.clone());
     let manager = state.manager.clone();
     let listener = tokio::net::TcpListener::bind(bind)
         .await
@@ -520,6 +524,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         tracing::warn!(error = %err, "could not hand the sessions over");
     }
     tracing::info!(sessions = handed, "shutdown complete; sessions handed over");
+    logs::persist(&state).await;
     Ok(())
 }
 

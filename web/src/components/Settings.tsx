@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import type { AdminEvent, Me, PoolToken, ProviderInfo, ProviderKind, SystemCard } from "../types";
 import { AgentCatalog } from "./AgentCatalog";
+import { LogExport } from "./LogExport";
 import { GitHubSettings, RolesOverview } from "./TeamSettings";
 
 const DEFAULT_URL: Record<ProviderKind, string> = {
@@ -97,6 +98,8 @@ export function Settings({
       <GitHubSettings me={me} onError={onError} onChanged={refresh} />
 
       <RolesOverview onError={onError} />
+
+      {isAdmin && <LogExport onError={onError} />}
 
       {isAdmin && (
         <section className="card pad">

@@ -63,6 +63,7 @@ import type {
   FeedKind,
   FeedPage,
   WorkItem,
+  LogExportOptions,
 } from "./types";
 
 const TOKEN_KEY = "agentcore.token";
@@ -472,6 +473,29 @@ export const api = {
       "GET",
       `/org/departments/${id}/files/${path.split("/").map(encodeURIComponent).join("/")}`,
     ),
+  /** Logs from everywhere (admins only), as text, with the file name the server suggests. */
+  async exportLogs(opts: LogExportOptions): Promise<{ text: string; filename: string }> {
+    const query = new URLSearchParams({ format: opts.format });
+    if (opts.since) query.set("since", opts.since);
+    if (opts.until) query.set("until", opts.until);
+    if (opts.sources?.length) query.set("sources", opts.sources.join(","));
+    if (opts.level) query.set("level", opts.level);
+    if (opts.session) query.set("session", opts.session);
+    if (opts.max_chars) query.set("max_chars", String(opts.max_chars));
+    const res = await fetch(`/api/v1/logs/export?${query}`, { headers: headers() });
+    if (!res.ok) {
+      let message = res.statusText;
+      try {
+        message = ((await res.json()) as { error?: string }).error ?? message;
+      } catch {
+        /* not JSON */
+      }
+      throw new ApiError(res.status, message);
+    }
+    const disposition = res.headers.get("content-disposition") ?? "";
+    const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? `agentcore-logs.${opts.format}`;
+    return { text: await res.text(), filename };
+  },
   async downloadAudit(id: string) {
     const res = await fetch(`/api/v1/sessions/${id}/audit`, { headers: headers() });
     if (!res.ok) throw new ApiError(res.status, res.statusText);

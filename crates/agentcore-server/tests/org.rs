@@ -3520,3 +3520,67 @@ fn closed_today() -> Value {
     let today = chrono::Utc::now().weekday().number_from_monday();
     json!({ "days": [today % 7 + 1], "start": "09:00", "end": "17:00" })
 }
+
+#[tokio::test]
+async fn log_export_asks_every_node() {
+    let Some((_, db)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let a = start(dir.path(), &db, "node-a", 4).await;
+    let _b = start(dir.path(), &db, "node-b", 4).await;
+    // A node that went away left a warning behind.
+    a.state
+        .store
+        .save_node_logs(&[agentcore_store::NodeLog {
+            id: uuid::Uuid::now_v7(),
+            at: chrono::Utc::now(),
+            node: "node-gone".into(),
+            level: "error".into(),
+            target: "agentcore_server::cluster".into(),
+            message: "lost the database".into(),
+            fields: sqlx::types::Json(json!({})),
+        }])
+        .await
+        .unwrap();
+
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let export = client
+        .get(format!("{}/api/v1/logs/export?format=json", a.base))
+        .bearer_auth("admin-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(export.status(), 200);
+    let export: Value = export.json().await.unwrap();
+    let nodes: Vec<&str> = export["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(nodes, ["node-a", "node-b"]);
+    let notes = export["meta"]["notes"].to_string();
+    assert!(!notes.contains("did not send"), "{notes}");
+    assert!(notes.contains("Nodes that are gone: node-gone"), "{notes}");
+    assert!(
+        export["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["node"] == "node-gone"
+                && e["level"] == "error"
+                && e["message"] == "lost the database")
+    );
+
+    // Only admins may read a node's log.
+    let (code, _) = a
+        .call(
+            "GET",
+            "/logs/node?since=2026-01-01T00:00:00Z&until=2030-01-01T00:00:00Z",
+            "alice-token",
+            None,
+        )
+        .await;
+    assert_eq!(code, 403);
+}

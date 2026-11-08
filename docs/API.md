@@ -124,6 +124,29 @@ before).
 | `DELETE /providers/{name}` | A | Remove |
 | `GET /admin-events` | A | Configuration change history |
 
+### Logs
+
+Everything agentcore logged, collected from every node into one file. Settings → Logs in the web UI uses this, as does
+*Copy logs for Claude* on a session's Audit tab.
+
+| Method & path | Role | Description |
+|---|---|---|
+| `GET /logs/export` | A | Query: `format` (`md` default, `jsonl`, `json`, `csv`, `txt`), `since` / `until` (RFC 3339; default the last 24 hours), `sources` (comma-separated: `server`, `audit`, `admin`, `activity`; default all), `level` (lowest: `debug` default, `info`, `warn`, `error`), `session` (only what concerns one session), `limit` (most records, newest kept; default 100000), `max_chars` (size budget of `md`; default 300000). Sent as a download. Secrets are redacted; the export is recorded in the change history as `logs.export` |
+| `GET /logs/node?since=&until=` | A | This node's buffered operational log as `[{id, at, level, target, message, fields}]` (the node putting an export together asks every other node) |
+
+Sources: `server` is each node's own `tracing` log. Nodes keep their newest 20,000 records in memory and save warnings
+and errors to PostgreSQL for 14 days, so a node that went away still contributes its warnings and errors. `audit` is
+every session's audit log (sessions that ran in the window, at most 500). `admin` is configuration changes, `activity`
+what department agents did. Every record has `at`, `source`, `level`, `kind` (log target, event type, admin action or
+activity kind), `message`, `fields`, and where known `node`, `session` and `agent`.
+
+`md` is written for a model to read: what agentcore is and how to read the export, the nodes and sessions, the problems
+(errors and warnings grouped by message pattern), then the timeline, trimmed to `max_chars` (errors and warnings
+first, then the newest of the rest). `jsonl` starts with a `{"type": "meta", ...}` line (filter, counts, notes,
+nodes, sessions), followed by one `{"type": "log", ...}` line per record. `json` is one document `{meta, nodes,
+sessions, entries}`. `csv` has the columns `time, source, level, node, session, agent, kind, message, fields` (JSON).
+`txt` is one line per record after `#` header lines.
+
 ### Live event stream (SSE)
 
 `GET /sessions/{id}/stream` replays the session's events and then streams new

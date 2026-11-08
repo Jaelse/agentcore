@@ -12,6 +12,7 @@ mod handoffs;
 mod hours;
 mod insights;
 mod launch;
+mod logs;
 mod org;
 mod outbox;
 mod releases;
@@ -46,6 +47,7 @@ pub use insights::{
 pub use launch::{
     LaunchEvent, LaunchStats, MAX_SOURCES, NewSubscriber, Segment, SourceStats, Subscriber,
 };
+pub use logs::{ActivityRecord, NodeInfo, NodeLog};
 pub use org::{
     AgentInput, AgentScope, DepartmentInput, FileInfo, MAX_FILE_BYTES, MessageFilter, NewMessage,
     ORG_CHANNEL, RESERVED_NAMES, Reaped, WAITING_FOR_ROOM, valid_agent_name,

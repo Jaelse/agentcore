@@ -8,6 +8,7 @@ import { StatusPill } from "./StatusPill";
 import { Conversation } from "./Conversation";
 import { ChangesView } from "./ChangesView";
 import { DeliverDialog } from "./DeliverDialog";
+import { SessionLogs } from "./LogExport";
 
 // xterm.js is large: load the live view only when it is opened.
 const LiveView = lazy(() => import("./LiveView").then((m) => ({ default: m.LiveView })));
@@ -267,7 +268,7 @@ export function SessionView({ info, me, archived = false, onChanged, onArchivedC
       {tab === "activity" && <Timeline items={timeline} sessionId={info.id} onError={onError} />}
       {tab === "changes" && <ChangesView sessionId={info.id} status={info.status} onError={onError} />}
       {tab === "output" && <Output lines={output} />}
-      {tab === "audit" && <Audit sessionId={info.id} events={events} onError={onError} />}
+      {tab === "audit" && <Audit info={info} isAdmin={me.role === "admin"} events={events} onError={onError} />}
       {delivering && (
         <DeliverDialog
           sessionId={info.id}
@@ -576,7 +577,18 @@ function Output({ lines }: { lines: Extract<AgentEvent, { event: "output" }>[] }
   );
 }
 
-function Audit({ sessionId, events, onError }: { sessionId: string; events: AgentEvent[]; onError: (e: unknown) => void }) {
+function Audit({
+  info,
+  isAdmin,
+  events,
+  onError,
+}: {
+  info: SessionInfo;
+  isAdmin: boolean;
+  events: AgentEvent[];
+  onError: (e: unknown) => void;
+}) {
+  const sessionId = info.id;
   const [result, setResult] = useState<Awaited<ReturnType<typeof api.verifyAudit>> | null>(null);
   return (
     <div className="card pad audit">
@@ -604,6 +616,9 @@ function Audit({ sessionId, events, onError }: { sessionId: string; events: Agen
         ) : (
           <p className="error-text">✗ Verification failed: {result.error}</p>
         ))}
+      {isAdmin && (
+        <SessionLogs sessionId={sessionId} createdAt={info.created_at} endedAt={info.ended_at} onError={onError} />
+      )}
     </div>
   );
 }
