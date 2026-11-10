@@ -13,6 +13,7 @@ pub mod cluster;
 pub mod config;
 pub mod distribution;
 mod error;
+pub mod explorer;
 pub mod feed;
 pub mod github;
 pub mod handoffs;
@@ -413,6 +414,8 @@ pub fn router(state: AppState) -> Router {
             "/org/agents/{id}",
             put(org::update_agent).delete(org::delete_agent),
         )
+        .route("/org/agents/{id}/workspace", get(explorer::list))
+        .route("/org/agents/{id}/workspace/file", get(explorer::read))
         .route("/org/agents/{id}/{control}", post(org::control_agent))
         .route("/org/pause-all", post(org::pause_all))
         .route("/org/resume-all", post(org::resume_all))

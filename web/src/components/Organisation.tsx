@@ -25,6 +25,7 @@ import { type BuildMode, OrgBuilder } from "./OrgBuilder";
 import { CheckIns, Goals } from "./Rhythm";
 import { Dashboard } from "./Dashboard";
 import { DataSources } from "./DataSources";
+import { FileExplorer } from "./FileExplorer";
 import { Improvements } from "./Improvements";
 import { Spending } from "./Spending";
 import { type AgentChoice, AgentModelPicker, ProviderSwitch, useModelChoices } from "./AgentModelPicker";
@@ -53,6 +54,7 @@ type Selection =
   | { kind: "dashboard" }
   | { kind: "improvements" }
   | { kind: "data" }
+  | { kind: "files" }
   | { kind: "spending" }
   | { kind: "outbox" }
   | { kind: "releases" }
@@ -155,6 +157,12 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
             <strong>💰 Spending</strong>
           </div>
           <div className="muted small">prices and budgets</div>
+        </button>
+        <button className={`session-item ${selection.kind === "files" ? "active" : ""}`} onClick={() => setSelection({ kind: "files" })}>
+          <div className="session-item-top">
+            <strong>📂 Files</strong>
+          </div>
+          <div className="muted small">everything the organisation holds</div>
         </button>
         <button className={`session-item ${selection.kind === "data" ? "active" : ""}`} onClick={() => setSelection({ kind: "data" })}>
           <div className="session-item-top">
@@ -277,6 +285,8 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
           <Releases org={org} me={me} tick={tick} onError={onError} />
         ) : selection.kind === "spending" ? (
           <Spending org={org} me={me} tick={tick} onError={onError} />
+        ) : selection.kind === "files" ? (
+          <FileExplorer org={org} me={me} tick={tick} onError={onError} />
         ) : selection.kind === "data" ? (
           <DataSources org={org} me={me} act={act} onError={onError} />
         ) : selection.kind === "new" ? (

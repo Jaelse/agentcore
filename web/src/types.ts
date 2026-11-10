@@ -267,6 +267,30 @@ export interface DepartmentFile {
   updated_by: string;
 }
 
+/** One entry of an agent's workspace directory (`.git` is never listed). */
+export interface WorkspaceEntry {
+  name: string;
+  kind: "dir" | "file" | "symlink";
+  size: number;
+  modified: string | null;
+}
+
+export interface WorkspaceListing {
+  path: string;
+  entries: WorkspaceEntry[];
+  truncated: boolean;
+}
+
+export interface WorkspaceFile {
+  path: string;
+  size: number;
+  modified: string | null;
+  binary: boolean;
+  /** Only the first MiB is sent. */
+  truncated: boolean;
+  content: string | null;
+}
+
 export interface OrgProfile {
   company_name: string;
   company_about: string;

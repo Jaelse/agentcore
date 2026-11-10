@@ -40,6 +40,8 @@ import type {
   CheckIn,
   DataSource,
   DataSourceKind,
+  WorkspaceFile,
+  WorkspaceListing,
   OrgMetrics,
   Proposal,
   ProposalAction,
@@ -468,6 +470,10 @@ export const api = {
   assignWorkItem: (id: string, agent: string) =>
     request<WorkItem>("POST", `/org/work-items/${id}/assign`, { agent }),
   closeWorkItem: (id: string, note?: string) => request<WorkItem>("POST", `/org/work-items/${id}/close`, { note }),
+  workspace: (agent: string, path = "") =>
+    request<WorkspaceListing>("GET", `/org/agents/${agent}/workspace?path=${encodeURIComponent(path)}`),
+  workspaceFile: (agent: string, path: string) =>
+    request<WorkspaceFile>("GET", `/org/agents/${agent}/workspace/file?path=${encodeURIComponent(path)}`),
   departmentFile: (id: string, path: string) =>
     request<{ path: string; content: string }>(
       "GET",
