@@ -127,6 +127,22 @@ export interface Department {
   agents: OrgAgent[];
 }
 
+/** What the people who run the company tell everyone, or one department. */
+export interface OrgAnnouncement {
+  id: string;
+  title: string;
+  body: string;
+  /** null: everyone in the organisation. */
+  department_id: string | null;
+  ask_ack: boolean;
+  valid_until: string | null;
+  withdrawn_at: string | null;
+  withdrawn_by: string | null;
+  created_by: string;
+  created_at: string;
+  acks: { agent_id: string; note: string; acked_at: string }[];
+}
+
 export interface OrgGoal {
   id: string;
   title: string;
@@ -360,6 +376,8 @@ export interface Suggestion {
   reason: string;
   templates: string[];
   department_id: string | null;
+  /** For a suggested department: the existing departments it usually works with. */
+  works_with: string[];
   agent: { name: string; title: string; instructions: string } | null;
   blocked: string | null;
 }

@@ -1,6 +1,8 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import type { Department, OrgAgent, OrgOverview } from "../types";
+import type { Department, OrgAgent, OrgOverview, Suggestion } from "../types";
 import { moveOnto, useFloorLayout } from "../floorLayout";
+import { AnnounceForm, NoticeBoard } from "./Announcements";
+import { type GrowActions, RoomGrow, SuggestionItem, useSuggestions } from "./Grow";
 import { PixelKitten } from "./PixelKitten";
 
 interface Props {
@@ -8,6 +10,9 @@ interface Props {
   onOpenDepartment: (id: string) => void;
   onOpenSession: (sessionId: string) => void;
 }
+
+/** Suggestions in the rooms, and what is needed to act on them. */
+type Grow = GrowActions & { tick: number };
 
 type Mood = "working" | "waiting" | "asleep" | "paused" | "off" | "failed";
 
@@ -29,19 +34,80 @@ const MOOD_LABEL: Record<Mood, string> = {
 };
 
 /** The organisation as a floor plan: each department a room, each agent a desk in it. */
-export function OfficeFloor({ org, onOpenDepartment, onOpenSession }: Props) {
+export function OfficeFloor({
+  org,
+  onOpenDepartment,
+  onOpenSession,
+  grow,
+  onBuild,
+  onAddDepartment,
+}: Props & {
+  grow: Grow;
+  /** Open the organisation builder; admins only. */
+  onBuild?: () => void;
+  /** Add one department; admins only. */
+  onAddDepartment?: () => void;
+}) {
+  const { tick, ...actions } = grow;
+  const suggestions = useSuggestions(tick, grow.onError);
+  // The growth path's next stage belongs to no room.
+  const stages = suggestions.filter((s) => s.kind === "stage");
+  const [announcing, setAnnouncing] = useState(false);
+  const canAnnounce = grow.me.role !== "viewer" && org.departments.length > 0;
   return (
     <div className="session">
-      <section className="card session-header">
+      <section className="card session-header floor-header">
         <div className="session-header-main">
-          <h2>Organisation floor</h2>
+          <h2>{org.profile.company_name.trim() || "Organisation floor"}</h2>
           <p className="muted">
             Every department is a room, every agent sits inside it. Click a room to open the department, or an
             agent to watch its session. Rooms talk to each other through the message router.
           </p>
         </div>
+        {(onBuild || onAddDepartment || canAnnounce) && (
+          <div className="session-actions">
+            {canAnnounce && (
+              <button className={`btn ${announcing ? "active" : ""}`} onClick={() => setAnnouncing(!announcing)}>
+                📣 Announce
+              </button>
+            )}
+            {onAddDepartment && (
+              <button className="btn primary" onClick={onAddDepartment}>
+                + Add department
+              </button>
+            )}
+            {onBuild && (
+              <button className="btn" onClick={onBuild} title="Growth paths, stages and any department from the catalogue">
+                Build & grow…
+              </button>
+            )}
+          </div>
+        )}
       </section>
-      <Floor org={org} onOpenDepartment={onOpenDepartment} onOpenSession={onOpenSession} />
+      {announcing && <AnnounceForm org={org} act={grow.act} onDone={() => setAnnouncing(false)} />}
+      <NoticeBoard org={org} me={grow.me} tick={tick} act={grow.act} onError={grow.onError} />
+      {org.departments.length === 0 && (
+        <div className="empty">
+          <h2>No departments yet</h2>
+          <p>An admin builds the organisation, from one department to a complete company.</p>
+        </div>
+      )}
+      {stages.length > 0 && (
+        <section className="card grow">
+          <h3 className="section-title">Next stage</h3>
+          <ul className="suggestions">
+            {stages.map((s) => (
+              <SuggestionItem key={s.title} s={s} {...actions} />
+            ))}
+          </ul>
+        </section>
+      )}
+      <Floor
+        org={org}
+        onOpenDepartment={onOpenDepartment}
+        onOpenSession={onOpenSession}
+        grow={{ actions, suggestions }}
+      />
     </div>
   );
 }
@@ -53,7 +119,12 @@ const LIFT = "scale 150ms ease, box-shadow 150ms ease";
  * Just the rooms, for pages that bring their own heading. People can put the
  * rooms they care about first, and hide the rest until needed.
  */
-export function Floor({ org, onOpenDepartment, onOpenSession }: Props) {
+export function Floor({
+  org,
+  onOpenDepartment,
+  onOpenSession,
+  grow,
+}: Props & { grow?: { actions: GrowActions; suggestions: Suggestion[] } }) {
   const byId = new Map(org.departments.map((d) => [d.id, d]));
   const layout = useFloorLayout(org.departments.map((d) => d.id));
   const [arranging, setArranging] = useState(false);
@@ -248,6 +319,15 @@ export function Floor({ org, onOpenDepartment, onOpenSession }: Props) {
             onOpen={() => onOpenDepartment(d.id)}
             onOpenSession={onOpenSession}
             hidden={layout.hidden.has(d.id)}
+            grow={
+              grow && !arranging
+                ? {
+                    actions: grow.actions,
+                    maxAgents: org.settings.max_agents_per_department,
+                    list: grow.suggestions.filter((s) => s.department_id === d.id || s.works_with.includes(d.id)),
+                  }
+                : undefined
+            }
             arrange={
               arranging
                 ? {
@@ -275,12 +355,15 @@ function Room({
   onOpen,
   onOpenSession,
   hidden,
+  grow,
   arrange,
 }: {
   dept: Department;
   onOpen: () => void;
   onOpenSession: (id: string) => void;
   hidden: boolean;
+  /** This room's suggestions, on the organisation floor only. */
+  grow?: { actions: GrowActions; list: Suggestion[]; maxAgents: number };
   arrange?: Arrange;
 }) {
   const workers = dept.agents;
@@ -322,6 +405,7 @@ function Room({
           <Desk key={a.id} agent={a} dept={dept} onOpenSession={onOpenSession} />
         ))}
       </div>
+      {grow && <RoomGrow dept={dept} maxAgents={grow.maxAgents} list={grow.list} {...grow.actions} />}
     </section>
   );
 }

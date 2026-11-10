@@ -595,6 +595,51 @@ pub struct OrgGoal {
     pub created_at: DateTime<Utc>,
 }
 
+/// What the people who run the company tell everyone, or one department.
+/// Delivered once, it stays on the notice board and in the agents'
+/// instructions while it is current; agents act on it in their department
+/// and acknowledge it when asked, but do not reply to everyone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrgAnnouncement {
+    pub id: Uuid,
+    pub title: String,
+    pub body: String,
+    /// `None`: everyone in the organisation.
+    pub department_id: Option<DepartmentId>,
+    /// Every agent it reaches is asked to acknowledge it.
+    pub ask_ack: bool,
+    pub valid_until: Option<DateTime<Utc>>,
+    pub withdrawn_at: Option<DateTime<Utc>>,
+    pub withdrawn_by: Option<String>,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    /// Who acknowledged it, oldest first.
+    pub acks: Vec<AnnouncementAck>,
+}
+
+impl OrgAnnouncement {
+    /// Still on the notice board: not withdrawn, not expired.
+    pub fn is_current(&self, now: DateTime<Utc>) -> bool {
+        self.withdrawn_at.is_none() && self.valid_until.is_none_or(|u| u > now)
+    }
+
+    /// Whether it is meant for this department.
+    pub fn reaches(&self, department: DepartmentId) -> bool {
+        self.department_id.is_none_or(|d| d == department)
+    }
+
+    pub fn acked_by(&self, agent: OrgAgentId) -> Option<&AnnouncementAck> {
+        self.acks.iter().find(|a| a.agent_id == agent)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnnouncementAck {
+    pub agent_id: OrgAgentId,
+    pub note: String,
+    pub acked_at: DateTime<Utc>,
+}
+
 /// A check-in: a message sent to a department (or one agent) on a schedule,
 /// which wakes the agents it reaches.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -764,6 +809,45 @@ impl std::str::FromStr for HandoffStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn announcements_stand_until_withdrawn_or_expired_and_reach_their_audience() {
+        let now = Utc::now();
+        let sales = Uuid::new_v4();
+        let mut a = OrgAnnouncement {
+            id: Uuid::now_v7(),
+            title: "QA signs off every release".into(),
+            body: String::new(),
+            department_id: None,
+            ask_ack: true,
+            valid_until: None,
+            withdrawn_at: None,
+            withdrawn_by: None,
+            created_by: "dev".into(),
+            created_at: now,
+            acks: vec![],
+        };
+        assert!(a.is_current(now) && a.reaches(sales) && a.reaches(Uuid::new_v4()));
+
+        a.department_id = Some(sales);
+        assert!(a.reaches(sales) && !a.reaches(Uuid::new_v4()));
+
+        a.valid_until = Some(now - chrono::Duration::minutes(1));
+        assert!(!a.is_current(now));
+        a.valid_until = Some(now + chrono::Duration::days(1));
+        assert!(a.is_current(now));
+        a.withdrawn_at = Some(now);
+        assert!(!a.is_current(now));
+
+        let agent = Uuid::new_v4();
+        assert!(a.acked_by(agent).is_none());
+        a.acks.push(AnnouncementAck {
+            agent_id: agent,
+            note: "ok".into(),
+            acked_at: now,
+        });
+        assert_eq!(a.acked_by(agent).unwrap().note, "ok");
+    }
 
     fn agent(dept: DepartmentId) -> (Party, Target) {
         let id = Uuid::new_v4();

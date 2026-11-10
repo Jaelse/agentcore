@@ -567,6 +567,8 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
   /* Sessions: list and session are separate screens, not stacked on one. */
   .layout.has-session .sidebar { display: none; }
   .layout.has-session .main { order: 0; border-bottom: none; }
+  /* Organisation: the floor (or whatever is picked) first, the menu below it. */
+  .org-layout .main { order: -1; border-bottom: 1px solid var(--border); }
   .mobile-back { display: inline-flex; align-items: center; margin-bottom: 10px; padding-left: 4px; }
 
   .session-header { padding: 12px; gap: 12px; }
@@ -632,6 +634,37 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
 .room-mission { margin: 0; }
 .room-floor { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; min-height: 72px; padding: 8px; border-radius: 8px; background-color: var(--bg); background-image: repeating-conic-gradient(rgb(127 127 127 / 0.08) 0 25%, transparent 0 50%); background-size: 24px 24px; }
 .room-door { border-top: 2px dashed var(--border); padding-top: 8px; display: flex; flex-wrap: wrap; gap: 8px; }
+.room-grow { align-items: center; gap: 6px; }
+.grow-chip { cursor: pointer; font: inherit; font-size: 12.5px; }
+.grow-chip:hover, .grow-chip.active { border-color: var(--primary); }
+.grow-chip.agent { border-left: 3px solid var(--ok); }
+.grow-chip.own { border-style: dashed; }
+.room-grow-detail .provider-edit { margin-bottom: 0 !important; }
+.room-grow-detail { flex-basis: 100%; }
+/* Announcements on the floor */
+/* Keep the description readable; the buttons wrap below it when space is short. */
+.floor-header .session-header-main { flex: 1 1 360px; }
+.notice-board { display: grid; gap: 10px; border-left: 4px solid var(--attention); }
+.notice-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.notices { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.notice { display: grid; gap: 4px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.notice:last-child { border-bottom: none; padding-bottom: 0; }
+.notice.past { opacity: 0.6; }
+.notice-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.notice-title { font-size: 1.02em; }
+.notice-body { margin: 0; white-space: pre-wrap; }
+.notice-actions { gap: 12px; }
+.ack-list { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 3px; }
+.announce-form { border-left: 4px solid var(--attention); }
+/* Adding a department on the floor */
+.add-dept-agents { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 10px; }
+.add-dept-agents .inline-check { align-items: flex-start; }
+.add-dept-agents .inline-check input { margin-top: 3px; }
+.add-dept-own { display: grid; gap: 12px; }
+.add-dept-picked { padding: 0 2px; }
+.add-dept-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.own-agent { display: grid; gap: 6px; border-left: 3px solid var(--ok); padding-left: 10px; }
+.own-agent > .link { justify-self: start; }
 .desk { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 4px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); cursor: pointer; font: inherit; }
 .desk:disabled { cursor: default; opacity: 0.7; }
 .desk:not(:disabled):hover { border-color: var(--primary); }

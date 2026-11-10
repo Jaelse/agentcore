@@ -297,6 +297,14 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/org/checkins/{id}/run", post(org::run_check_in))
         .route("/org/goals", get(org::list_goals).post(org::create_goal))
+        .route(
+            "/org/announcements",
+            get(org::list_announcements).post(org::create_announcement),
+        )
+        .route(
+            "/org/announcements/{id}/withdraw",
+            post(org::withdraw_announcement),
+        )
         .route("/org/metrics", get(insights::metrics))
         .route("/org/spending", get(budgets::spending))
         .route("/feed", get(feed::feed))
