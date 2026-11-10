@@ -146,7 +146,11 @@ pub async fn list(
             EntryKind::File
         };
         entries.push(Entry {
-            size: if kind == EntryKind::File { meta.len() } else { 0 },
+            size: if kind == EntryKind::File {
+                meta.len()
+            } else {
+                0
+            },
             modified: modified(&meta),
             name,
             kind,
@@ -218,7 +222,10 @@ mod tests {
     #[test]
     fn relative_paths_stay_inside() {
         assert_eq!(relative("").unwrap(), PathBuf::new());
-        assert_eq!(relative("/src/main.rs").unwrap(), PathBuf::from("src/main.rs"));
+        assert_eq!(
+            relative("/src/main.rs").unwrap(),
+            PathBuf::from("src/main.rs")
+        );
         assert_eq!(relative("./a/./b").unwrap(), PathBuf::from("a/b"));
         assert!(relative("../etc/passwd").is_err());
         assert!(relative("a/../../b").is_err());
