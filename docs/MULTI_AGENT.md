@@ -1327,6 +1327,7 @@ an admin.
 | `GET /org/messages?department=&agent=&after=&limit=` | Message feed (organisation, department or agent). |
 | `POST /org/messages` | A person sends a message: `{"to": {"agent": id} \| {"department": id} \| "all_departments", "text": ...}`. |
 | `GET /org/departments/{id}/files` · `GET`/`PUT /org/departments/{id}/files/{*path}` | Department files (`PUT` body `{"content": ...}`, operators). |
+| `GET /org/agents/{id}/workspace?path=` · `GET /org/agents/{id}/workspace/file?path=` | Read-only view of a department agent's workspace on the data volume, for the **Files** explorer: one directory (folders first, `.git` hidden) or the first MiB of one file (`binary: true` without content). Paths and symlinks that lead outside the workspace are refused; the agent's home is never served. |
 | `GET /org/handoffs?department=&open=` | Handoffs, newest first; with `department`, the ones it sent or received; `open=true` only `held`, `waiting` and `taken` ones. Each has the departments' names, `spec`, `status`, `taken_by_name` and `result`. |
 | `POST /org/handoffs/{id}/cancel` | Withdraw an open handoff: `{"reason": "..."}` (optional; operators; `409` when it is closed). A held notice is rejected with it. |
 | `GET /org/work-items?department=&closed=` | Work items, open ones first (`closed=true` includes closed ones): title, branch, `assignee`, `in_session` (session and node holding it), `last_checkpoint`, `pull_request`, `note`. |

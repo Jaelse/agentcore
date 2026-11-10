@@ -672,3 +672,28 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
   .log-export-actions > .btn, .log-export-download { flex: 1 1 100%; }
   .log-export-download select, .log-export-download .btn { flex: 1 1 0; }
 }
+
+/* ---- organisation file explorer ---- */
+.explorer { display: grid; grid-template-columns: minmax(240px, 360px) minmax(0, 1fr); gap: 12px; align-items: start; }
+.explorer-tree { padding: 8px; display: grid; gap: 1px; max-height: calc(100vh - 170px); overflow: auto; }
+.explorer-tree .section-title { margin: 8px 8px 4px; }
+.tree-row { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; padding: 5px 8px; border: none; border-radius: 6px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.tree-row:hover { background: var(--surface-2); }
+.tree-row.active { background: var(--primary); color: var(--primary-text); }
+.tree-row.active .muted { color: inherit; opacity: 0.85; }
+.tree-caret { width: 10px; flex: none; color: var(--muted); font-size: 11px; }
+.tree-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-meta { flex: none; }
+.explorer-view { padding: 16px; min-width: 0; }
+.explorer-file { display: grid; gap: 8px; min-width: 0; }
+.explorer-path { margin: 0; overflow-wrap: anywhere; }
+.explorer-content { max-height: calc(100vh - 290px); margin: 0; padding: 12px; background: var(--surface-2); border-radius: 8px; white-space: pre; }
+.explorer-table { overflow: auto; max-height: calc(100vh - 320px); border: 1px solid var(--border); border-radius: 8px; }
+.explorer-table table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+.explorer-table th, .explorer-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+.explorer-table th { position: sticky; top: 0; background: var(--surface-2); }
+@media (max-width: 800px) {
+  .explorer { grid-template-columns: minmax(0, 1fr); }
+  .explorer-tree { max-height: 50vh; }
+  .tree-row { padding: 9px 8px; }
+}
