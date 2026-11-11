@@ -16,7 +16,6 @@ import type {
   OrgOverview,
   PeerRule,
   Project,
-  Suggestion,
   SystemCard,
   TeamRole,
   WorkItem,
@@ -28,8 +27,10 @@ import { DataSources } from "./DataSources";
 import { FileExplorer } from "./FileExplorer";
 import { Improvements } from "./Improvements";
 import { Spending } from "./Spending";
-import { type AgentChoice, AgentModelPicker, ProviderSwitch, useModelChoices } from "./AgentModelPicker";
+import { ProviderSwitch, useModelChoices } from "./AgentModelPicker";
 import { OfficeFloor } from "./OfficeFloor";
+import { AddAgent, GrowDepartment } from "./Grow";
+import { AddDepartment } from "./AddDepartment";
 import { Outbox } from "./Outbox";
 import { Releases } from "./Releases";
 
@@ -49,7 +50,7 @@ const TOOL_GROUPS: { id: string; label: string; help: string }[] = [
 type Selection =
   | { kind: "org" }
   | { kind: "department"; id: string }
-  | { kind: "new" }
+  | { kind: "add-department"; template?: string }
   | { kind: "floor" }
   | { kind: "dashboard" }
   | { kind: "improvements" }
@@ -76,6 +77,9 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
   // Live: every node announces changes; refetch at most every 300 ms.
   const pending = useRef<number | null>(null);
   useEffect(() => {
+    // Load right away; the stream can take a while to connect (some proxies
+    // hold an event stream back until its first event).
+    load();
     const stop = streamOrg(() => {
       if (pending.current !== null) return;
       pending.current = window.setTimeout(() => {
@@ -90,6 +94,17 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
   }, [load]);
   // Safety net for anything a notification did not cover.
   useInterval(load, 10000);
+
+  // On narrow screens the content sits above the menu, at the top of the
+  // page; go back up to it when something is picked further down the menu.
+  const firstSelection = useRef(true);
+  useEffect(() => {
+    if (firstSelection.current) {
+      firstSelection.current = false;
+      return;
+    }
+    if (window.matchMedia("(max-width: 800px)").matches) window.scrollTo({ top: 0 });
+  }, [selection]);
 
   if (!org) return <div className="empty">Loading the organisation…</div>;
 
@@ -108,7 +123,7 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
   };
 
   return (
-    <div className="layout">
+    <div className="layout org-layout">
       <aside className="sidebar">
         <button className={`session-item ${selection.kind === "floor" ? "active" : ""}`} onClick={() => setSelection({ kind: "floor" })}>
           <div className="session-item-top">
@@ -185,67 +200,11 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
           </div>
         )}
 
-        <h3 className="section-title">Departments</h3>
-        {org.departments.length === 0 && (
-          <p className="muted small">
-            No departments yet. {isAdmin ? "Create one to put agents to work together." : "Ask an admin to create one."}
-          </p>
-        )}
-        <ul className="session-list">
-          {org.departments.map((d) => {
-            const live = d.agents.filter((a) => a.desired !== "stopped").length;
-            return (
-              <li key={d.id}>
-                <button
-                  className={`session-item ${dept?.id === d.id ? "active" : ""}`}
-                  onClick={() => setSelection({ kind: "department", id: d.id })}
-                >
-                  <div className="session-item-top">
-                    <strong>{d.name}</strong>
-                    {d.state === "paused" ? (
-                      <span className="pill status-paused">paused</span>
-                    ) : live > 0 ? (
-                      <span className="pill status-running">
-                        <span className="pulse" />
-                        {live} running
-                      </span>
-                    ) : (
-                      <span className="pill">idle</span>
-                    )}
-                  </div>
-                  <div className="muted small">
-                    {d.agents.length}/{org.settings.max_agents_per_department} agents
-                  </div>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-        {isAdmin && (
-          <div className="row">
-            <button className="btn" onClick={() => setSelection({ kind: "build", mode: "pick" })}>
-              + Add departments
-            </button>
-            <button
-              className="link small"
-              disabled={org.departments.length >= org.settings.max_departments}
-              title={
-                org.departments.length >= org.settings.max_departments
-                  ? "The organisation has reached its department limit"
-                  : "A department without a template"
-              }
-              onClick={() => setSelection({ kind: "new" })}
-            >
-              blank department
-            </button>
-          </div>
-        )}
-
         <Limits org={org} canEdit={isAdmin} onSaved={load} onError={onError} />
       </aside>
 
       <main className="main">
-        {selection.kind === "build" || (selection.kind === "org" && org.departments.length === 0 && isAdmin) ? (
+        {selection.kind === "build" || ((selection.kind === "org" || selection.kind === "floor") && org.departments.length === 0 && isAdmin) ? (
           <OrgBuilder
             key={selection.kind === "build" ? `${selection.mode}-${selection.pick?.join()}` : "first"}
             me={me}
@@ -255,9 +214,9 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
             initialPick={selection.kind === "build" ? selection.pick : undefined}
             onDone={(id) => {
               load();
-              setSelection(id ? { kind: "department", id } : { kind: "org" });
+              setSelection(id ? { kind: "department", id } : { kind: "floor" });
             }}
-            onCancel={org.departments.length > 0 ? () => setSelection({ kind: "org" }) : undefined}
+            onCancel={org.departments.length > 0 ? () => setSelection({ kind: "floor" }) : undefined}
             onError={onError}
           />
         ) : selection.kind === "floor" ? (
@@ -265,6 +224,26 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
             org={org}
             onOpenDepartment={(id) => setSelection({ kind: "department", id })}
             onOpenSession={onOpenSession}
+            grow={{
+              me,
+              card,
+              tick,
+              act,
+              onReview: (templates) =>
+                setSelection(
+                  templates.length === 1
+                    ? { kind: "add-department", template: templates[0] }
+                    : { kind: "build", mode: "pick", pick: templates },
+                ),
+              onError,
+            }}
+            // Once the company is named and has a department, it grows a department at a time.
+            onBuild={
+              isAdmin && org.departments.length > 0 && !org.profile.company_name.trim()
+                ? () => setSelection({ kind: "build" })
+                : undefined
+            }
+            onAddDepartment={isAdmin && org.departments.length > 0 ? () => setSelection({ kind: "add-department" }) : undefined}
           />
         ) : selection.kind === "dashboard" ? (
           <Dashboard
@@ -289,16 +268,17 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
           <FileExplorer org={org} me={me} tick={tick} onError={onError} />
         ) : selection.kind === "data" ? (
           <DataSources org={org} me={me} act={act} onError={onError} />
-        ) : selection.kind === "new" ? (
-          <DepartmentForm
-            department={null}
-            departments={org.departments}
+        ) : selection.kind === "add-department" ? (
+          <AddDepartment
+            key={selection.template ?? ""}
+            org={org}
+            initialTemplate={selection.template}
             card={card}
-            onSaved={(d) => {
+            onDone={() => {
               load();
-              setSelection({ kind: "department", id: d.id });
+              setSelection({ kind: "floor" });
             }}
-            onCancel={() => setSelection({ kind: "org" })}
+            onCancel={() => setSelection({ kind: "floor" })}
             onError={onError}
           />
         ) : dept ? (
@@ -319,39 +299,11 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
           />
         ) : (
           <div className="session">
-            <section className="card session-header">
-              <div className="session-header-main">
-                <h2>{org.profile.company_name || "Organisation"}</h2>
-                {org.profile.company_about && <p>{org.profile.company_about}</p>}
-                <p className="muted">
-                  Agents work together inside a department. Departments only talk to each other through the
-                  message router, which follows each department's routing policy. You can see every message, talk to any agent or department, and pause or stop
-                  anything.
-                </p>
-              </div>
-              {isAdmin && org.departments.length > 0 && (
-                <div className="session-actions">
-                  <button className="btn" onClick={() => setSelection({ kind: "build" })}>
-                    Build & grow…
-                  </button>
-                </div>
-              )}
-            </section>
             {org.departments.length === 0 && !isAdmin && (
               <div className="empty">
                 <h2>No departments yet</h2>
                 <p>An admin builds the organisation, from one department to a complete company.</p>
               </div>
-            )}
-            {org.departments.length > 0 && (
-              <Grow
-                me={me}
-                card={card}
-                tick={tick}
-                act={act}
-                onPick={(templates) => setSelection({ kind: "build", mode: "pick", pick: templates })}
-                onError={onError}
-              />
             )}
             {org.departments.length > 0 && <Goals org={org} canEdit={canOperate} act={act} />}
             <HeldMessages org={org} tick={tick} canDecide={canOperate} act={act} onError={onError} />
@@ -632,13 +584,13 @@ function DepartmentRoom({
             onError={onError}
           />
         )}
-        <Grow
+        <GrowDepartment
           me={me}
           card={card}
           tick={tick}
           act={act}
           department={dept.id}
-          onPick={() => {}}
+          onReview={() => {}}
           onError={onError}
         />
         <div className="member-grid">
@@ -806,50 +758,6 @@ function AgentCard({
         )}
       </div>
     </div>
-  );
-}
-
-function AddAgent({ dept, card, onDone, onError }: { dept: Department; card: SystemCard; onDone: () => void; onError: (e: unknown) => void }) {
-  const [name, setName] = useState("");
-  const [choice, setChoice] = useState<AgentChoice>({ agent: card.agents[0]?.name ?? "", provider: "", model: "" });
-  const [instructions, setInstructions] = useState("");
-  const [busy, setBusy] = useState(false);
-  const { providers, known } = useModelChoices(onError);
-  return (
-    <form
-      className="card pad provider-edit"
-      style={{ marginBottom: 10 }}
-      onSubmit={async (e) => {
-        e.preventDefault();
-        setBusy(true);
-        try {
-          await api.addAgent(dept.id, { name: name.trim().toLowerCase(), instructions, ...choice });
-          onDone();
-        } catch (err) {
-          onError(err);
-        } finally {
-          setBusy(false);
-        }
-      }}
-    >
-      <label>
-        Name (how colleagues address it)
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="analyst" pattern="[a-z0-9][a-z0-9_\-]{0,31}" required />
-      </label>
-      <AgentModelPicker card={card} value={choice} onChange={setChoice} providers={providers} known={known} />
-      <label>
-        Instructions (its job in {dept.name})
-        <textarea rows={3} value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="You research competitors and summarise…" />
-      </label>
-      <div className="row">
-        <button className="btn primary" disabled={busy || !name.trim()}>
-          Add agent
-        </button>
-        <button type="button" className="btn ghost" onClick={onDone}>
-          Cancel
-        </button>
-      </div>
-    </form>
   );
 }
 
@@ -1244,7 +1152,7 @@ function Feed({
       list.push({ value: "room", label: `everyone in ${dept.name}`, to: { department: dept.id } });
       for (const a of dept.agents) list.push({ value: a.id, label: a.name, to: { agent: a.id } });
     } else {
-      list.push({ value: "room", label: "all departments (every agent)", to: "all_departments" });
+      // Everyone at once is an announcement (on the floor), not a chat message.
       for (const d of org.departments) list.push({ value: d.id, label: `everyone in ${d.name}`, to: { department: d.id } });
     }
     return list;
@@ -1304,7 +1212,11 @@ function Feed({
             }
           }}
         >
-          <select value={to} onChange={(e) => setTo(e.target.value)} aria-label="Send to">
+          <select
+            value={targets.some((t) => t.value === to) ? to : targets[0]?.value}
+            onChange={(e) => setTo(e.target.value)}
+            aria-label="Send to"
+          >
             {targets.map((t) => (
               <option key={t.value} value={t.value}>
                 To {t.label}
@@ -1317,6 +1229,7 @@ function Feed({
           </button>
         </form>
       )}
+      {canPost && !dept && <p className="muted small">To tell every department at once, make an announcement on the floor (📣 Announce).</p>}
     </section>
   );
 }
@@ -1566,103 +1479,3 @@ function Handoffs({
   );
 }
 
-/** What to add next: the growth path's next stage, departments that work
- * with the existing ones, and agents departments do not have yet. */
-function Grow({
-  me,
-  card,
-  tick,
-  act,
-  department,
-  onPick,
-  onError,
-}: {
-  me: Me;
-  card: SystemCard;
-  tick: number;
-  act: (fn: () => Promise<unknown>) => Promise<void>;
-  /** Only agent suggestions for this department. */
-  department?: string;
-  onPick: (templates: string[]) => void;
-  onError: (e: unknown) => void;
-}) {
-  const [all, setAll] = useState<Suggestion[]>([]);
-  const agent = card.agents[0]?.name ?? "";
-  const { providers, known } = useModelChoices(onError);
-  // The suggestion being added: adding an agent asks which agent, provider and model it gets.
-  const [adding, setAdding] = useState<Suggestion | null>(null);
-  const [choice, setChoice] = useState<AgentChoice>({ agent, provider: "", model: "" });
-  useEffect(() => {
-    api.suggestions().then(setAll).catch(onError);
-  }, [tick, onError]);
-  const list = department ? all.filter((s) => s.department_id === department) : all;
-  if (list.length === 0) return null;
-  const isAdmin = me.role === "admin";
-  const canOperate = me.role !== "viewer";
-
-  const run = (s: Suggestion) => {
-    if (s.kind === "agent" && s.agent && s.department_id) {
-      setChoice({ agent, provider: "", model: "" });
-      setAdding(s);
-      return Promise.resolve();
-    }
-    return act(() => api.build({ departments: s.templates, size: "lean", agent }));
-  };
-
-  const confirmAdd = async () => {
-    const s = adding;
-    if (!s?.agent || !s.department_id) return;
-    const a = s.agent;
-    setAdding(null);
-    await act(() => api.addAgent(s.department_id!, { name: a.name, instructions: a.instructions, ...choice }));
-  };
-
-  return (
-    <section className={`card side-panel grow ${department ? "compact" : ""}`}>
-      <h3 className="section-title">{department ? "Grow this department" : "Grow your organisation"}</h3>
-      <ul className="suggestions">
-        {list.slice(0, department ? 3 : 8).map((s) => {
-          const allowed = s.kind === "agent" ? canOperate : isAdmin;
-          return (
-            <li key={`${s.kind}-${s.title}`} className={`suggestion ${s.kind}`}>
-              <div className="suggestion-text">
-                <strong>{s.title}</strong>
-                <span className="muted small">{s.reason}</span>
-                {s.blocked && <span className="small attention-text">{s.blocked}</span>}
-              </div>
-              {adding?.kind === s.kind && adding.title === s.title && (
-                <form
-                  className="provider-edit"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void confirmAdd();
-                  }}
-                >
-                  <AgentModelPicker card={card} value={choice} onChange={setChoice} providers={providers} known={known} />
-                  <div className="row">
-                    <button className="btn small-btn primary">Add {s.agent?.name}</button>
-                    <button type="button" className="link small" onClick={() => setAdding(null)}>
-                      cancel
-                    </button>
-                  </div>
-                </form>
-              )}
-              {allowed && !(adding?.kind === s.kind && adding.title === s.title) && (
-                <div className="row">
-                  <button className="btn small-btn primary" disabled={!!s.blocked} onClick={() => run(s)}>
-                    {s.kind === "stage" ? "Add stage" : "Add"}
-                  </button>
-                  {s.kind !== "agent" && (
-                    <button className="link small" onClick={() => onPick(s.templates)}>
-                      review first
-                    </button>
-                  )}
-                </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-    </section>
-  );
-}

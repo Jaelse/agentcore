@@ -166,16 +166,27 @@ marked `core` form a **lean** team; a **full** team has all of them.
   same step.
 * **Pick departments**: tick departments in the catalogue.
 
-Afterwards the organisation page shows **suggestions**, most useful first:
+The builder is how an organisation starts: an empty organisation opens it on
+the **organisation floor**. Once the company has a name and a department, the
+organisation grows on the floor itself, a department at a time:
 
-1. the **next stage** of the chosen path;
-2. **departments that work with the ones you have** (Engineering suggests
-   Product, QA, DevOps, Design), with the reason to add them;
-3. **more agents** for existing departments (a reviewer for Engineering).
+* **+ Add department** (admins): one from the catalogue, with the agents of
+  its team you tick (its core team to start with), or one entirely your own
+  with a name, a mission and agents. Either way you can add agents of your
+  own, each with a **name**, a **role** and instructions.
+* Each room's **Grow** row: the **departments that usually work with it**
+  (Engineering suggests Product, QA, DevOps, Design), the **agents its
+  template has and it does not** (a reviewer for Engineering), and
+  **+ Your own agent**. Tapping one says why and offers to add it; *review
+  first* opens *Add department* with it picked.
+* The growth path's **next stage**, if one was chosen, above the rooms.
 
-Each one is a click away, and a suggestion that a limit blocks says so.
-Admins build departments; operators can add the suggested agents; viewers
-see the suggestions.
+A suggestion that a limit blocks says so. Admins add departments; operators
+can add agents; viewers see the suggestions.
+
+An agent's role is the first line of its instructions ("You are the Tech lead
+of this department."), followed by what it does: template agents get their
+template role, and people's own agents the role they type.
 
 Teams add their own templates and paths by adding TOML files to
 `templates/` (`[templates].dir`); they are validated at startup. See
@@ -352,6 +363,31 @@ flowchart LR
 * Loops between agents are bounded by the policy limits of each session
   (`max_actions`, `max_model_calls`, `max_session_secs`).
 
+### Announcements
+
+What the people who run the company tell **everyone**, or **one
+department**, works like an announcement in a real company rather than a chat
+message (📣 *Announce* on the organisation floor, operators):
+
+* It has a **title**, a message, an author and a date, and optionally a
+  **valid until** date.
+* It is **delivered once** to every agent it reaches, as a message that wakes
+  them (in the message log it reads *📣 Announcement from …*).
+* It **stays on the notice board**, and in the instructions of every agent it
+  reaches (*Announcements*, next to the goals), until it expires or is
+  withdrawn. Agents and departments added later know about it too.
+* It is a broadcast, not a conversation: agents act on it in their
+  department and do not reply to everyone; they ask a person if something is
+  unclear.
+* It can **ask every agent to acknowledge it**: agents call
+  `team_acknowledge_announcement` with an optional note ("QA will start
+  sign-off on Monday"), and the notice board shows who did and who has not
+  yet.
+* **Withdraw** takes it off the board and out of the instructions.
+
+People write to every department at once only this way; messages from people
+go to one agent or one department room.
+
 ### Agent tools
 
 | Tool | Available | Purpose |
@@ -366,6 +402,7 @@ flowchart LR
 | `outbox_channels`, `outbox_draft`, `outbox_drafts`, `outbox_revise` | if the department may use a channel | Drafts for the outside world that people approve (see [Talking to the outside world](#talking-to-the-outside-world)). |
 | `insights_metrics`, `insights_org`, `insights_messages`, `insights_proposals`, `insights_propose`, `insights_revise` | if the department grants `insights` | The retrospective: metrics, structure, messages, and proposals (see [below](#metrics-the-retrospective-and-improvements)). |
 | `team_report_progress` | always | `goal` (id or title), `text`: replaces the goal's latest progress note. |
+| `team_acknowledge_announcement` | always | `announcement` (id or title), `note`?: confirms a current announcement that asks for it (see [Announcements](#announcements)). |
 | `team_work_item`, `team_finish_work_item` | with a checkout (see [Work items](#work-items-the-department-keeps-the-work)) | The worker's work item (optionally renamed with `title`); close it when done (`summary`). |
 | `team_hand_off` | always | `department`, `title`, `spec`: hand work to another department (see [Handoffs](#handoffs-departments-that-work-in-turn)). |
 | `team_list_handoffs`, `team_read_handoff`, `team_take_handoff`, `team_finish_handoff` | always | Open work handed to the department and what it handed to others; read one (`handoff`: id or title) with its specification; take it; close it (`outcome`: `done` or `declined`, `result`), which tells the sender. |
@@ -1093,6 +1130,9 @@ erDiagram
     nodes ||--o{ org_agents : "placed on"
     nodes ||--o{ sessions : "runs (live ones)"
     departments ||--o{ org_goals : "owns (optional)"
+    departments ||--o{ org_announcements : "addressed to (optional)"
+    org_announcements ||--o{ org_announcement_acks : "acknowledged by"
+    org_agents ||--o{ org_announcement_acks : "acknowledges"
     org_proposals }o--o| org_agents : "proposed by"
     departments ||--o{ budgets : "limits (or the whole org)"
     org_channels ||--o{ org_outbox : "drafts and messages"
@@ -1135,6 +1175,22 @@ erDiagram
         text progress "latest note"
         text progress_by
         timestamptz progress_at
+    }
+    org_announcements {
+        uuid id PK
+        text title
+        text body
+        uuid department_id FK "null: everyone"
+        boolean ask_ack
+        timestamptz valid_until
+        timestamptz withdrawn_at
+        text created_by
+    }
+    org_announcement_acks {
+        uuid announcement_id PK
+        uuid agent_id PK
+        text note
+        timestamptz acked_at
     }
     data_sources {
         uuid id PK
@@ -1289,6 +1345,8 @@ an admin.
 | `GET`/`POST /org/goals` | Goals; create `{"title", "description", "department_id"?}` (operators). |
 | `PUT`/`DELETE /org/goals/{id}` | Change `title`, `description`, `department_id` (`null` clears it), `status` (`active`\|`achieved`\|`dropped`); delete. |
 | `POST /org/goals/{id}/progress` | A person records progress: `{"text"}`. |
+| `GET`/`POST /org/announcements` | The latest announcements with their acknowledgements; announce `{"title", "body", "department_id"?, "ask_ack", "valid_until"?}` (operators), delivered at once. |
+| `POST /org/announcements/{id}/withdraw` | Take it off the notice board and out of the agents' instructions (operators). |
 | `GET`/`POST /org/departments/{id}/checkins` | Check-ins of a department; create `{"name", "message", "every_minutes", "agent_id"?, "first_run_at"?}` (operators; default first run: one interval from now). |
 | `PUT`/`DELETE /org/checkins/{id}` | Change `name`, `message`, `every_minutes`, `enabled`; delete. |
 | `GET /feed?limit=&before=&kind=` | The home feed: what happened lately, newest first, as `{"items", "has_more"}`. Merged from sessions (started, finished), messages between departments or from people, proposals, outbox drafts, releases and goals (set, progress). `limit` 1–200 (default 50), `before` an RFC 3339 time to page back, `kind` a comma-separated subset of `session,message,proposal,outbox,release,goal`. Each item has `tone` (`neutral`, `good`, `warn` = waiting for a person, `bad`). Any signed-in user; each source contributes at most its newest 200 records. |

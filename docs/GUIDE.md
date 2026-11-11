@@ -149,15 +149,18 @@ Reference: [Metrics, the retrospective and improvements](MULTI_AGENT.md#metrics-
 - **Department rooms**: skim the conversation; correct misunderstandings by
   writing to the room.
 
-Talk to the organisation any time: write to an agent, a department room, or
-all departments. Pause a department (or everything) when you are away and
-do not want work to continue.
+Talk to the organisation any time: write to an agent or a department room,
+or tell everyone (or one department) something that stands with **📣
+Announce** on the organisation floor; ask agents to acknowledge it when it
+matters. Pause a department (or everything) when you are away and do not
+want work to continue.
 
 ## 9. Growing
 
-- The overview's **suggestions** show the growth path's next stage and the
-  departments that work with the ones you have. Add them from there; raise
-  the limits when asked.
+- On the organisation floor, each room's **Grow** row suggests the
+  departments that work with it and the agents it is missing, and
+  **+ Add department** adds any department from the catalogue or one of your
+  own, with agents in the roles you choose. Raise the limits when asked.
 - Add agents to busy departments; keep departments small and focused.
 - More agents than one VM can run: add nodes ([Several VMs](DEPLOYMENT.md#several-vms)).
 

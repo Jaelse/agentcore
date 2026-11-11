@@ -7,6 +7,7 @@
 //! * `admin_events`: who changed configuration.
 
 mod agents;
+mod announcements;
 mod crypto;
 mod handoffs;
 mod hours;
@@ -36,6 +37,7 @@ use sqlx::types::Json;
 use uuid::Uuid;
 
 pub use agents::InstalledAgent;
+pub use announcements::AnnouncementInput;
 pub use crypto::{Cipher, MASTER_KEY_ENV};
 pub use handoffs::NewHandoff;
 pub use hours::HoursInput;

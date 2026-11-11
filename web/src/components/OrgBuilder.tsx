@@ -153,7 +153,8 @@ export function OrgBuilder({ me, card, org, initialMode, initialPick, onDone, on
         raise_limits: raise,
       });
       for (const e of r.errors ?? []) onError(new Error(`${e.department}${e.agent ? `/${e.agent}` : ""}: ${e.error}`));
-      onDone(r.created?.[0]?.id ?? null);
+      // One new department opens it; several are best seen together on the floor.
+      onDone(r.created?.length === 1 ? r.created[0].id : null);
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         onError(new Error(`${err.message}. Tick “raise the limits” or choose fewer departments.`));

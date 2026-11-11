@@ -24,8 +24,8 @@ use agentcore_core::{
 };
 use agentcore_runtime::{CreateSession, Session, SessionOptions, ToolHandler};
 use agentcore_store::{
-    Acquired, AgentInput, AgentScope, DepartmentInput, GoalInput, GoalUpdate, MessageFilter,
-    NewMessage, NewWorkItem, ScheduleInput, ScheduleUpdate, Store, StoreError,
+    Acquired, AgentInput, AgentScope, AnnouncementInput, DepartmentInput, GoalInput, GoalUpdate,
+    MessageFilter, NewMessage, NewWorkItem, ScheduleInput, ScheduleUpdate, Store, StoreError,
 };
 use async_trait::async_trait;
 use axum::Json;
@@ -56,6 +56,8 @@ pub struct Org {
     pub agents: Vec<OrgAgent>,
     pub profile: OrgProfile,
     pub goals: Vec<agentcore_core::OrgGoal>,
+    /// The latest announcements, newest first (current or not).
+    pub announcements: Vec<agentcore_core::OrgAnnouncement>,
 }
 
 impl Org {
@@ -65,6 +67,7 @@ impl Org {
             agents: store.list_agents(None).await?,
             profile: store.org_profile().await?,
             goals: store.list_goals().await?,
+            announcements: store.list_announcements().await?,
         })
     }
 
@@ -843,6 +846,17 @@ impl ToolHandler for TeamTools {
                 &[],
             ));
             tools.push(def(
+                "team_acknowledge_announcement",
+                "Confirm you read an announcement that asks for acknowledgement (see \
+                 Announcements in your instructions). Add a short note on what it means for \
+                 your work, if anything. Do not reply to everyone about an announcement.",
+                json!({
+                    "announcement": { "type": "string", "description": "Announcement id or title" },
+                    "note": { "type": "string", "description": "Optional: what you will do about it" },
+                }),
+                &["announcement"],
+            ));
+            tools.push(def(
                 "team_report_progress",
                 "Report progress on an active goal (replaces its latest progress note). Be \
                  factual: what changed, evidence, what is next. People decide when a goal is \
@@ -1070,6 +1084,33 @@ impl ToolHandler for TeamTools {
                     "status": g.status, "progress": g.progress, "progress_by": g.progress_by,
                     "progress_at": g.progress_at,
                 })).collect::<Vec<_>>() }))
+            }
+            "team_acknowledge_announcement" => {
+                let key = text_arg(arguments, "announcement")?;
+                let note = arguments.get("note").and_then(Value::as_str).unwrap_or("");
+                let (org, me) = self.me().await?;
+                let now = chrono::Utc::now();
+                let key = key.trim();
+                let a = org
+                    .announcements
+                    .iter()
+                    .filter(|a| a.is_current(now) && a.reaches(me.department_id))
+                    .find(|a| a.id.to_string() == key || a.title.eq_ignore_ascii_case(key))
+                    .ok_or_else(|| {
+                        format!("no current announcement `{key}` for your department")
+                    })?;
+                if !a.ask_ack {
+                    return Err(format!(
+                        "`{}` does not ask for acknowledgement; just act on it",
+                        a.title
+                    ));
+                }
+                self.store
+                    .acknowledge_announcement(a.id, me.id, note)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                notify(&self.store, json!({ "kind": "announcements" })).await;
+                Ok(json!({ "announcement": a.title, "acknowledged": true }))
             }
             "team_report_progress" => {
                 let key = text_arg(arguments, "goal")?;
@@ -1376,6 +1417,7 @@ pub fn compose_prompt(
             );
         }
     }
+    p.push_str(&announcements_section(org, agent, chrono::Utc::now()));
     let goals: Vec<&agentcore_core::OrgGoal> = org
         .goals
         .iter()
@@ -2076,6 +2118,129 @@ pub async fn overview(State(state): State<AppState>, _caller: Caller) -> ApiResu
             .filter(|p| p.status.is_pending())
             .count(),
     })))
+}
+
+// ---- announcements -------------------------------------------------------------------
+
+/// The announcements on an agent's notice board, for its instructions.
+fn announcements_section(
+    org: &Org,
+    agent: &OrgAgent,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let mine: Vec<_> = org
+        .announcements
+        .iter()
+        .filter(|a| a.is_current(now) && a.reaches(agent.department_id))
+        .collect();
+    if mine.is_empty() {
+        return String::new();
+    }
+    let mut p = String::from(
+        "\n## Announcements\n\nFrom the people who run the company, newest first. They stand \
+         until they are withdrawn: follow them, and act on them in your department where they \
+         concern your work. Do not reply to everyone about an announcement; ask a person if \
+         something is unclear.\n\n",
+    );
+    for a in mine {
+        let audience = a
+            .department_id
+            .and_then(|d| org.department(d))
+            .map_or("to everyone".to_string(), |d| format!("to {} only", d.name));
+        let until = a
+            .valid_until
+            .map(|u| format!(", valid until {}", u.format("%-d %b %Y")))
+            .unwrap_or_default();
+        p.push_str(&format!(
+            "- **{}** ({audience}, from {} on {}{until})",
+            a.title,
+            a.created_by,
+            a.created_at.format("%-d %b %Y")
+        ));
+        if !a.body.trim().is_empty() {
+            p.push_str(&format!(": {}", a.body.trim()));
+        }
+        if a.ask_ack {
+            if a.acked_by(agent.id).is_some() {
+                p.push_str(" (You acknowledged it.)");
+            } else {
+                p.push_str(&format!(
+                    " **Acknowledge it** with `team_acknowledge_announcement` (id `{}`).",
+                    a.id
+                ));
+            }
+        }
+        p.push('\n');
+    }
+    p
+}
+
+/// The message that delivers an announcement to the agents it reaches.
+fn announcement_message(a: &agentcore_core::OrgAnnouncement, department: Option<&str>) -> String {
+    let mut text = format!("📣 Announcement from {}: **{}**", a.created_by, a.title);
+    if let Some(d) = department {
+        text.push_str(&format!(" (to {d} only)"));
+    }
+    if !a.body.trim().is_empty() {
+        text.push_str(&format!("\n\n{}", a.body.trim()));
+    }
+    text.push_str(
+        "\n\nThis is an announcement: it stays in your instructions while it stands. Act on \
+         it in your department where it concerns your work; do not reply to everyone.",
+    );
+    if a.ask_ack {
+        text.push_str(&format!(
+            " Please acknowledge it with `team_acknowledge_announcement` (id `{}`).",
+            a.id
+        ));
+    }
+    text
+}
+
+pub async fn list_announcements(
+    State(state): State<AppState>,
+    _caller: Caller,
+) -> ApiResult<Json<Value>> {
+    Ok(Json(json!(state.store.list_announcements().await?)))
+}
+
+/// Puts it on the notice board and delivers it once to every agent it reaches.
+pub async fn create_announcement(
+    State(state): State<AppState>,
+    caller: Caller,
+    Json(input): Json<AnnouncementInput>,
+) -> ApiResult<impl IntoResponse> {
+    caller.require_operator()?;
+    let org = Org::load(&state.store).await?;
+    let department =
+        match input.department_id {
+            Some(id) => Some(org.department(id).ok_or_else(|| {
+                ApiError::new(StatusCode::NOT_FOUND, format!("no department {id}"))
+            })?),
+            None => None,
+        };
+    let announcement = state.store.create_announcement(input, &caller.name).await?;
+    let text = announcement_message(&announcement, department.map(|d| d.name.as_str()));
+    let to = department.map_or(Recipient::AllDepartments, |d| Recipient::Department(d.id));
+    match send(&state.store, &Sender::Human(caller.name.clone()), to, &text).await {
+        Ok(_) => {}
+        // Nobody to tell yet: it waits on the notice board for whoever joins.
+        Err(SendError::Invalid(_)) => {}
+        Err(err) => return Err(err.into()),
+    }
+    notify(&state.store, json!({ "kind": "announcements" })).await;
+    Ok((StatusCode::CREATED, Json(json!(announcement))))
+}
+
+pub async fn withdraw_announcement(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    caller.require_operator()?;
+    let announcement = state.store.withdraw_announcement(id, &caller.name).await?;
+    notify(&state.store, json!({ "kind": "announcements" })).await;
+    Ok(Json(json!(announcement)))
 }
 
 // ---- goals and check-ins ----------------------------------------------------------
@@ -2968,6 +3133,108 @@ pub fn by_id(departments: Vec<Department>) -> HashMap<DepartmentId, Department> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_department(name: &str) -> Department {
+        Department {
+            id: Uuid::now_v7(),
+            name: name.into(),
+            description: String::new(),
+            mission: String::new(),
+            policy: "department".into(),
+            tools: vec![],
+            routing: Default::default(),
+            state: DepartmentState::Active,
+            template: None,
+            project_id: None,
+            role: None,
+            requires_repository: false,
+            created_at: chrono::Utc::now(),
+            updated_by: "a".into(),
+        }
+    }
+
+    fn test_agent(dept: &Department, name: &str) -> OrgAgent {
+        OrgAgent {
+            id: Uuid::now_v7(),
+            department_id: dept.id,
+            name: name.into(),
+            kind: AgentKind::Worker,
+            agent: "x".into(),
+            provider: None,
+            model: None,
+            instructions: String::new(),
+            desired: Desired::Stopped,
+            node: None,
+            session_id: None,
+            status: None,
+            note: None,
+            changed_by: "a".into(),
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn agents_see_the_announcements_meant_for_them() {
+        let now = chrono::Utc::now();
+        let sales = test_department("Sales");
+        let eng = test_department("Engineering");
+        let seller = test_agent(&sales, "sdr");
+        let dev = test_agent(&eng, "developer");
+        let announce = |title: &str, to: Option<DepartmentId>, ask_ack: bool| {
+            agentcore_core::OrgAnnouncement {
+                id: Uuid::now_v7(),
+                title: title.into(),
+                body: "Details.".into(),
+                department_id: to,
+                ask_ack,
+                valid_until: None,
+                withdrawn_at: None,
+                withdrawn_by: None,
+                created_by: "dev".into(),
+                created_at: now,
+                acks: vec![],
+            }
+        };
+        let mut withdrawn = announce("Old news", None, false);
+        withdrawn.withdrawn_at = Some(now);
+        let org = Org {
+            departments: vec![sales.clone(), eng.clone()],
+            agents: vec![seller.clone(), dev.clone()],
+            profile: OrgProfile::default(),
+            goals: vec![],
+            announcements: vec![
+                announce("Office closed Friday", None, true),
+                announce("New pricing", Some(sales.id), false),
+                withdrawn,
+            ],
+        };
+
+        let for_sales = announcements_section(&org, &seller, now);
+        assert!(for_sales.contains("## Announcements"));
+        assert!(for_sales.contains("**Office closed Friday** (to everyone"));
+        assert!(for_sales.contains("**New pricing** (to Sales only"));
+        assert!(for_sales.contains("**Acknowledge it** with `team_acknowledge_announcement`"));
+        assert!(!for_sales.contains("Old news"));
+
+        let for_eng = announcements_section(&org, &dev, now);
+        assert!(for_eng.contains("Office closed Friday"));
+        assert!(!for_eng.contains("New pricing"));
+
+        // Once acknowledged, it says so instead of asking again.
+        let mut org = org;
+        org.announcements[0]
+            .acks
+            .push(agentcore_core::AnnouncementAck {
+                agent_id: dev.id,
+                note: String::new(),
+                acked_at: now,
+            });
+        assert!(announcements_section(&org, &dev, now).contains("(You acknowledged it.)"));
+
+        let message = announcement_message(&org.announcements[1], Some("Sales"));
+        assert!(message.starts_with("📣 Announcement from dev: **New pricing** (to Sales only)"));
+        assert!(message.contains("do not reply to everyone"));
+    }
 
     #[test]
     fn file_paths_are_normalised() {

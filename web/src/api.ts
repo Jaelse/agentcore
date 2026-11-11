@@ -36,6 +36,7 @@ import type {
   ProviderKind,
   SessionInfo,
   SystemCard,
+  OrgAnnouncement,
   OrgGoal,
   CheckIn,
   DataSource,
@@ -319,6 +320,10 @@ export const api = {
       "/org/build",
       body,
     ),
+  announcements: () => request<OrgAnnouncement[]>("GET", "/org/announcements"),
+  announce: (body: { title: string; body: string; department_id: string | null; ask_ack: boolean; valid_until: string | null }) =>
+    request<OrgAnnouncement>("POST", "/org/announcements", body),
+  withdrawAnnouncement: (id: string) => request<OrgAnnouncement>("POST", `/org/announcements/${id}/withdraw`),
   createGoal: (body: { title: string; description: string; department_id: string | null }) =>
     request<OrgGoal>("POST", "/org/goals", body),
   updateGoal: (

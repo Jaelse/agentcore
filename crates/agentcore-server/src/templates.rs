@@ -303,6 +303,18 @@ pub struct Plan {
     pub fits: bool,
 }
 
+/// An agent's role goes at the start of its instructions: that is what tells
+/// it its job (the UI writes people's own roles the same way).
+pub fn with_role(title: &str, instructions: &str) -> String {
+    let title = title.trim();
+    let text = instructions.trim();
+    match (title.is_empty(), text.is_empty()) {
+        (true, _) => text.to_string(),
+        (false, true) => format!("You are the {title} of this department."),
+        (false, false) => format!("You are the {title} of this department.\n\n{text}"),
+    }
+}
+
 /// `{company}` → the company name.
 pub fn fill(text: &str, profile: &OrgProfile) -> String {
     let company = profile.company_name.trim();
@@ -362,7 +374,7 @@ pub fn plan(
                 .map(|a| PlannedAgent {
                     name: a.name.clone(),
                     title: a.title.clone(),
-                    instructions: fill(&a.instructions, profile),
+                    instructions: with_role(&a.title, &fill(&a.instructions, profile)),
                 })
                 .collect(),
             exists: existing.iter().any(|d| same_department(template, d)),
@@ -410,6 +422,8 @@ pub struct Suggestion {
     pub templates: Vec<String>,
     /// The existing department to add an agent to.
     pub department_id: Option<Uuid>,
+    /// The existing departments a suggested department usually works with.
+    pub works_with: Vec<Uuid>,
     pub agent: Option<PlannedAgent>,
     /// Why it cannot be done right now (a limit), if so.
     pub blocked: Option<String>,
@@ -481,26 +495,27 @@ pub fn suggest(
                 blocked: dept_limit(missing.len()),
                 templates: missing,
                 department_id: None,
+                works_with: Vec::new(),
                 agent: None,
             });
         }
     }
 
     // 2. Departments the existing ones usually work with, most wanted first.
-    let mut wanted: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut wanted: BTreeMap<&str, Vec<&Department>> = BTreeMap::new();
     for dept in departments {
         let Some(template) = dept.template.as_deref().and_then(|t| catalog.department(t)) else {
             continue;
         };
         for other in &template.pairs_with {
             if !have(other) && !offered.contains(other) {
-                wanted.entry(other).or_default().push(dept.name.as_str());
+                wanted.entry(other).or_default().push(dept);
             }
         }
     }
     let mut wanted: Vec<_> = wanted.into_iter().collect();
     wanted.sort_by_key(|(id, by)| (std::cmp::Reverse(by.len()), *id));
-    for (id, by) in wanted.into_iter().take(4) {
+    for (id, by) in wanted {
         let Some(t) = catalog.department(id) else {
             continue;
         };
@@ -510,11 +525,15 @@ pub fn suggest(
             reason: format!(
                 "{} {} usually work with it. {}",
                 fill(&t.when_to_add, profile),
-                by.join(" and "),
+                by.iter()
+                    .map(|d| d.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" and "),
                 t.summary
             ),
             templates: vec![t.id.clone()],
             department_id: None,
+            works_with: by.iter().map(|d| d.id).collect(),
             agent: None,
             blocked: (!room).then(|| dept_limit(1)).flatten(),
         });
@@ -546,10 +565,11 @@ pub fn suggest(
                     + ".",
                 templates: Vec::new(),
                 department_id: Some(dept.id),
+                works_with: Vec::new(),
                 agent: Some(PlannedAgent {
                     name: a.name.clone(),
                     title: a.title.clone(),
-                    instructions: fill(&a.instructions, profile),
+                    instructions: with_role(&a.title, &fill(&a.instructions, profile)),
                 }),
                 blocked: full.then(|| {
                     format!(
@@ -729,12 +749,21 @@ mod tests {
                 .filter(|x| x.kind == SuggestionKind::Department)
                 .all(|x| x.templates != ["qa"])
         );
-        assert!(s.iter().any(|x| x.templates == ["product"]));
+        let product = s.iter().find(|x| x.templates == ["product"]).unwrap();
+        // The rooms it belongs in on the floor.
+        assert_eq!(product.works_with, [eng.id]);
         let agents: Vec<_> = s
             .iter()
             .filter_map(|x| x.agent.as_ref().map(|a| a.name.as_str()))
             .collect();
         assert_eq!(agents, ["developer", "reviewer"]);
+        // Each agent is told its role.
+        let developer = s.iter().find_map(|x| x.agent.as_ref()).unwrap();
+        assert!(
+            developer
+                .instructions
+                .starts_with("You are the Software developer of this department.\n\n")
+        );
 
         // At the limits, suggestions say why they cannot be done.
         let tight = OrgSettings {
