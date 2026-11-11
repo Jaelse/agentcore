@@ -478,7 +478,8 @@ idle after the change.
 to work* on a department (departments built from a template with a role on a
 repository have it on). Until a project is linked, its workers are paused
 and the department shows *waiting for a GitHub repository to be linked*;
-`team_project` tells them why. Linking one resumes them. Whenever an admin
+`team_project` tells them why. Linking one resumes them. People can still
+[talk with them](#talking-with-a-member) meanwhile. Whenever an admin
 edits a department (repository, role, tools, mission, policy), everyone in it
 receives a message saying what changed and by whom, which a paused agent
 reads when it carries on. To stop a whole team for any other reason, pause the
@@ -608,6 +609,7 @@ now, turn it off, or delete it.
 | its department's [working hours](#spending-and-budgets) ended | **goes off duty** and sleeps; when the hours begin, the department is told so, which wakes it. |
 | it reached `max_session_secs` | **continues** at once in a new session (in a paused department: sleeps until resumed). |
 | a person stopped it, it failed, ... | is stopped, as before. |
+| it was [started only to talk](#talking-with-a-member) and the conversation ended (any of the above) | is **stopped** again, not put to sleep. |
 
 **It saves before it goes off, and picks up where it stopped.** Before the
 system ends a session (idle, time limit, off duty) the agent gets one last
@@ -629,6 +631,21 @@ also keep `notes/<agent>.md`. If its work item changed (closed, handed
 over), the workspace is checked out again for the new one. Sleeping agents
 survive a node restart (they have nothing running); pausing or stopping
 works on them as on any agent.
+
+<a id="talking-with-a-member"></a>
+**Talking with a member.** People ask a member about its work on its page
+(`POST /org/agents/{id}/talk`). The message is an ordinary message to it
+(routed, stored and audited like any other), so a sleeping member wakes and a
+busy one reads it when it finishes. A **stopped** member is started *only to
+talk* (`talk_only`): its prompt says that a person wants to talk with it,
+gives it the message, and tells it not to start new work, change files or
+message colleagues unless asked; it keeps its conversation, so it knows what
+it was doing. Follow-ups reach it like any message. When the session ends
+(nobody wrote within `idle_timeout_secs`, a person pressed **End
+conversation** or **Stop**, or its time limit), it is stopped again rather
+than put to sleep. A talk-only member is not held for a missing repository
+(talking needs none) and is not restarted when its department's repository
+changes. Starting a member normally (**Start**) clears `talk_only`.
 
 To stop a loop (an agent that ends at once and is woken again, two agents
 waking each other), a node starts one agent automatically at most 6 times an
@@ -906,9 +923,9 @@ Everything a person can do, at every level:
 
 | | Agent | Department | Organisation |
 |---|---|---|---|
-| **See** | Live view, timeline, model calls, approvals, audit log (the existing session view) | Room: all members with status, every message in and out, department files | Overview: all departments, all agents, organisation-wide message feed |
-| **Talk** | Message an agent (wakes it) | Post in the department room (every member receives it) | Message any department |
-| **Pause / resume** | ✅ | ✅ every agent in it, and new starts wait | ✅ (`Pause all`) |
+| **See** | Its page (status, model, instructions, conversation); live view, timeline, model calls, approvals, audit log (the session view) | Room: all members with status, every message in and out; **📂 Files**: shared files, each member's workspace, business data it may read | Overview: all departments, all agents, organisation-wide message feed |
+| **Talk** | **💬 Talk** on its page: wakes it; a stopped one is [started only to answer](#talking-with-a-member) | Post in the department room (every member receives it) | Message any department |
+| **Pause / resume** | ✅ | ✅ every agent in it, and new starts wait | ✅ **Pause all** in the top bar |
 | **Stop** | ✅ | ✅ every agent in it | ✅ **Stop all agents** (on every node) |
 | **Decide** | Approvals of its risky actions | Its drafts in the outbox (approve, edit, send back, reject) | Improvements the retrospective proposes; auto-apply allowances |
 | **Limit** | Policy limits (time, actions, model calls) | Tools, data sources, channels, budget | Department and agent limits, organisation budget, channel daily limits |
@@ -1165,6 +1182,7 @@ erDiagram
         text status "... | asleep"
         text note
         text changed_by
+        bool talk_only "started only to talk"
     }
     org_goals {
         uuid id PK
@@ -1379,13 +1397,14 @@ an admin.
 | `POST /org/departments/{id}/agents` | Add a worker agent. |
 | `PUT`/`DELETE /org/agents/{id}` | Update instructions; remove (when stopped). |
 | `POST /org/agents/{id}/start` · `pause` · `resume` · `stop` | Control one agent. |
+| `POST /org/agents/{id}/talk` | A person talks with a member: `{"text": ...}` → `201 {message, agent}`. The message goes to it like `POST /org/messages`; a stopped member is first checked for a usable model (`409` with `code: provider_unavailable` otherwise) and then started [only to talk](#talking-with-a-member). Operators. |
 | `POST /org/departments/{id}/start` · `pause` · `resume` · `stop` | Control every agent in a department. |
 | `POST /org/pause-all` · `resume-all` | Pause or resume every department. |
 | `POST /stop-all` | Stop everything, on every node. |
 | `GET /org/messages?department=&agent=&after=&limit=` | Message feed (organisation, department or agent). |
 | `POST /org/messages` | A person sends a message: `{"to": {"agent": id} \| {"department": id} \| "all_departments", "text": ...}`. |
 | `GET /org/departments/{id}/files` · `GET`/`PUT /org/departments/{id}/files/{*path}` | Department files (`PUT` body `{"content": ...}`, operators). |
-| `GET /org/agents/{id}/workspace?path=` · `GET /org/agents/{id}/workspace/file?path=` | Read-only view of a department agent's workspace on the data volume, for the **Files** explorer: one directory (folders first, `.git` hidden) or the first MiB of one file (`binary: true` without content). Paths and symlinks that lead outside the workspace are refused; the agent's home is never served. |
+| `GET /org/agents/{id}/workspace?path=` · `GET /org/agents/{id}/workspace/file?path=` | Read-only view of a department agent's workspace on the data volume, for a department's **📂 Files** page: one directory (folders first, `.git` hidden) or the first MiB of one file (`binary: true` without content). Paths and symlinks that lead outside the workspace are refused; the agent's home is never served. |
 | `GET /org/handoffs?department=&open=` | Handoffs, newest first; with `department`, the ones it sent or received; `open=true` only `held`, `waiting` and `taken` ones. Each has the departments' names, `spec`, `status`, `taken_by_name` and `result`. |
 | `POST /org/handoffs/{id}/cancel` | Withdraw an open handoff: `{"reason": "..."}` (optional; operators; `409` when it is closed). A held notice is rejected with it. |
 | `GET /org/work-items?department=&closed=` | Work items, open ones first (`closed=true` includes closed ones): title, branch, `assignee`, `in_session` (session and node holding it), `last_checkpoint`, `pull_request`, `note`. |
