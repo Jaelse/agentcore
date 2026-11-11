@@ -147,25 +147,33 @@ async fn placement_desired_state_and_dead_nodes() {
 
     // No node yet: nothing can run.
     assert!(matches!(
-        store.start_agent(a.id, 30, "alice").await,
+        store.start_agent(a.id, 30, "alice", false).await,
         Err(StoreError::Unavailable(_))
     ));
     node(&store, "vm-1", 1).await;
     node(&store, "vm-2", 2).await;
-    let started = store.start_agent(a.id, 30, "alice").await.unwrap().unwrap();
+    let started = store
+        .start_agent(a.id, 30, "alice", false)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(started.desired, Desired::Running);
     // vm-1 and vm-2 are both empty: name order breaks the tie.
     assert_eq!(started.node.as_deref(), Some("vm-1"));
     // Starting again is a no-op.
     assert!(
         store
-            .start_agent(a.id, 30, "alice")
+            .start_agent(a.id, 30, "alice", false)
             .await
             .unwrap()
             .is_none()
     );
     // vm-1 is full (capacity 1), so the next agent goes to vm-2.
-    let started = store.start_agent(b.id, 30, "alice").await.unwrap().unwrap();
+    let started = store
+        .start_agent(b.id, 30, "alice", false)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(started.node.as_deref(), Some("vm-2"));
 
     // Pause the department's running agents, then stop everything.
@@ -193,7 +201,11 @@ async fn placement_desired_state_and_dead_nodes() {
     assert_eq!(stopped.len(), 2);
 
     // A session ends: the agent records it and becomes stopped.
-    store.start_agent(a.id, 30, "alice").await.unwrap().unwrap();
+    store
+        .start_agent(a.id, 30, "alice", false)
+        .await
+        .unwrap()
+        .unwrap();
     let session = Uuid::now_v7();
     store
         .agent_session_started(a.id, session, "running")
@@ -222,7 +234,11 @@ async fn placement_desired_state_and_dead_nodes() {
 
     // A node that stops sending heartbeats is forgotten; its agent moves to
     // a live node and keeps running.
-    store.start_agent(b.id, 30, "alice").await.unwrap().unwrap();
+    store
+        .start_agent(b.id, 30, "alice", false)
+        .await
+        .unwrap()
+        .unwrap();
     let placed = store.get_agent(b.id).await.unwrap().node.unwrap();
     sqlx::query("UPDATE nodes SET last_seen = now() - interval '5 minutes' WHERE name = $1")
         .bind(&placed)
@@ -455,7 +471,11 @@ async fn sessions_move_off_nodes_that_are_gone() {
     // A department agent and its live session, on vm-1 too.
     let d = store.create_department(dept("Ops"), "alice").await.unwrap();
     let a = store.add_agent(d.id, worker("dev"), "alice").await.unwrap();
-    let placed = store.start_agent(a.id, 30, "alice").await.unwrap().unwrap();
+    let placed = store
+        .start_agent(a.id, 30, "alice", false)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(placed.node.as_deref(), Some("vm-1"));
     let held = live_session("vm-1");
     store.upsert_session(&held).await.unwrap();

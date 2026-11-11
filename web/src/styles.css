@@ -93,6 +93,8 @@ label { display: grid; gap: 4px; font-weight: 600; font-size: 12px; color: var(-
 }
 .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 16px; }
 .logo { color: var(--primary); }
+.brand-home { display: flex; align-items: center; gap: 8px; color: inherit; text-decoration: none; flex: none; }
+.brand-home:hover { opacity: 0.85; }
 .topbar-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .banner { padding: 8px 16px; }
 .banner.error { background: var(--bad-bg); color: var(--danger); }
@@ -249,6 +251,20 @@ label { display: grid; gap: 4px; font-weight: 600; font-size: 12px; color: var(-
 .bubble-head { font-size: 12px; color: var(--muted); display: flex; gap: 8px; align-items: center; margin-bottom: 4px; }
 .bubble-head strong { color: var(--text); }
 .bubble-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Talking with one member of a department. */
+.talk { display: grid; gap: 8px; padding: 12px; margin-bottom: 12px; border-color: var(--primary); }
+.talk-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.talk-head .section-title { margin: 0; }
+.talk-list { display: grid; gap: 8px; align-content: start; max-height: 380px; overflow-y: auto; }
+.talk-line { border-left: 3px solid var(--border); padding: 4px 0 4px 10px; }
+.talk-line.you { border-left-color: var(--attention); }
+.talk-line.agent { border-left-color: var(--primary); }
+.talk-compose { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+/* A member's own page: its card, then the conversation. */
+.member-back { justify-self: start; }
+.member-page .talk { margin-bottom: 0; }
+.member-page .talk-list { max-height: min(60vh, 640px); }
+.member .member-name { font-weight: 700; padding: 0; text-align: left; }
 .mono-pre { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; max-height: 480px; overflow: auto; }
 .pulse.inline { display: inline-block; color: var(--primary); }
 .conv-note { font-size: 12.5px; color: var(--muted); text-align: center; }
@@ -331,6 +347,7 @@ a.kanban-title:hover { text-decoration: underline; }
 .running-head .summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .live-out { max-height: 220px; overflow: auto; margin: 0; }
 .side-panel { padding: 12px; display: grid; gap: 8px; min-width: 0; }
+.side-panel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .model-stream { border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
 .model-stream.active { border-color: var(--primary); }
 .model-stream summary { display: flex; align-items: center; gap: 6px; cursor: pointer; flex-wrap: wrap; }
@@ -557,6 +574,7 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
   .topbar-right { position: relative; margin-left: auto; gap: 6px; flex-wrap: nowrap; }
   .topbar-right .btn { padding: 6px 10px; }
   .topbar-right .btn.danger { font-size: 12px; }
+  .topbar-right .pause-label { display: none; }
   .nav, .topbar-info { display: none; }
 
   .banner { padding: 8px 12px; }
@@ -602,7 +620,7 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
 @media (max-width: 800px) {
   :root { --tabbar-h: 56px; }
   .bottom-nav {
-    display: grid; grid-template-columns: repeat(4, 1fr);
+    display: grid; grid-template-columns: repeat(3, 1fr);
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
     height: calc(var(--tabbar-h) + env(safe-area-inset-bottom)); padding-bottom: env(safe-area-inset-bottom);
     background: var(--surface); border-top: 1px solid var(--border);
@@ -631,6 +649,7 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
 .room.paused { border-style: dashed; border-color: var(--attention); }
 .room-header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .room-title { font-weight: 700; font-size: 1.05em; }
+.room-files { margin-left: auto; padding: 2px 6px; }
 .room-mission { margin: 0; }
 .room-floor { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; min-height: 72px; padding: 8px; border-radius: 8px; background-color: var(--bg); background-image: repeating-conic-gradient(rgb(127 127 127 / 0.08) 0 25%, transparent 0 50%); background-size: 24px 24px; }
 .room-door { border-top: 2px dashed var(--border); padding-top: 8px; display: flex; flex-wrap: wrap; gap: 8px; }
@@ -725,6 +744,12 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
 .explorer-table table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 .explorer-table th, .explorer-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
 .explorer-table th { position: sticky; top: 0; background: var(--surface-2); }
+/* Side by side only where both columns have room. */
+.explorer-page { container-type: inline-size; }
+@container (max-width: 640px) {
+  .explorer { grid-template-columns: minmax(0, 1fr); }
+  .explorer-tree { max-height: 50vh; }
+}
 @media (max-width: 800px) {
   .explorer { grid-template-columns: minmax(0, 1fr); }
   .explorer-tree { max-height: 50vh; }

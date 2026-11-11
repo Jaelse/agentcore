@@ -91,6 +91,8 @@ export interface OrgAgent {
   note: string | null;
   changed_by: string;
   created_at: string;
+  /** Started only so a person can talk with it; stopped once that is over. */
+  talk_only?: boolean;
   /** Where its model calls go (in the org overview). */
   model_route?: ModelRoute;
 }

@@ -161,6 +161,7 @@ struct AgentRow {
     note: Option<String>,
     changed_by: String,
     created_at: DateTime<Utc>,
+    talk_only: bool,
 }
 
 impl From<AgentRow> for OrgAgent {
@@ -181,6 +182,7 @@ impl From<AgentRow> for OrgAgent {
             note: r.note,
             changed_by: r.changed_by,
             created_at: r.created_at,
+            talk_only: r.talk_only,
         }
     }
 }
@@ -227,7 +229,7 @@ impl From<MessageRow> for OrgMessage {
 const DEPARTMENT_COLUMNS: &str = "id, name, description, mission, policy, tools, \
     routing_policy, state, template, project_id, role, requires_repository, created_at, updated_by";
 const AGENT_COLUMNS: &str = "id, department_id, name, kind, agent, provider, model, instructions, desired, \
-    node, session_id, status, note, changed_by, created_at";
+    node, session_id, status, note, changed_by, created_at, talk_only";
 const MESSAGE_SELECT: &str = "SELECT m.id, m.created_at, m.scope, m.from_agent, \
     m.from_department, m.from_name, m.to_kind, m.to_agent, m.to_department, m.to_name, m.text, \
     m.status, m.decision, \
@@ -870,6 +872,7 @@ impl Store {
         id: OrgAgentId,
         node_timeout_secs: u64,
         by: &str,
+        talk_only: bool,
     ) -> Result<Option<OrgAgent>> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
@@ -893,12 +896,14 @@ impl Store {
         };
         sqlx::query(
             "UPDATE org_agents SET desired = 'running', node = $2, session_id = NULL,
-                 status = 'starting', note = NULL, changed_by = $3, updated_at = now()
+                 status = 'starting', note = NULL, changed_by = $3, talk_only = $4,
+                 updated_at = now()
              WHERE id = $1",
         )
         .bind(id)
         .bind(&node)
         .bind(by)
+        .bind(talk_only)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;

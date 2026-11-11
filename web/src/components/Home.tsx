@@ -9,6 +9,9 @@ interface Props {
   me: Me;
   onOpenSession: (id: string) => void;
   onOpenOrganisation: () => void;
+  onOpenDepartment: (id: string) => void;
+  onOpenMember: (departmentId: string, agentId: string) => void;
+  onOpenFiles: (departmentId: string) => void;
   onError: (err: unknown) => void;
 }
 
@@ -50,7 +53,7 @@ function merge(fresh: FeedItem[], hasMore: boolean, current: FeedItem[]) {
   return fresh.concat(current.filter((i) => i.at < oldest));
 }
 
-export function Home({ me, onOpenSession, onOpenOrganisation, onError }: Props) {
+export function Home({ me, onOpenSession, onOpenOrganisation, onOpenDepartment, onOpenMember, onOpenFiles, onError }: Props) {
   const [kind, setKind] = useState<FeedKind | "all">("all");
   const [feed, setFeed] = useState<{ items: FeedItem[]; hasMore: boolean } | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -136,7 +139,7 @@ export function Home({ me, onOpenSession, onOpenOrganisation, onError }: Props) 
                 Open →
               </button>
             </div>
-            <Floor org={org} onOpenDepartment={onOpenOrganisation} onOpenSession={onOpenSession} />
+            <Floor org={org} onOpenDepartment={onOpenDepartment} onOpenMember={onOpenMember} onOpenFiles={onOpenFiles} />
           </section>
         )}
 

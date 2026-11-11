@@ -8,7 +8,10 @@ import { PixelKitten } from "./PixelKitten";
 interface Props {
   org: OrgOverview;
   onOpenDepartment: (id: string) => void;
-  onOpenSession: (sessionId: string) => void;
+  /** Open one member, in its department. */
+  onOpenMember: (departmentId: string, agentId: string) => void;
+  /** Open a department's files. */
+  onOpenFiles: (departmentId: string) => void;
 }
 
 /** Suggestions in the rooms, and what is needed to act on them. */
@@ -37,7 +40,8 @@ const MOOD_LABEL: Record<Mood, string> = {
 export function OfficeFloor({
   org,
   onOpenDepartment,
-  onOpenSession,
+  onOpenMember,
+  onOpenFiles,
   grow,
   onBuild,
   onAddDepartment,
@@ -105,7 +109,8 @@ export function OfficeFloor({
       <Floor
         org={org}
         onOpenDepartment={onOpenDepartment}
-        onOpenSession={onOpenSession}
+        onOpenMember={onOpenMember}
+        onOpenFiles={onOpenFiles}
         grow={{ actions, suggestions }}
       />
     </div>
@@ -122,7 +127,8 @@ const LIFT = "scale 150ms ease, box-shadow 150ms ease";
 export function Floor({
   org,
   onOpenDepartment,
-  onOpenSession,
+  onOpenMember,
+  onOpenFiles,
   grow,
 }: Props & { grow?: { actions: GrowActions; suggestions: Suggestion[] } }) {
   const byId = new Map(org.departments.map((d) => [d.id, d]));
@@ -317,7 +323,8 @@ export function Floor({
             key={d.id}
             dept={d}
             onOpen={() => onOpenDepartment(d.id)}
-            onOpenSession={onOpenSession}
+            onOpenMember={(agentId) => onOpenMember(d.id, agentId)}
+            onOpenFiles={() => onOpenFiles(d.id)}
             hidden={layout.hidden.has(d.id)}
             grow={
               grow && !arranging
@@ -353,14 +360,16 @@ interface Arrange {
 function Room({
   dept,
   onOpen,
-  onOpenSession,
+  onOpenMember,
+  onOpenFiles,
   hidden,
   grow,
   arrange,
 }: {
   dept: Department;
   onOpen: () => void;
-  onOpenSession: (id: string) => void;
+  onOpenMember: (agentId: string) => void;
+  onOpenFiles: () => void;
   hidden: boolean;
   /** This room's suggestions, on the organisation floor only. */
   grow?: { actions: GrowActions; list: Suggestion[]; maxAgents: number };
@@ -387,6 +396,9 @@ function Room({
         <button className="link room-title" onClick={onOpen} title="Open department">
           {dept.name}
         </button>
+        <button className="btn ghost small room-files" onClick={onOpenFiles} title={`${dept.name} files`} aria-label={`${dept.name} files`}>
+          📂
+        </button>
         {dept.state === "paused" ? (
           <span className="pill status-paused">paused</span>
         ) : live > 0 ? (
@@ -402,7 +414,7 @@ function Room({
       <div className="room-floor">
         {workers.length === 0 && <span className="muted small">No agents at work yet.</span>}
         {workers.map((a) => (
-          <Desk key={a.id} agent={a} dept={dept} onOpenSession={onOpenSession} />
+          <Desk key={a.id} agent={a} dept={dept} onOpen={() => onOpenMember(a.id)} />
         ))}
       </div>
       {grow && <RoomGrow dept={dept} maxAgents={grow.maxAgents} list={grow.list} {...grow.actions} />}
@@ -410,16 +422,11 @@ function Room({
   );
 }
 
-function Desk({ agent, dept, onOpenSession }: { agent: OrgAgent; dept: Department; onOpenSession: (id: string) => void }) {
+function Desk({ agent, dept, onOpen }: { agent: OrgAgent; dept: Department; onOpen: () => void }) {
   const m = mood(agent, dept);
   const title = `${agent.name} · ${MOOD_LABEL[m]}${agent.note ? ` · ${agent.note}` : ""}`;
   return (
-    <button
-      className={`desk ${agent.kind} mood-${m}`}
-      title={title}
-      disabled={!agent.session_id}
-      onClick={() => agent.session_id && onOpenSession(agent.session_id)}
-    >
+    <button className={`desk ${agent.kind} mood-${m}`} title={title} aria-label={`Open ${agent.name}`} onClick={onOpen}>
       <span className="avatar">
         <PixelKitten seed={agent.id} eyesShut={m === "asleep" || m === "off"} />
         {m === "asleep" && <span className="desk-badge zzz">z</span>}
