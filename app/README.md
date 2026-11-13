@@ -59,7 +59,9 @@ holding a server-sent event stream open.
 
 ## Development
 
-Requires Flutter (stable, Dart ≥ 3.13).
+Requires Flutter (stable, Dart ≥ 3.13). CI uses Flutter 3.47.9: from 3.50,
+`flutter analyze` reports `package:flutter/material.dart` as deprecated
+(it moved to `package:material_ui`), so use 3.47.9 until the app is moved over.
 
 ```sh
 cd app
