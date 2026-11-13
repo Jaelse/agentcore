@@ -732,6 +732,7 @@ mod tests {
             note: None,
             changed_by: "a".into(),
             created_at: chrono::Utc::now(),
+            talk_only: false,
         };
         let s = suggest(
             &c,

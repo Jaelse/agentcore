@@ -37,7 +37,7 @@ flowchart LR
 | Model gateway | Agents call LLMs through agentcore with a per-session token. Real API keys are stored AES-256-GCM encrypted in PostgreSQL and never enter a sandbox; per-provider model allow-lists and per-session call limits apply. Every call is logged with token usage and full request/response. **Stop** aborts calls that are still streaming. Providers are managed in the web UI. |
 | See what the agent does | **Live view**, like a screen share: the agent's own terminal, the command it is running with its output, the model's reasoning, text and tool calls as they stream, the files it changes and the processes in its sandbox. Finished sessions can be **replayed** from a tamper-evident terminal recording. Plus a timeline of every action, policy verdict, approval and outcome. |
 | One-click stop, pause | **STOP AGENT** per session and **Stop all agents** globally: kills the sandbox, denies pending approvals, and records who pressed it. Also enforced by time and action budgets. **Pause** freezes the agent and everything it runs, **Resume** continues exactly where it was. |
-| Multi-agent organisations | **Departments** (rooms) of agents with their own mission, tools, data and policy. Agents talk freely inside a department; departments talk only through the **message router**, which follows a routing policy per department (allowed peers, limits, optional human approval). Watch every message, talk to any agent, pause or stop an agent, a department or everything. Admin-set limits on departments and agents. Runs on one or several VMs sharing PostgreSQL. See [docs/MULTI_AGENT.md](docs/MULTI_AGENT.md) and the [Guide](docs/GUIDE.md). |
+| Multi-agent organisations | **Departments** (rooms) of agents with their own mission, tools, data and policy. Agents talk freely inside a department; departments talk only through the **message router**, which follows a routing policy per department (allowed peers, limits, optional human approval). Watch every message, open any member and ask it about its work (a stopped one starts just to answer), browse each department's files, pause or stop an agent, a department or everything. Admin-set limits on departments and agents. Runs on one or several VMs sharing PostgreSQL. See [docs/MULTI_AGENT.md](docs/MULTI_AGENT.md) and the [Guide](docs/GUIDE.md). |
 | Start small, grow big | **Templates** for 30 business functions and growth paths: start with one software department and grow step by step, or create a complete company at once; the organisation suggests what to add next. Departments can work on a linked GitHub repository and deliver pull requests. |
 | Work that keeps going | **Goals** and scheduled **check-ins** keep the organisation working over days: idle agents sleep (no cost), check-ins and messages wake them, and agents that run out of time or reach the end of their working hours save their work first and continue the next time where they stopped: same workspace, same conversation, plus their notes. Work on the repository belongs to the department: it is saved to GitHub as agents go, and carried on from there after a session ends. Nodes are ephemeral: a session whose machine stops or disappears is carried on by another one, with its workspace and conversation. |
 | Facts and improvement | Departments read granted **business data** (tables, PostgreSQL, HTTP APIs; read-only). A **dashboard** shows how the organisation is doing and what looks inefficient; a **Retrospective** agent proposes improvements with evidence that people apply, change, send back or reject. |
@@ -59,7 +59,7 @@ Requires Rust ≥ 1.94, Node ≥ 20 and PostgreSQL (≥ 14).
 docker compose up -d postgres                 # or point [database].url at your own
 (cd web && npm ci && npm run build)
 cargo run -p agentcore-cli -- serve --config agentcore.dev.toml
-# open http://127.0.0.1:8080 and start the "demo" agent
+# open http://127.0.0.1:8080/sessions and start the "demo" agent
 ```
 
 Migrations run automatically at startup. On first start agentcore generates
@@ -69,7 +69,18 @@ Migrations run automatically at startup. On first start agentcore generates
 your machine without isolation**. Use it only to develop agentcore itself.
 
 For UI development with hot reload, run the server as above and `npm run dev`
-in `web/` (Vite proxies `/api` to `127.0.0.1:8080`).
+in `web/` (Vite proxies `/api` to `127.0.0.1:8080`; set `AGENTCORE_DEV_API` to
+proxy to a server elsewhere).
+
+On Linux, `scripts/dev.sh` starts an isolated stack in one go (its own
+PostgreSQL container, data in `.dev/`, its own admin token, random ports), safe
+next to a production agentcore on the same machine. It relies on Linux tools
+(`ss`, `shuf`, `sha256sum`) and on reaching the container by its IP, so on
+macOS use the steps above.
+
+The web UI's pages each have their own address (`/organisations/departments/<id>`,
+`…/members/<id>`, `…/files`, `/sessions/<id>`, ...); see
+[Getting around](docs/GUIDE.md#getting-around).
 
 ### Mobile and desktop app
 

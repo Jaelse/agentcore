@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api, streamOrg } from "../api";
 import { useInterval } from "../hooks";
+import { type OrgTarget, orgPath } from "../route";
 import {
   OPEN_ROUTING,
   type RoutingPolicy,
@@ -33,10 +34,14 @@ import { AddAgent, GrowDepartment } from "./Grow";
 import { AddDepartment } from "./AddDepartment";
 import { Outbox } from "./Outbox";
 import { Releases } from "./Releases";
+import { TalkPanel } from "./Talk";
 
 interface Props {
   me: Me;
   card: SystemCard;
+  /** The section or department in the URL. */
+  target: OrgTarget;
+  onNavigate: (target: OrgTarget) => void;
   onOpenSession: (sessionId: string) => void;
   onError: (err: unknown) => void;
 }
@@ -49,22 +54,49 @@ const TOOL_GROUPS: { id: string; label: string; help: string }[] = [
 
 type Selection =
   | { kind: "org" }
-  | { kind: "department"; id: string }
+  | { kind: "department"; id: string; member?: string; files?: boolean }
   | { kind: "add-department"; template?: string }
   | { kind: "floor" }
   | { kind: "dashboard" }
   | { kind: "improvements" }
   | { kind: "data" }
-  | { kind: "files" }
   | { kind: "spending" }
   | { kind: "outbox" }
   | { kind: "releases" }
   | { kind: "build"; mode?: BuildMode; pick?: string[] };
 
 /** Departments (rooms) of agents, how they talk, and control at every level. */
-export function Organisation({ me, card, onOpenSession, onError }: Props) {
+/** Selections that are steps in a flow, not places with their own URL. */
+type Transient = Extract<Selection, { kind: "build" | "add-department" }>;
+
+function fromTarget(target: OrgTarget): Selection {
+  if ("department" in target) return { kind: "department", id: target.department, member: target.member, files: target.files };
+  return target.section === "all" ? { kind: "org" } : { kind: target.section };
+}
+
+function toTarget(selection: Exclude<Selection, Transient>): OrgTarget {
+  if (selection.kind === "department") return { department: selection.id, member: selection.member, files: selection.files };
+  return { section: selection.kind === "org" ? "all" : selection.kind };
+}
+
+export function Organisation({ me, card, target, onNavigate, onOpenSession, onError }: Props) {
   const [org, setOrg] = useState<OrgOverview | null>(null);
-  const [selection, setSelection] = useState<Selection>({ kind: "floor" });
+  // The URL decides what is shown, except while building or adding a department.
+  const [transient, setTransient] = useState<Transient | null>(null);
+  const targetKey = orgPath(target);
+  useEffect(() => setTransient(null), [targetKey]);
+  const selection: Selection = useMemo(() => transient ?? fromTarget(target), [transient, targetKey]);
+  const setSelection = useCallback(
+    (next: Selection) => {
+      if (next.kind === "build" || next.kind === "add-department") {
+        setTransient(next);
+      } else {
+        setTransient(null);
+        onNavigate(toTarget(next));
+      }
+    },
+    [onNavigate],
+  );
   const [tick, setTick] = useState(0);
   const canOperate = me.role !== "viewer";
   const isAdmin = me.role === "admin";
@@ -95,22 +127,22 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
   // Safety net for anything a notification did not cover.
   useInterval(load, 10000);
 
-  // On narrow screens the content sits above the menu, at the top of the
-  // page; go back up to it when something is picked further down the menu.
+  // What was picked starts at its top: on narrow screens the content sits
+  // above the menu, and a member opened from far down its department would
+  // otherwise open scrolled past its card.
   const firstSelection = useRef(true);
   useEffect(() => {
     if (firstSelection.current) {
       firstSelection.current = false;
       return;
     }
-    if (window.matchMedia("(max-width: 800px)").matches) window.scrollTo({ top: 0 });
+    window.scrollTo({ top: 0 });
   }, [selection]);
 
   if (!org) return <div className="empty">Loading the organisation…</div>;
 
   const dept = selection.kind === "department" ? org.departments.find((d) => d.id === selection.id) : undefined;
   const running = org.departments.flatMap((d) => d.agents).filter((a) => a.desired !== "stopped").length;
-  const allPaused = org.departments.length > 0 && org.departments.every((d) => d.state === "paused");
 
   const act = async (fn: () => Promise<unknown>) => {
     try {
@@ -173,12 +205,6 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
           </div>
           <div className="muted small">prices and budgets</div>
         </button>
-        <button className={`session-item ${selection.kind === "files" ? "active" : ""}`} onClick={() => setSelection({ kind: "files" })}>
-          <div className="session-item-top">
-            <strong>📂 Files</strong>
-          </div>
-          <div className="muted small">everything the organisation holds</div>
-        </button>
         <button className={`session-item ${selection.kind === "data" ? "active" : ""}`} onClick={() => setSelection({ kind: "data" })}>
           <div className="session-item-top">
             <strong>🗄 Business data</strong>
@@ -186,20 +212,6 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
           </div>
           <div className="muted small">what departments may read</div>
         </button>
-        {canOperate && org.departments.length > 0 && (
-          <div className="row">
-            {allPaused ? (
-              <button className="btn pause-button resume" onClick={() => act(api.resumeAll)}>
-                ▶ Resume all
-              </button>
-            ) : (
-              <button className="btn pause-button" onClick={() => act(api.pauseAll)} title="Pause every department">
-                ❚❚ Pause all
-              </button>
-            )}
-          </div>
-        )}
-
         <Limits org={org} canEdit={isAdmin} onSaved={load} onError={onError} />
       </aside>
 
@@ -223,7 +235,8 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
           <OfficeFloor
             org={org}
             onOpenDepartment={(id) => setSelection({ kind: "department", id })}
-            onOpenSession={onOpenSession}
+            onOpenMember={(id, agent) => setSelection({ kind: "department", id, member: agent })}
+            onOpenFiles={(id) => setSelection({ kind: "department", id, files: true })}
             grow={{
               me,
               card,
@@ -264,8 +277,6 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
           <Releases org={org} me={me} tick={tick} onError={onError} />
         ) : selection.kind === "spending" ? (
           <Spending org={org} me={me} tick={tick} onError={onError} />
-        ) : selection.kind === "files" ? (
-          <FileExplorer org={org} me={me} tick={tick} onError={onError} />
         ) : selection.kind === "data" ? (
           <DataSources org={org} me={me} act={act} onError={onError} />
         ) : selection.kind === "add-department" ? (
@@ -281,6 +292,25 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
             onCancel={() => setSelection({ kind: "floor" })}
             onError={onError}
           />
+        ) : dept && selection.kind === "department" && selection.files ? (
+          <div className="session explorer-page">
+            <button className="link small member-back" onClick={() => setSelection({ kind: "department", id: dept.id })}>
+              ← {dept.name}
+            </button>
+            <FileExplorer key={dept.id} dept={dept} org={org} me={me} tick={tick} onError={onError} />
+          </div>
+        ) : dept && selection.kind === "department" && selection.member ? (
+          <MemberPage
+            key={selection.member}
+            agent={dept.agents.find((a) => a.id === selection.member)}
+            dept={dept}
+            me={me}
+            tick={tick}
+            act={act}
+            onBack={() => setSelection({ kind: "department", id: dept.id })}
+            onOpenSession={onOpenSession}
+            onError={onError}
+          />
         ) : dept ? (
           <DepartmentRoom
             key={dept.id}
@@ -290,6 +320,8 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
             card={card}
             tick={tick}
             act={act}
+            onOpenMember={(agentId) => setSelection({ kind: "department", id: dept.id, member: agentId })}
+            onOpenFiles={() => setSelection({ kind: "department", id: dept.id, files: true })}
             onOpenSession={onOpenSession}
             onDeleted={() => {
               setSelection({ kind: "org" });
@@ -297,6 +329,14 @@ export function Organisation({ me, card, onOpenSession, onError }: Props) {
             }}
             onError={onError}
           />
+        ) : selection.kind === "department" ? (
+          <div className="empty">
+            <h2>Department not found</h2>
+            <p>It may have been deleted, or the link is wrong.</p>
+            <button className="btn" onClick={() => setSelection({ kind: "floor" })}>
+              Go to the organisation floor
+            </button>
+          </div>
         ) : (
           <div className="session">
             {org.departments.length === 0 && !isAdmin && (
@@ -395,6 +435,8 @@ function DepartmentRoom({
   card,
   tick,
   act,
+  onOpenMember,
+  onOpenFiles,
   onOpenSession,
   onDeleted,
   onError,
@@ -405,6 +447,8 @@ function DepartmentRoom({
   card: SystemCard;
   tick: number;
   act: (fn: () => Promise<unknown>) => Promise<void>;
+  onOpenMember: (agentId: string) => void;
+  onOpenFiles: () => void;
   onOpenSession: (id: string) => void;
   onDeleted: () => void;
   onError: (e: unknown) => void;
@@ -538,6 +582,9 @@ function DepartmentRoom({
               ■ STOP DEPARTMENT
             </button>
           )}
+          <button className="btn ghost" onClick={onOpenFiles}>
+            📂 Files
+          </button>
           {isAdmin && (
             <button className="btn ghost" onClick={() => setEditing(true)}>
               Edit
@@ -602,6 +649,7 @@ function DepartmentRoom({
               canOperate={canOperate}
               act={act}
               choices={choices}
+              onOpen={() => onOpenMember(a.id)}
               onOpenSession={onOpenSession}
             />
           ))}
@@ -618,9 +666,62 @@ function DepartmentRoom({
           {dept.project_id && dept.tools.includes("sandbox") && (
             <WorkItems dept={dept} tick={tick} canOperate={canOperate} act={act} onOpenSession={onOpenSession} onError={onError} />
           )}
-          {dept.tools.includes("files") && <Files dept={dept} tick={tick} onError={onError} />}
+          {dept.tools.includes("files") && <Files dept={dept} tick={tick} onOpenAll={onOpenFiles} onError={onError} />}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** One member of a department: what it is and does, and a conversation with it. */
+function MemberPage({
+  agent,
+  dept,
+  me,
+  tick,
+  act,
+  onBack,
+  onOpenSession,
+  onError,
+}: {
+  agent: OrgAgent | undefined;
+  dept: Department;
+  me: Me;
+  tick: number;
+  act: (fn: () => Promise<unknown>) => Promise<void>;
+  onBack: () => void;
+  onOpenSession: (id: string) => void;
+  onError: (e: unknown) => void;
+}) {
+  const choices = useModelChoices(onError);
+  const back = (
+    <button className="link small member-back" onClick={onBack}>
+      ← {dept.name}
+    </button>
+  );
+  if (!agent) {
+    return (
+      <div className="session">
+        {back}
+        <div className="empty">
+          <h2>Member not found</h2>
+          <p>It may have been removed from {dept.name}, or the link is wrong.</p>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="session member-page">
+      {back}
+      <AgentCard
+        agent={agent}
+        dept={dept}
+        canOperate={me.role !== "viewer"}
+        act={act}
+        choices={choices}
+        onOpenSession={onOpenSession}
+      />
+      <TalkPanel agent={agent} dept={dept} me={me} tick={tick} act={act} onOpenSession={onOpenSession} onError={onError} />
     </div>
   );
 }
@@ -636,6 +737,7 @@ function AgentCard({
   canOperate,
   act,
   choices,
+  onOpen,
   onOpenSession,
 }: {
   agent: OrgAgent;
@@ -643,6 +745,8 @@ function AgentCard({
   canOperate: boolean;
   act: (fn: () => Promise<unknown>) => Promise<void>;
   choices: ReturnType<typeof useModelChoices>;
+  /** Open the member's own page; not given on that page. */
+  onOpen?: () => void;
   onOpenSession: (id: string) => void;
 }) {
   // Switching the provider: on request, or because starting needs another one.
@@ -669,13 +773,19 @@ function AgentCard({
       ? "paused"
       : agent.status === "asleep"
         ? "💤 asleep"
-        : (agent.status ?? "starting").replace(/_/g, " ");
+        : agent.talk_only
+          ? `💬 ${agent.status === "running" ? "answering" : "talking"}`
+          : (agent.status ?? "starting").replace(/_/g, " ");
   return (
     <div className={`card member ${agent.kind}`}>
       <div className="session-item-top">
-        <strong>
-          {agent.name}
-        </strong>
+        {onOpen ? (
+          <button className="link member-name" onClick={onOpen} title={`Open ${agent.name}`}>
+            {agent.name}
+          </button>
+        ) : (
+          <strong>{agent.name}</strong>
+        )}
         <span
           className={`pill ${statusClass(agent)}`}
           title={live && agent.status === "asleep" ? "Nothing to do: a message or check-in wakes it in a fresh session" : undefined}
@@ -721,6 +831,11 @@ function AgentCard({
       {agent.instructions && <div className="session-task small">{agent.instructions}</div>}
       {agent.note && <div className="small attention-text">{agent.note}</div>}
       <div className="row">
+        {canOperate && onOpen && (
+          <button className="btn small-btn" onClick={onOpen}>
+            💬 Talk
+          </button>
+        )}
         {agent.session_id && (
           <button className="btn small-btn" onClick={() => onOpenSession(agent.session_id!)}>
             {live ? "👁 Watch" : "History"}
@@ -1131,7 +1246,7 @@ function Feed({
   const [messages, setMessages] = useState<OrgMessage[] | null>(null);
   const [to, setTo] = useState("room");
   const [text, setText] = useState("");
-  const end = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLDivElement>(null);
   const deptId = dept?.id;
 
   useEffect(() => {
@@ -1143,7 +1258,8 @@ function Feed({
 
   const count = messages?.length ?? 0;
   useEffect(() => {
-    end.current?.scrollIntoView({ block: "nearest" });
+    // Scroll the list to its newest message without scrolling the page to the list.
+    if (list.current) list.current.scrollTop = list.current.scrollHeight;
   }, [count]);
 
   const targets = useMemo(() => {
@@ -1170,7 +1286,7 @@ function Feed({
           <span className="tag tone-human">from a person</span>
         </span>
       </div>
-      <div className="feed-list">
+      <div className="feed-list" ref={list}>
         {messages === null && <p className="muted small">Loading…</p>}
         {messages?.length === 0 && <p className="muted small">No messages yet.</p>}
         {messages?.map((m) => (
@@ -1195,7 +1311,6 @@ function Feed({
             <div className="bubble-body">{m.text}</div>
           </div>
         ))}
-        <div ref={end} />
       </div>
       {canPost && (
         <form
@@ -1234,7 +1349,17 @@ function Feed({
   );
 }
 
-function Files({ dept, tick, onError }: { dept: Department; tick: number; onError: (e: unknown) => void }) {
+function Files({
+  dept,
+  tick,
+  onOpenAll,
+  onError,
+}: {
+  dept: Department;
+  tick: number;
+  onOpenAll: () => void;
+  onError: (e: unknown) => void;
+}) {
   const [files, setFiles] = useState<DepartmentFile[]>([]);
   const [open, setOpen] = useState<{ path: string; content: string } | null>(null);
   useEffect(() => {
@@ -1242,7 +1367,12 @@ function Files({ dept, tick, onError }: { dept: Department; tick: number; onErro
   }, [dept.id, tick, onError]);
   return (
     <section className="card side-panel">
-      <h3 className="section-title">Department files</h3>
+      <div className="side-panel-head">
+        <h3 className="section-title">Department files</h3>
+        <button className="link small" onClick={onOpenAll}>
+          All files →
+        </button>
+      </div>
       {files.length === 0 && <p className="muted small">No files yet.</p>}
       <ul className="file-list">
         {files.map((f) => (

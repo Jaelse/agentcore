@@ -21,7 +21,7 @@ export default function App() {
   const [card, setCard] = useState<SystemCard | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [showArchived, setShowArchived] = useState(false);
-  const { route, navigate } = useRoute();
+  const { route, navigate, openOrg } = useRoute();
   const view = route.view;
   const selected = route.sessionId;
   const setSelected = useCallback(
@@ -112,6 +112,7 @@ export default function App() {
         view={view}
         onView={navigate}
         onSignOut={signOut}
+        onError={handleError}
       />
       {error && (
         <div className="banner error" role="alert">
@@ -129,6 +130,9 @@ export default function App() {
             refresh();
           }}
           onOpenOrganisation={() => navigate("organisations")}
+          onOpenDepartment={(id) => openOrg({ department: id })}
+          onOpenMember={(id, agent) => openOrg({ department: id, member: agent })}
+          onOpenFiles={(id) => openOrg({ department: id, files: true })}
           onError={handleError}
         />
       ) : view === "more" ? (
@@ -152,6 +156,8 @@ export default function App() {
         <Organisation
           me={me}
           card={card}
+          target={route.org}
+          onNavigate={openOrg}
           onOpenSession={(id) => {
             navigate("sessions", id);
             refresh();
@@ -228,11 +234,7 @@ export default function App() {
       <BottomNav
         view={view}
         waiting={waiting}
-        onView={(v) => {
-          // Tapping the Sessions tab again leaves the open session, like a feed tab scrolling to top.
-          if (v === "sessions" && view === "sessions") setSelected(null);
-          else navigate(v);
-        }}
+        onView={(v) => navigate(v)}
       />
       {showCard && <SystemCardDialog card={card} onClose={() => setShowCard(false)} />}
     </div>

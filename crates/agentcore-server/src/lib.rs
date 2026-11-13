@@ -424,6 +424,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/org/agents/{id}/workspace", get(explorer::list))
         .route("/org/agents/{id}/workspace/file", get(explorer::read))
+        .route("/org/agents/{id}/talk", post(org::talk_to_agent))
         .route("/org/agents/{id}/{control}", post(org::control_agent))
         .route("/org/pause-all", post(org::pause_all))
         .route("/org/resume-all", post(org::resume_all))

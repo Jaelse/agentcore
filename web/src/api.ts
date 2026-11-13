@@ -129,6 +129,8 @@ export const api = {
   whoami: () => request<Me>("GET", "/whoami"),
   systemCard: () => request<SystemCard>("GET", "/system-card"),
   sessions: (archived = false) => request<SessionInfo[]>("GET", `/sessions${archived ? "?archived=true" : ""}`),
+  /** Everything recorded in a session, live or over. */
+  events: (id: string) => request<AgentEvent[]>("GET", `/sessions/${id}/events`),
   archiveSession: (id: string) => request<void>("POST", `/sessions/${id}/archive`),
   unarchiveSession: (id: string) => request<void>("POST", `/sessions/${id}/unarchive`),
   archiveFinished: (olderThanHours?: number) =>
@@ -469,6 +471,9 @@ export const api = {
   },
   cancelHandoff: (id: string, reason?: string) => request<Handoff>("POST", `/org/handoffs/${id}/cancel`, { reason }),
   postMessage: (to: MessageTo, text: string) => request<OrgMessage>("POST", "/org/messages", { to, text }),
+  /** Talk with a member; a stopped one is started only to answer. */
+  talkToAgent: (id: string, text: string) =>
+    request<{ message: OrgMessage; agent: OrgAgent }>("POST", `/org/agents/${id}/talk`, { text }),
   departmentFiles: (id: string) => request<DepartmentFile[]>("GET", `/org/departments/${id}/files`),
   workItems: (department: string, closed = false) =>
     request<WorkItem[]>("GET", `/org/work-items?department=${department}${closed ? "&closed=true" : ""}`),

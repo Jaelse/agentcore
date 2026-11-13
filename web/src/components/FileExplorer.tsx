@@ -3,6 +3,7 @@ import { ApiError, api } from "../api";
 import type { DataSource, Department, DepartmentFile, Me, OrgAgent, OrgOverview, WorkspaceListing } from "../types";
 
 interface Props {
+  dept: Department;
   org: OrgOverview;
   me: Me;
   tick: number;
@@ -22,24 +23,27 @@ function size(bytes: number): string {
 
 const pad = (depth: number) => ({ paddingLeft: 8 + depth * 14 });
 
-/** Everything the organisation holds, read-only: each department's shared
- *  files, each agent's workspace and the business data sources. */
-export function FileExplorer({ org, me, tick, onError }: Props) {
+/** Everything one department holds, read-only: its shared files, each
+ *  member's workspace and the business data it may read. */
+export function FileExplorer({ dept, org, me, tick, onError }: Props) {
   const [opened, setOpened] = useState<Opened | null>(null);
   const isOpen = (o: Opened) => JSON.stringify(key(o)) === JSON.stringify(opened && key(opened));
   const tree = { isOpen, open: setOpened, tick, onError };
+  const sources = org.data_sources.filter((s) => s.departments.includes(dept.id));
 
   return (
     <div className="explorer">
-      <section className="card explorer-tree" aria-label="Files">
-        <h3 className="section-title">Departments</h3>
-        {org.departments.length === 0 && <p className="muted small">No departments yet.</p>}
-        {org.departments.map((d) => (
-          <DepartmentNode key={d.id} dept={d} {...tree} />
+      <section className="card explorer-tree" aria-label={`${dept.name} files`}>
+        <h3 className="section-title">Shared</h3>
+        <SharedFiles dept={dept} depth={0} startOpen {...tree} />
+        <h3 className="section-title">Workspaces</h3>
+        {dept.agents.length === 0 && <p className="muted small">No members yet.</p>}
+        {dept.agents.map((a) => (
+          <WorkspaceDir key={a.id} agent={a} dept={dept} path="" label={`${a.name}'s workspace`} depth={0} {...tree} />
         ))}
-        <h3 className="section-title">Business data</h3>
-        {org.data_sources.length === 0 && <p className="muted small">No data sources yet.</p>}
-        {org.data_sources.map((s) => (
+        <h3 className="section-title">Business data it may read</h3>
+        {sources.length === 0 && <p className="muted small">None granted.</p>}
+        {sources.map((s) => (
           <Row
             key={s.id}
             depth={0}
@@ -54,8 +58,8 @@ export function FileExplorer({ org, me, tick, onError }: Props) {
       <section className="card explorer-view">
         {!opened ? (
           <div className="empty">
-            <h2>Organisation files</h2>
-            <p>Pick a file on the left: department files, agents' workspaces or business data.</p>
+            <h2>{dept.name} files</h2>
+            <p>Pick a file: the department's shared files, its members' workspaces or business data.</p>
           </div>
         ) : opened.kind === "source" ? (
           <SourceView key={opened.source.id} source={opened.source} org={org} me={me} onError={onError} />
@@ -113,30 +117,6 @@ function Row({
   );
 }
 
-function DepartmentNode({ dept, ...tree }: { dept: Department } & TreeProps) {
-  const [expanded, setExpanded] = useState(false);
-  return (
-    <>
-      <Row
-        depth={0}
-        icon="🏢"
-        label={dept.name}
-        meta={`${dept.agents.length} agent${dept.agents.length === 1 ? "" : "s"}`}
-        expanded={expanded}
-        onClick={() => setExpanded(!expanded)}
-      />
-      {expanded && (
-        <>
-          <SharedFiles dept={dept} {...tree} />
-          {dept.agents.map((a) => (
-            <WorkspaceDir key={a.id} agent={a} dept={dept} path="" label={`${a.name}'s workspace`} depth={1} {...tree} />
-          ))}
-        </>
-      )}
-    </>
-  );
-}
-
 // ---- department (shared) files: flat paths shown as folders ----
 
 interface Folder {
@@ -158,8 +138,13 @@ function folderTree(files: DepartmentFile[]): Folder {
   return root;
 }
 
-function SharedFiles({ dept, ...tree }: { dept: Department } & TreeProps) {
-  const [expanded, setExpanded] = useState(false);
+function SharedFiles({
+  dept,
+  depth,
+  startOpen = false,
+  ...tree
+}: { dept: Department; depth: number; startOpen?: boolean } & TreeProps) {
+  const [expanded, setExpanded] = useState(startOpen);
   const [files, setFiles] = useState<DepartmentFile[] | null>(null);
   const { tick, onError } = tree;
   useEffect(() => {
@@ -169,7 +154,7 @@ function SharedFiles({ dept, ...tree }: { dept: Department } & TreeProps) {
   return (
     <>
       <Row
-        depth={1}
+        depth={depth}
         icon="📁"
         label="Shared files"
         meta={files ? String(files.length) : undefined}
@@ -177,11 +162,11 @@ function SharedFiles({ dept, ...tree }: { dept: Department } & TreeProps) {
         onClick={() => setExpanded(!expanded)}
       />
       {expanded && files?.length === 0 && (
-        <p className="muted small" style={pad(3)}>
+        <p className="muted small" style={pad(depth + 2)}>
           No shared files.
         </p>
       )}
-      {expanded && <SharedFolder folder={root} dept={dept} depth={2} {...tree} />}
+      {expanded && <SharedFolder folder={root} dept={dept} depth={depth + 1} {...tree} />}
     </>
   );
 }

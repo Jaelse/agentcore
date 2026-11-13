@@ -11,6 +11,8 @@ default = "require_approval"     # allow | deny | require_approval
 [limits]
 max_session_secs = 3600          # hard wall-clock limit, then the session is stopped
 max_actions = 1000               # actions beyond this are denied
+max_model_calls = 2000           # model calls through the gateway beyond this are refused
+idle_timeout_secs = 3600         # a session waiting for a message this long ends
 approval_timeout_secs = 900      # unanswered approvals are rejected
 max_output_bytes = 65536         # tool output returned to the agent is truncated
 

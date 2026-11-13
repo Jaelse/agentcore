@@ -1594,6 +1594,17 @@ pub fn compose_prompt(
             notes_path(agent)
         ));
     }
+    if agent.talk_only {
+        p.push_str(
+            "\n## A person wants to talk with you\n\nYou were started only so that a person who \
+             supervises the organisation can talk with you, for example to ask how your work is \
+             going. Their messages are below; answer them from what you know, your notes and \
+             your department's files. Do not start new work, change files or message \
+             colleagues in this session unless they ask you to. Keep your answers short, then \
+             end your turn: their follow-up questions come to you here. Once the conversation \
+             is over you are stopped.\n",
+        );
+    }
     if let Some(why) = start.continuing {
         p.push_str(&format!(
             "\n## You are continuing\n\n{why} This is a new session, but you carry on where you \
@@ -1808,7 +1819,8 @@ async fn build_agent_session(
         // The agent's workspace and conversation outlive its sessions: each
         // one starts where the last stopped, after it saved its work.
         agent_dir: Some(state.agent_dir(dept.id, agent.id)),
-        continue_conversation: continuing.is_some(),
+        // Talking about its work needs what it remembers of it.
+        continue_conversation: continuing.is_some() || agent.talk_only,
         wrap_up: Some(wrap_up_prompt(agent, dept)),
         agent_label: Some(label),
         ..Default::default()
@@ -2814,7 +2826,7 @@ pub(crate) async fn control_agents(
                     continue;
                 }
                 match store
-                    .start_agent(agent.id, state.config.cluster.node_timeout_secs, by)
+                    .start_agent(agent.id, state.config.cluster.node_timeout_secs, by, false)
                     .await
                 {
                     Ok(Some(a)) => started.push(a),
@@ -2872,6 +2884,61 @@ pub async fn control_agent(
     caller.require_operator()?;
     control_agents(&state, AgentScope::Agent(id), control, &caller.name).await?;
     Ok(Json(json!(state.store.get_agent(id).await?)))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TalkRequest {
+    pub text: String,
+}
+
+/// A person talks with a member: the message goes to it like any other, and
+/// a stopped member is started only to answer (it does not take up its normal
+/// work, and is stopped again once the conversation ends). A sleeping member
+/// wakes; a busy one reads it when it finishes what it is doing.
+pub async fn talk_to_agent(
+    State(state): State<AppState>,
+    caller: Caller,
+    Path(id): Path<OrgAgentId>,
+    Json(req): Json<TalkRequest>,
+) -> ApiResult<impl IntoResponse> {
+    caller.require_operator()?;
+    let store = &state.store;
+    let agent = store.get_agent(id).await?;
+    let start = agent.desired == Desired::Stopped;
+    if start {
+        // Check that it can run before the message is sent.
+        let providers = store.list_providers().await?;
+        if let Some(err) = route_error(&agent, &model_route(&state, &agent, &providers)) {
+            return Err(err);
+        }
+    }
+    let message = send(
+        store,
+        &Sender::Human(caller.name.clone()),
+        Recipient::Agent(id),
+        &req.text,
+    )
+    .await?;
+    if start {
+        store
+            .start_agent(
+                id,
+                state.config.cluster.node_timeout_secs,
+                &caller.name,
+                true,
+            )
+            .await?;
+        notify(
+            store,
+            json!({ "kind": "agents", "departments": [agent.department_id] }),
+        )
+        .await;
+        state.reconcile.notify_one();
+    }
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "message": message, "agent": store.get_agent(id).await? })),
+    ))
 }
 
 pub async fn control_department(
@@ -3170,6 +3237,7 @@ mod tests {
             note: None,
             changed_by: "a".into(),
             created_at: chrono::Utc::now(),
+            talk_only: false,
         }
     }
 
@@ -3234,6 +3302,27 @@ mod tests {
         let message = announcement_message(&org.announcements[1], Some("Sales"));
         assert!(message.starts_with("📣 Announcement from dev: **New pricing** (to Sales only)"));
         assert!(message.contains("do not reply to everyone"));
+    }
+
+    #[test]
+    fn a_member_started_to_talk_is_told_so() {
+        let qa = test_department("Quality Assurance");
+        let mut tester = test_agent(&qa, "tester");
+        let org = Org {
+            departments: vec![qa.clone()],
+            agents: vec![tester.clone()],
+            profile: OrgProfile::default(),
+            goals: vec![],
+            announcements: vec![],
+        };
+        let start = StartContext::default();
+        let working = compose_prompt(&org, &tester, &qa, &start);
+        assert!(!working.contains("A person wants to talk with you"));
+
+        tester.talk_only = true;
+        let talking = compose_prompt(&org, &tester, &qa, &start);
+        assert!(talking.contains("## A person wants to talk with you"));
+        assert!(talking.contains("Do not start new work"));
     }
 
     #[test]

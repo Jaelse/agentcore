@@ -207,6 +207,10 @@ pub struct OrgAgent {
     /// Who last started, paused or stopped it (`agentcore` for the system).
     pub changed_by: String,
     pub created_at: DateTime<Utc>,
+    /// Started only so a person can talk with it: it answers and does not
+    /// take up its normal work, and it is stopped once the conversation ends.
+    #[serde(default)]
+    pub talk_only: bool,
 }
 
 /// One end of a message, as far as routing is concerned.

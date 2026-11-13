@@ -385,6 +385,7 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
                 // GitHub tools are there, and tell it why.
                 if agent.kind == AgentKind::Worker
                     && agent.desired == Desired::Running
+                    && !agent.talk_only
                     && dept.state == DepartmentState::Active
                     && session.status() == SessionStatus::AwaitingInput
                     && !session.is_paused()
@@ -420,7 +421,9 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
                 }
                 // Workers of a department that needs a repository are held
                 // (paused) until one is linked, then carry on.
-                let held = agent.kind == AgentKind::Worker && dept.blocked().is_some();
+                // (Talking needs no repository.)
+                let held =
+                    agent.kind == AgentKind::Worker && dept.blocked().is_some() && !agent.talk_only;
                 // Its working hours ended: the agent saves its work and goes
                 // off (it sleeps until the hours begin again), rather than
                 // being frozen overnight.
@@ -476,6 +479,13 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
                 )
                 .await?;
                 match session.end_cause() {
+                    // A conversation is over: it was started only for it.
+                    Some(_) if wanted && agent.talk_only => {
+                        store
+                            .agent_ended(agent.id, Some(session.id()), "stopped", None)
+                            .await?;
+                        changed = true;
+                    }
                     Some(EndCause::TimeBudget) if wanted => {
                         if dept.state == DepartmentState::Active
                             && !(agent.kind == AgentKind::Worker && dept.blocked().is_some())
@@ -569,7 +579,8 @@ pub async fn reconcile(state: &AppState) -> anyhow::Result<()> {
                 }
                 None if agent.desired == Desired::Running
                     && dept.state == DepartmentState::Active
-                    && !(agent.kind == AgentKind::Worker && dept.blocked().is_some()) =>
+                    && (agent.talk_only
+                        || !(agent.kind == AgentKind::Worker && dept.blocked().is_some())) =>
                 {
                     // Started by a person: the loop guard starts over.
                     forget_starts(agent.id);
