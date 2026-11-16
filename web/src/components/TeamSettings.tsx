@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ApiError, api } from "../api";
-import type { GitHubConnection, Me, TeamRole } from "../types";
+import type { GitHubConnection, Me, TeamRole, TokenConnection } from "../types";
 
 export function GitHubSettings({
   me,
@@ -53,7 +53,8 @@ export function GitHubSettings({
         Lets agents work on repositories: clone, read issues, milestones, discussions and project boards, and deliver
         pull requests. The token stays in agentcore (encrypted); agents never see it. Use a fine-grained token or a
         bot account with access to the repositories and boards you link (contents, issues, pull requests: read &amp;
-        write; projects; discussions).
+        write; projects; discussions; read access to actions, checks, commit statuses and deployments, so agentcore can
+        watch each pull request's checks and preview).
       </p>
       {conn === undefined ? (
         <p className="muted">Loading…</p>
@@ -123,6 +124,89 @@ export function GitHubSettings({
               </button>
             )}
             {status && <span className={status.startsWith("✓") ? "ok-text" : "error-text"}>{status}</span>}
+          </div>
+        </form>
+      )}
+    </section>
+  );
+}
+
+/** Vercel: read-only access to the build logs of failed preview deployments. */
+export function VercelSettings({ me, onError }: { me: Me; onError: (err: unknown) => void }) {
+  const [conn, setConn] = useState<TokenConnection | null | undefined>(undefined);
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const isAdmin = me.role === "admin";
+
+  useEffect(() => {
+    api.vercel().then(setConn).catch(onError);
+  }, [onError]);
+
+  return (
+    <section className="card pad">
+      <h2>Vercel</h2>
+      <p className="muted">
+        Optional. After an agent's pull request is opened, agentcore watches its checks and preview deployment on
+        GitHub and sends failures back to the agent. With a Vercel token it can also hand the agent the build log of a
+        failed preview, so it sees the actual error. The token stays in agentcore (encrypted); agents never see it.
+      </p>
+      {conn === undefined ? (
+        <p className="muted">Loading…</p>
+      ) : conn ? (
+        <p>
+          Connected · token <code>{conn.token_hint}</code> · changed {new Date(conn.updated_at).toLocaleString()} by{" "}
+          {conn.updated_by}
+        </p>
+      ) : (
+        <p className="muted">Not connected: failed Vercel previews reach the agent without their build log.</p>
+      )}
+      {isAdmin && (
+        <form
+          className="provider-edit"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setBusy(true);
+            try {
+              setConn(await api.saveVercel(token.trim()));
+              setToken("");
+            } catch (err) {
+              onError(err);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          <label>
+            {conn ? "New token" : "Token"}
+            <input
+              type="password"
+              autoComplete="off"
+              value={token}
+              placeholder="Vercel → Account Settings → Tokens"
+              onChange={(e) => setToken(e.target.value)}
+            />
+          </label>
+          <div className="row">
+            <button className="btn primary" disabled={busy || !token.trim()}>
+              {busy ? "Saving…" : conn ? "Replace token" : "Connect"}
+            </button>
+            {conn && (
+              <button
+                type="button"
+                className="btn ghost"
+                disabled={busy}
+                onClick={async () => {
+                  try {
+                    await api.deleteVercel();
+                    setConn(null);
+                  } catch (err) {
+                    onError(err);
+                  }
+                }}
+              >
+                Disconnect
+              </button>
+            )}
           </div>
         </form>
       )}

@@ -494,6 +494,165 @@ impl GitHub {
         ))
     }
 
+    // ---- checks and deployments of a commit ---------------------------------------
+
+    /// Commit statuses (the latest per context), as reported by services
+    /// such as Vercel or Netlify.
+    pub async fn commit_statuses(
+        &self,
+        owner: &str,
+        repo: &str,
+        sha: &str,
+    ) -> Result<Vec<Value>, GhError> {
+        let v = self
+            .rest(
+                Method::GET,
+                &format!(
+                    "/repos/{}/{}/commits/{}/status?per_page=100",
+                    urlencode(owner),
+                    urlencode(repo),
+                    urlencode(sha)
+                ),
+                None,
+            )
+            .await?;
+        Ok(v["statuses"].as_array().cloned().unwrap_or_default())
+    }
+
+    /// Check runs (GitHub Actions jobs and GitHub Apps' checks).
+    pub async fn check_runs(
+        &self,
+        owner: &str,
+        repo: &str,
+        sha: &str,
+    ) -> Result<Vec<Value>, GhError> {
+        let v = self
+            .rest(
+                Method::GET,
+                &format!(
+                    "/repos/{}/{}/commits/{}/check-runs?per_page=100",
+                    urlencode(owner),
+                    urlencode(repo),
+                    urlencode(sha)
+                ),
+                None,
+            )
+            .await?;
+        Ok(v["check_runs"].as_array().cloned().unwrap_or_default())
+    }
+
+    /// Annotations of a check run (file, line and message of each problem).
+    pub async fn check_run_annotations(
+        &self,
+        owner: &str,
+        repo: &str,
+        id: u64,
+    ) -> Result<Vec<Value>, GhError> {
+        let v = self
+            .rest(
+                Method::GET,
+                &format!(
+                    "/repos/{}/{}/check-runs/{id}/annotations?per_page=50",
+                    urlencode(owner),
+                    urlencode(repo)
+                ),
+                None,
+            )
+            .await?;
+        Ok(v.as_array().cloned().unwrap_or_default())
+    }
+
+    /// The log of a GitHub Actions job (plain text). GitHub answers with a
+    /// redirect to short-lived storage, fetched without the token.
+    pub async fn job_log(&self, owner: &str, repo: &str, job: u64) -> Result<String, GhError> {
+        let resp = self
+            .http
+            .get(format!(
+                "{}/repos/{}/{}/actions/jobs/{job}/logs",
+                self.api,
+                urlencode(owner),
+                urlencode(repo)
+            ))
+            .bearer_auth(&self.token)
+            .header("accept", "application/vnd.github+json")
+            .header("x-github-api-version", "2022-11-28")
+            .header("user-agent", "agentcore")
+            .send()
+            .await?;
+        let status = resp.status();
+        let resp = if status.is_redirection() {
+            let location = resp
+                .headers()
+                .get("location")
+                .and_then(|l| l.to_str().ok())
+                .ok_or_else(|| GhError::NotFound("job log redirect without a location".into()))?
+                .to_string();
+            self.http
+                .get(location)
+                .header("user-agent", "agentcore")
+                .send()
+                .await?
+        } else {
+            resp
+        };
+        let status = resp.status();
+        let text = resp.text().await?;
+        if !status.is_success() {
+            return Err(GhError::Api {
+                status: status.as_u16(),
+                message: text.chars().take(200).collect(),
+            });
+        }
+        Ok(text)
+    }
+
+    /// Address of a ready preview deployment of `sha` (Vercel, Netlify,
+    /// Render and others report theirs as GitHub deployments), if any.
+    pub async fn preview_url(
+        &self,
+        owner: &str,
+        repo: &str,
+        sha: &str,
+    ) -> Result<Option<String>, GhError> {
+        let (o, r) = (urlencode(owner), urlencode(repo));
+        let deployments = self
+            .rest(
+                Method::GET,
+                &format!(
+                    "/repos/{o}/{r}/deployments?sha={}&per_page=20",
+                    urlencode(sha)
+                ),
+                None,
+            )
+            .await?;
+        for d in deployments.as_array().into_iter().flatten() {
+            let production = d["production_environment"].as_bool().unwrap_or(false)
+                || d["environment"]
+                    .as_str()
+                    .is_some_and(|e| e.eq_ignore_ascii_case("production"));
+            let Some(id) = d["id"].as_u64() else { continue };
+            if production {
+                continue;
+            }
+            let statuses = self
+                .rest(
+                    Method::GET,
+                    &format!("/repos/{o}/{r}/deployments/{id}/statuses?per_page=1"),
+                    None,
+                )
+                .await?;
+            let latest = &statuses[0];
+            if latest["state"] == "success"
+                && let Some(url) = latest["environment_url"]
+                    .as_str()
+                    .filter(|u| u.starts_with("https://") || u.starts_with("http://"))
+            {
+                return Ok(Some(url.to_string()));
+            }
+        }
+        Ok(None)
+    }
+
     // ---- discussions -------------------------------------------------------------
 
     pub async fn list_discussions(

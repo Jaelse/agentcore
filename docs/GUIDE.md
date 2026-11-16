@@ -83,7 +83,14 @@ Reference: [Spending and budgets](MULTI_AGENT.md#spending-and-budgets).
 ## 3. Connect the repository
 
 1. **Settings → GitHub**: a token of a bot account (or a fine-grained
-   token) with access only to the repositories agents work on.
+   token) with access only to the repositories agents work on. Give it read
+   access to *Actions*, *Checks*, *Commit statuses* and *Deployments* too:
+   agentcore watches each delivered pull request's checks and preview and
+   sends failures back to the agent.
+   If the app is previewed on **Vercel**, add a Vercel token under
+   **Settings → Vercel** so the agent also gets the build log of a failed
+   preview. The session then shows a **Preview ↗** link to try the change,
+   from a phone too.
 2. **Projects → New project**: the repository, its default branch, and
    notes for the team (how to build and test, conventions). Protect the
    default branch with required reviews on GitHub, so every agent pull

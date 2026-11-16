@@ -104,6 +104,9 @@ before).
 | `PUT /integrations/github` | A | `{token?, api_url, web_url, commit_name, commit_email}` |
 | `DELETE /integrations/github` | A | Disconnect |
 | `POST /integrations/github/test` | A | `{login}` of the token's user |
+| `GET /integrations/vercel` | O | Connection (`{token_hint, updated_at, updated_by}`) or `null` |
+| `PUT /integrations/vercel` | A | `{token}`: read access to build logs of failed previews |
+| `DELETE /integrations/vercel` | A | Disconnect |
 
 `board` = `{owner, number, status_field?: "Status", iteration_field?, columns?: {ready, in_progress, in_review, done}}`.
 
@@ -164,6 +167,7 @@ reconnect with `?after=<last seq>`. Event types: `session_created`,
 `turn_started`, `output`, `action_requested`, `policy_evaluated`,
 `approval_requested`, `approval_resolved`, `action_completed`, `model_call`,
 `user_message`, `messages_delivered`, `checks_completed`, `pull_request_proposed`, `delivered`,
+`pull_request_checked` (the repository's own checks on the delivered commit: `{report: {pull_request_url, commit, state, checks[], preview_url?, sent_to_agent?, note?}}`, with `state` one of `pending`, `passed`, `failed`, `needs_person`, `none`, `timed_out`),
 `status_changed`, `paused`, `resumed`, `session_recovered` (another node carried the session on: `{node, reason}`), `stop_requested`, `turn_ended`,
 `recording_closed`, `session_ended`. The same JSON objects form the audit log.
 Session statuses: `pending`, `running`, `awaiting_approval`, `awaiting_input`,

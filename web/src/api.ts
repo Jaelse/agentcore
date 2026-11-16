@@ -4,6 +4,7 @@ import type {
   Changes,
   CheckResult,
   GitHubConnection,
+  TokenConnection,
   IssueSummary,
   Project,
   PullRequestProposal,
@@ -165,6 +166,9 @@ export const api = {
   }) => request<GitHubConnection>("PUT", "/integrations/github", body),
   testGithub: () => request<{ login: string }>("POST", "/integrations/github/test"),
   deleteGithub: () => request<void>("DELETE", "/integrations/github"),
+  vercel: () => request<TokenConnection | null>("GET", "/integrations/vercel"),
+  saveVercel: (token: string) => request<TokenConnection>("PUT", "/integrations/vercel", { token }),
+  deleteVercel: () => request<void>("DELETE", "/integrations/vercel"),
   projects: () => request<Project[]>("GET", "/projects"),
   saveProject: (
     id: string | null,

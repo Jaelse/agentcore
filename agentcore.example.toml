@@ -51,6 +51,13 @@ dir = "templates"
 # default_max_departments = 10
 # default_max_agents_per_department = 10
 
+# Watching delivered pull requests' checks and preview (docs/WAYS_OF_WORKING.md).
+# [pull_request_checks]
+# enabled = true
+# poll_secs = 30
+# max_wait_mins = 45
+# max_fix_attempts = 3
+
 # Only when several agentcore VMs share the database (docs/DEPLOYMENT.md).
 # [cluster]
 # node_name = "vm-1"

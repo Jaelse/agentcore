@@ -165,6 +165,23 @@ master key.
 | `default_max_departments` | `10` | Initial limit, until an admin changes it in the UI |
 | `default_max_agents_per_department` | `10` | Initial limit |
 
+## `[pull_request_checks]`
+
+After a pull request is delivered, agentcore watches the repository's own
+checks on it (GitHub Actions, commit statuses such as Vercel's or Netlify's)
+and its preview deployment, shows them on the session and sends failures
+the code can fix back to the agent. See
+[Ways of working](WAYS_OF_WORKING.md#after-delivery-checks-and-preview).
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Watch pull requests after delivery |
+| `poll_secs` | `30` | How often GitHub is asked about the commit |
+| `max_wait_mins` | `45` | Stop waiting for checks that are still running |
+| `no_checks_after_secs` | `300` | Nothing reported after this long: nothing to watch |
+| `max_fix_attempts` | `3` | Times failures go back to the agent in one session before a person is needed |
+| `vercel_api_url` | `https://api.vercel.com` | Vercel's API, for build logs (the token is set in the UI) |
+
 ### Set in the web UI, not in the file
 
 Organisation settings live in PostgreSQL, so every node shares them, and are

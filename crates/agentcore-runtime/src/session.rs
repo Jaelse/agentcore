@@ -822,6 +822,15 @@ impl Session {
         .map(|_| ())
     }
 
+    /// Record what the repository's checks report on the delivered commit.
+    pub fn record_pull_request_checks(
+        &self,
+        report: agentcore_core::PullRequestChecks,
+    ) -> Result<(), RuntimeError> {
+        self.emit(EventKind::PullRequestChecked { report })
+            .map(|_| ())
+    }
+
     /// Main loop: create the sandbox, launch the agent, stream its output and
     /// wait for it to exit, be stopped or exceed its time budget.
     pub(crate) async fn run(

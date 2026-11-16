@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::{Result, Store, StoreError, admin_event, key_hint};
 
 const GITHUB_AAD: &[u8] = b"integration:github";
+const VERCEL_AAD: &[u8] = b"integration:vercel";
 
 /// Non-secret GitHub connection settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +39,14 @@ impl Default for GitHubConfig {
 #[derive(Debug, Clone, Serialize)]
 pub struct GitHubConnection {
     pub config: GitHubConfig,
+    pub token_hint: String,
+    pub updated_at: DateTime<Utc>,
+    pub updated_by: String,
+}
+
+/// A connection that is only a token (Vercel), as shown to admins.
+#[derive(Debug, Clone, Serialize)]
+pub struct TokenConnection {
     pub token_hint: String,
     pub updated_at: DateTime<Utc>,
     pub updated_by: String,
@@ -312,6 +321,92 @@ impl Store {
             actor,
             "github.delete",
             "github",
+            serde_json::json!({}),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    // ---- Vercel connection ----------------------------------------------------
+
+    pub async fn vercel_connection(&self) -> Result<Option<TokenConnection>> {
+        let row: Option<(String, DateTime<Utc>, String)> = sqlx::query_as(
+            "SELECT secret_hint, updated_at, updated_by FROM integrations WHERE kind = 'vercel'",
+        )
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(
+            row.map(|(token_hint, updated_at, updated_by)| TokenConnection {
+                token_hint,
+                updated_at,
+                updated_by,
+            }),
+        )
+    }
+
+    /// The decrypted Vercel token (server use only).
+    pub async fn vercel_token(&self) -> Result<Option<String>> {
+        let row: Option<(Vec<u8>, Vec<u8>)> = sqlx::query_as(
+            "SELECT secret_ciphertext, secret_nonce FROM integrations WHERE kind = 'vercel'",
+        )
+        .fetch_optional(self.pool())
+        .await?;
+        let Some((ciphertext, nonce)) = row else {
+            return Ok(None);
+        };
+        let token = self.cipher.decrypt(&nonce, &ciphertext, VERCEL_AAD)?;
+        Ok(Some(
+            String::from_utf8(token).map_err(|_| StoreError::Crypto)?,
+        ))
+    }
+
+    pub async fn set_vercel(&self, token: &str, actor: &str) -> Result<TokenConnection> {
+        let token = token.trim();
+        if token.is_empty() {
+            return Err(StoreError::Invalid(
+                "a token is required to connect Vercel".into(),
+            ));
+        }
+        let (nonce, ciphertext) = self.cipher.encrypt(token.as_bytes(), VERCEL_AAD)?;
+        let mut tx = self.pool().begin().await?;
+        sqlx::query(
+            "INSERT INTO integrations (kind, config, secret_ciphertext, secret_nonce, secret_hint, updated_by)
+             VALUES ('vercel', '{}', $1, $2, $3, $4)
+             ON CONFLICT (kind) DO UPDATE SET secret_ciphertext = EXCLUDED.secret_ciphertext,
+                 secret_nonce = EXCLUDED.secret_nonce, secret_hint = EXCLUDED.secret_hint,
+                 updated_at = now(), updated_by = EXCLUDED.updated_by",
+        )
+        .bind(&ciphertext)
+        .bind(&nonce)
+        .bind(key_hint(token))
+        .bind(actor)
+        .execute(&mut *tx)
+        .await?;
+        admin_event(
+            &mut tx,
+            actor,
+            "vercel.update",
+            "vercel",
+            serde_json::json!({ "token": "set" }),
+        )
+        .await?;
+        tx.commit().await?;
+        self.vercel_connection()
+            .await?
+            .ok_or_else(|| StoreError::NotFound("vercel connection".into()))
+    }
+
+    pub async fn delete_vercel(&self, actor: &str) -> Result<()> {
+        let mut tx = self.pool().begin().await?;
+        sqlx::query("DELETE FROM integrations WHERE kind = 'vercel'")
+            .execute(&mut *tx)
+            .await?;
+        admin_event(
+            &mut tx,
+            actor,
+            "vercel.delete",
+            "vercel",
             serde_json::json!({}),
         )
         .await?;

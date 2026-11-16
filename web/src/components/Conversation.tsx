@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import type { AgentEvent, CheckResult, Me, SessionInfo } from "../types";
+import type { AgentEvent, CheckResult, Me, PullRequestChecks, SessionInfo } from "../types";
 import { actionSummary, principalLabel } from "../types";
 
 type Item =
@@ -10,7 +10,9 @@ type Item =
   | { kind: "user"; text: string; by: string; at: string }
   | { kind: "checks"; passed: boolean; results: CheckResult[]; at: string }
   | { kind: "proposal"; title: string; body: string; at: string }
-  | { kind: "delivered"; url: string | null; branch: string; by: string; at: string };
+  | { kind: "delivered"; url: string | null; branch: string; by: string; at: string }
+  | { kind: "remote"; report: PullRequestChecks; at: string }
+  | { kind: "inbox"; from: string; text: string; at: string };
 
 function build(events: AgentEvent[]): Item[] {
   const items: Item[] = [];
@@ -67,6 +69,17 @@ function build(events: AgentEvent[]): Item[] {
       case "delivered":
         items.push({ kind: "delivered", url: e.pull_request_url, branch: e.branch, by: principalLabel(e.by), at: e.timestamp });
         break;
+      case "messages_delivered":
+        for (const m of e.messages) items.push({ kind: "inbox", from: m.from, text: m.text, at: e.timestamp });
+        break;
+      case "pull_request_checked": {
+        // One card per delivered commit, showing its latest state.
+        const same = items.findIndex((i) => i.kind === "remote" && i.report.commit === e.report.commit);
+        const item: Item = { kind: "remote", report: e.report, at: e.timestamp };
+        if (same >= 0) items[same] = item;
+        else items.push(item);
+        break;
+      }
       case "paused":
         items.push({ kind: "note", text: `Paused by ${principalLabel(e.by)}`, at: e.timestamp, tone: "attention" });
         break;
@@ -231,6 +244,25 @@ function ConversationItem({ item }: { item: Item }) {
           <pre className="out">{item.body}</pre>
         </div>
       );
+    case "remote":
+      return <RemoteChecksCard report={item.report} time={time} />;
+    case "inbox": {
+      // Long messages (build logs) start folded: the first line says what it is.
+      const [first, ...rest] = item.text.split("\n");
+      return (
+        <div className="card conv-card inbox">
+          <strong>To the agent</strong> <span className="muted small">from {item.from}</span> {time}
+          {rest.length > 0 ? (
+            <details>
+              <summary>{first}</summary>
+              <pre className="out">{rest.join("\n").trim()}</pre>
+            </details>
+          ) : (
+            <p className="inbox-text">{first}</p>
+          )}
+        </div>
+      );
+    }
     case "delivered":
       return (
         <div className="card conv-card ok">
@@ -245,4 +277,60 @@ function ConversationItem({ item }: { item: Item }) {
         </div>
       );
   }
+}
+
+const REMOTE_TITLE: Record<PullRequestChecks["state"], string> = {
+  pending: "… Pull request checks running",
+  passed: "✓ Pull request checks passed",
+  failed: "✗ Pull request checks failed",
+  needs_person: "! Pull request checks need a person",
+  none: "– No pull request checks reported",
+  timed_out: "… Pull request checks still running",
+};
+
+const REMOTE_TONE: Record<PullRequestChecks["state"], string> = {
+  pending: "",
+  passed: "ok",
+  failed: "bad",
+  needs_person: "warn",
+  none: "",
+  timed_out: "warn",
+};
+
+const CHECK_ICON = { pending: "…", passed: "✓", failed: "✗", needs_person: "!", neutral: "–" } as const;
+const CHECK_CLASS = { pending: "skipped", passed: "ok", failed: "bad", needs_person: "warn", neutral: "skipped" } as const;
+
+/** The repository's own checks and preview on a delivered commit. */
+function RemoteChecksCard({ report, time }: { report: PullRequestChecks; time: React.ReactNode }) {
+  return (
+    <div className={`card conv-card ${REMOTE_TONE[report.state]}`}>
+      <strong>{REMOTE_TITLE[report.state]}</strong> <span className="mono small">{report.commit.slice(0, 7)}</span>{" "}
+      {time}
+      {report.preview_url && (
+        <div className="remote-preview">
+          <a className="btn primary small-btn" href={report.preview_url} target="_blank" rel="noreferrer">
+            Open preview ↗
+          </a>
+        </div>
+      )}
+      {report.checks.length > 0 && (
+        <ul className="checks">
+          {report.checks.map((c) => (
+            <li key={c.name} className={CHECK_CLASS[c.state]}>
+              {CHECK_ICON[c.state]}{" "}
+              {c.url ? (
+                <a href={c.url} target="_blank" rel="noreferrer">
+                  {c.name}
+                </a>
+              ) : (
+                c.name
+              )}
+              {c.description && <span className="muted small"> · {c.description}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+      {report.note && <p className="small remote-note">{report.note}</p>}
+    </div>
+  );
 }

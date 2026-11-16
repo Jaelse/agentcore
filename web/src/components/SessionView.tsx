@@ -42,6 +42,13 @@ export function SessionView({ info, me, archived = false, onChanged, onArchivedC
   const canAct = me.role !== "viewer";
   const ctx = info.context ?? {};
   const isRepo = !!ctx.repository;
+  // The latest report on the delivered pull request's own checks.
+  const remote = [...events].reverse().find((e) => e.event === "pull_request_checked");
+  const report = remote?.event === "pull_request_checked" ? remote.report : null;
+  const preview = [...events]
+    .reverse()
+    .map((e) => (e.event === "pull_request_checked" ? e.report.preview_url : undefined))
+    .find(Boolean);
 
   // Reload details (proposal, role) when something relevant happens.
   const lastRelevant = events.filter((e) =>
@@ -119,6 +126,28 @@ export function SessionView({ info, me, archived = false, onChanged, onArchivedC
               {ctx.pull_request_url && (
                 <a className="chip ok" href={ctx.pull_request_url} target="_blank" rel="noreferrer">
                   Pull request ↗
+                </a>
+              )}
+              {report && (
+                <span
+                  className={`chip ${{ passed: "ok", failed: "bad", needs_person: "warn", timed_out: "warn" }[report.state as string] ?? ""}`}
+                  title={report.note || "The repository's own checks on the delivered pull request"}
+                >
+                  {
+                    {
+                      pending: "Checks running…",
+                      passed: "✓ Checks passed",
+                      failed: report.sent_to_agent ? "✗ Checks failed · agent fixing" : "✗ Checks failed",
+                      needs_person: "! Checks need a person",
+                      none: "No checks",
+                      timed_out: "Checks still running",
+                    }[report.state]
+                  }
+                </span>
+              )}
+              {preview && (
+                <a className="chip ok" href={preview} target="_blank" rel="noreferrer">
+                  Preview ↗
                 </a>
               )}
             </div>

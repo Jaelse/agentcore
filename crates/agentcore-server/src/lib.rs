@@ -26,6 +26,7 @@ pub mod logs;
 pub mod mcp;
 pub mod org;
 pub mod outbox;
+mod pr_checks;
 pub mod releases;
 pub mod sessions;
 pub mod signing;
@@ -71,6 +72,8 @@ pub struct AppState {
     pub templates: Arc<templates::Catalog>,
     /// Open-source agents that can be added from the web UI.
     pub agent_catalog: Arc<catalog::AgentCatalog>,
+    /// Pull requests whose checks this node watches after delivery.
+    pub(crate) pr_watches: Arc<pr_checks::Watches>,
 }
 
 impl AppState {
@@ -169,6 +172,7 @@ impl AppState {
             cluster_http,
             templates: Arc::new(catalog),
             agent_catalog: Arc::new(agent_catalog),
+            pr_watches: Arc::default(),
         };
         state.reload_agents().await;
         Ok(state)
@@ -241,6 +245,12 @@ pub fn router(state: AppState) -> Router {
                 .delete(teamwork::delete_github),
         )
         .route("/integrations/github/test", post(teamwork::test_github))
+        .route(
+            "/integrations/vercel",
+            get(teamwork::get_vercel)
+                .put(teamwork::put_vercel)
+                .delete(teamwork::delete_vercel),
+        )
         .route(
             "/projects",
             get(teamwork::list_projects).post(teamwork::create_project),
