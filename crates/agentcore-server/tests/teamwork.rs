@@ -1765,8 +1765,10 @@ async fn review_with_the_agent_on_the_preview() {
         .as_str()
         .unwrap()
         .to_string();
-    let access =
-        json!({ "bypass_secret": "s3cret-bypass", "username": "reviewer", "password": "pw-123" });
+    // Test values made up at run time (no secrets in the source).
+    let bypass = format!("bypass-{}", uuid::Uuid::new_v4().simple());
+    let login = format!("reviewer-{}", uuid::Uuid::new_v4().simple());
+    let access = json!({ "bypass_secret": bypass, "username": "reviewer", "password": login });
     let url = format!("{base}/projects/{project}/preview-access");
     assert_eq!(
         http("PUT", &url, "alice", Some(access.clone())).await.0,
@@ -1774,7 +1776,7 @@ async fn review_with_the_agent_on_the_preview() {
     );
     let (code, saved) = http("PUT", &url, "admin", Some(access)).await;
     assert_eq!(code, 200, "{saved}");
-    assert!(!saved.to_string().contains("s3cret-bypass") && !saved.to_string().contains("pw-123"));
+    assert!(!saved.to_string().contains(&bypass) && !saved.to_string().contains(&login));
     assert_eq!(saved["has_password"], true);
 
     // Delivered; its checks pass with the preview.
@@ -1828,7 +1830,7 @@ async fn review_with_the_agent_on_the_preview() {
         seen.lock()
             .unwrap()
             .iter()
-            .all(|(_, s)| s == "s3cret-bypass")
+            .all(|(_, s)| *s == json!(bypass))
     );
 
     // Changes: the agent fixes, delivers, and shows the new preview.
