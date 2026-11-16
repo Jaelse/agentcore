@@ -406,8 +406,17 @@ continue the session and deliver again: the same pull request is updated.
 Roles with `delivery.auto` skip the operator: when a turn in which the agent
 called `propose_pull_request` ends, the server runs the same steps as
 `System` (`teamwork::auto_deliver`, started from the session follower in
-`sessions.rs`). The outcome (the pull request link, or the failed checks) is
-sent to the agent as a message, which starts its next turn.
+`sessions.rs`). Failed checks and other refusals are sent to the agent as a
+message, which starts its next turn; a delivery that worked does not wake it.
+
+After every delivery, `pr_checks::watch` polls GitHub for the delivered
+commit's check runs, commit statuses and preview deployment, and records
+what it finds as `pull_request_checked` events. When the checks settle with
+failures the code can fix, it reads their logs (GitHub Actions job logs; Vercel
+build logs with the Vercel connection) and sends them to the agent (department
+agents through their inbox), up to `max_fix_attempts` per session; failures a
+person must resolve are only recorded. A new delivery of the session replaces
+its watch.
 
 ## Persistence
 

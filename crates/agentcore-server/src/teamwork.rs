@@ -1124,6 +1124,9 @@ async fn deliver(
     }
     session.record_delivery(by, branch.clone(), head.clone(), Some(pr_url.clone()))?;
     state.persist(session).await;
+    // The repository's own checks and preview: watched, failures go back
+    // to the agent.
+    crate::pr_checks::watch(state, session.id(), &project, head.clone(), pr_url.clone());
     Ok(
         json!({ "branch": branch, "commit": head, "pull_request": { "number": pr_number, "url": pr_url }, "checks": results }),
     )
@@ -1176,6 +1179,33 @@ pub async fn test_github(State(state): State<AppState>, caller: Caller) -> ApiRe
     caller.require_admin()?;
     let (gh, _, _) = state.require_github().await?;
     Ok(Json(json!({ "login": gh.viewer().await? })))
+}
+
+pub async fn get_vercel(State(state): State<AppState>, caller: Caller) -> ApiResult<Json<Value>> {
+    caller.require_operator()?;
+    Ok(Json(json!(state.store.vercel_connection().await?)))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VercelUpdate {
+    pub token: String,
+}
+
+pub async fn put_vercel(
+    State(state): State<AppState>,
+    caller: Caller,
+    Json(update): Json<VercelUpdate>,
+) -> ApiResult<Json<Value>> {
+    caller.require_admin()?;
+    Ok(Json(json!(
+        state.store.set_vercel(&update.token, &caller.name).await?
+    )))
+}
+
+pub async fn delete_vercel(State(state): State<AppState>, caller: Caller) -> ApiResult<StatusCode> {
+    caller.require_admin()?;
+    state.store.delete_vercel(&caller.name).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn list_projects(

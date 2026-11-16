@@ -972,6 +972,30 @@ fn describe(kind: &EventKind) -> (Level, String) {
                     .unwrap_or_default()
             ),
         ),
+        EventKind::PullRequestChecked { report } => {
+            use agentcore_core::RemoteChecksState as S;
+            let level = match report.state {
+                S::Pending | S::Passed | S::None => Info,
+                S::Failed | S::NeedsPerson | S::TimedOut => Warn,
+            };
+            let state = serde_json::to_value(report.state)
+                .ok()
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_default();
+            let commit = &report.commit[..report.commit.len().min(12)];
+            (
+                level,
+                format!(
+                    "pull request checks on {commit}: {state} ({} check(s)){}",
+                    report.checks.len(),
+                    report
+                        .preview_url
+                        .as_deref()
+                        .map(|u| format!(", preview {u}"))
+                        .unwrap_or_default()
+                ),
+            )
+        }
         EventKind::Output { stream, line } => (
             match stream {
                 OutputStream::Stdout => Debug,

@@ -36,6 +36,8 @@ pub struct Config {
     #[serde(default)]
     pub org: OrgConfig,
     #[serde(default)]
+    pub pull_request_checks: PullRequestChecksConfig,
+    #[serde(default)]
     pub agents: Vec<AgentSpec>,
 }
 
@@ -71,6 +73,39 @@ impl Default for ClusterConfig {
             node_timeout_secs: 30,
             reconcile_millis: 2000,
             checkpoint_secs: 60,
+        }
+    }
+}
+
+/// After a pull request is delivered, agentcore watches the repository's own
+/// checks on it (GitHub Actions, Vercel and other preview deployments) and
+/// sends failures back to the agent that made the change.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PullRequestChecksConfig {
+    pub enabled: bool,
+    /// How often GitHub is asked about the commit.
+    pub poll_secs: u64,
+    /// Give up waiting for checks that are still running after this long.
+    pub max_wait_mins: u64,
+    /// No check reported at all after this long: nothing to watch.
+    pub no_checks_after_secs: u64,
+    /// How many times failures go back to the agent for one session before
+    /// agentcore stops and leaves it to a person.
+    pub max_fix_attempts: u32,
+    /// Vercel's API (for build logs of failed preview deployments).
+    pub vercel_api_url: String,
+}
+
+impl Default for PullRequestChecksConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            poll_secs: 30,
+            max_wait_mins: 45,
+            no_checks_after_secs: 300,
+            max_fix_attempts: 3,
+            vercel_api_url: "https://api.vercel.com".into(),
         }
     }
 }

@@ -491,7 +491,7 @@ flowchart LR
     P --- PR["Product<br/>role: project-manager"]
     P --- MK["Marketing<br/>role: marketing"]
     E -- "each worker: own checkout<br/>and branch" --> W["agent/task-engineering-developer-…"]
-    W -- "propose_pull_request" --> D["Deliver (a person):<br/>checks · push · pull request"]
+    W -- "propose_pull_request" --> D["Deliver (auto or a person):<br/>checks · push · pull request"]
     PR -- "GitHub tools:<br/>issues, milestones, board" --> GH["GitHub"]
     MK -- "discussions, drafts" --> GH
 ```
@@ -503,12 +503,13 @@ What a worker in a linked department gets:
 | Checkout | A clone of the repository on the branch of its [work item](#work-items-the-department-keeps-the-work): a new branch `agent/task-<department>-<agent>-<id>` from the base branch for new work, or the item's branch as last saved when it carries work on. Prepared on the host before the agent starts | none |
 | GitHub tools | Those of the department's role (default: the project's role): developer → read issues, comment, propose a pull request; project-manager → manage issues, milestones and the board; marketing → discussions | same |
 | First prompt | The role's playbook, the team's convention files from the repository (`CONTRIBUTING.md`, `AGENTS.md`, ...), the project's notes, the role's checks, then the department part (mission, colleagues, the repository and how to deliver) | the role's playbook and the project's notes, then the department part |
-| Delivery | When the agent proposes a pull request, a person clicks **Deliver** in its session: the role's checks run, the branch is pushed with agentcore's GitHub credentials, the pull request is opened | – |
+| Delivery | When the agent proposes a pull request, agentcore delivers it (roles with `delivery.auto`, such as `developer`) or a person clicks **Deliver** in its session: the role's checks run, the branch is pushed with agentcore's GitHub credentials, the pull request is opened. agentcore then [watches its checks and preview](WAYS_OF_WORKING.md#after-delivery-checks-and-preview) and sends failures to the agent's inbox | – |
 
 Nothing reaches GitHub without
 passing the department's policy: GitHub writes need approval under the
 `department` and `default` policies, and code only leaves the sandbox
-through a delivery a person starts. Department templates for code-heavy
+through a delivery (after the role's checks), as a pull request people
+review and merge. Department templates for code-heavy
 functions (Engineering, QA, DevOps, Security, Data, AI/ML, Technical
 Writing) use the `default` policy, which allows the usual development tools
 in the sandbox.

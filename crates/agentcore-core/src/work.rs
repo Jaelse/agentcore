@@ -98,3 +98,65 @@ pub struct Changes {
     pub uncommitted: bool,
     pub captured_at: DateTime<Utc>,
 }
+
+/// What GitHub reports about a delivered pull request's commit: the
+/// repository's own checks (GitHub Actions, Vercel, Netlify, ...) and the
+/// preview deployment, as agentcore watches them after delivery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PullRequestChecks {
+    pub pull_request_url: String,
+    pub commit: String,
+    pub state: RemoteChecksState,
+    pub checks: Vec<RemoteCheck>,
+    /// Address of the preview deployment, once one is ready.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_url: Option<String>,
+    /// The failures were sent to the agent to fix (attempt number).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_to_agent: Option<u32>,
+    /// What agentcore concluded, for people (e.g. why a person is needed).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteChecksState {
+    /// Checks are still running (or have not been reported yet).
+    Pending,
+    Passed,
+    /// At least one check failed that a change to the code can fix.
+    Failed,
+    /// Only failures a person has to resolve (a blocked deployment,
+    /// missing access, a cancelled run).
+    NeedsPerson,
+    /// Nothing was reported for the commit.
+    None,
+    /// agentcore stopped waiting before the checks finished.
+    TimedOut,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteCheck {
+    pub name: String,
+    pub state: RemoteCheckState,
+    /// What the check said about itself (one line).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Where people can look at it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteCheckState {
+    Pending,
+    Passed,
+    /// Failed in a way a change to the code can fix (a build or test error).
+    Failed,
+    /// Failed in a way only a person can resolve.
+    NeedsPerson,
+    /// Skipped, neutral or cancelled: does not count either way.
+    Neutral,
+}

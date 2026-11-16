@@ -69,6 +69,11 @@ fn remote(root: &Path) -> std::path::PathBuf {
 }
 
 async fn mock_github(log: Log) -> String {
+    mock_github_with(log, |r| r).await
+}
+
+/// The mock GitHub, with more routes added by `extra`.
+async fn mock_github_with(log: Log, extra: impl FnOnce(axum::Router) -> axum::Router) -> String {
     let rec =
         |log: &Log, what: &str, body: Value| log.lock().unwrap().push((what.to_string(), body));
     let l1 = log.clone();
@@ -136,13 +141,14 @@ async fn mock_github(log: Log) -> String {
                 }
             }),
         )
-        .fallback(move |uri: axum::http::Uri| {
-            let log = l4.clone();
-            async move {
-                rec(&log, &format!("unexpected {uri}"), Value::Null);
-                (axum::http::StatusCode::NOT_FOUND, "nope")
-            }
-        });
+        ;
+    let app = extra(app).fallback(move |uri: axum::http::Uri| {
+        let log = l4.clone();
+        async move {
+            rec(&log, &format!("unexpected {uri}"), Value::Null);
+            (axum::http::StatusCode::NOT_FOUND, "nope")
+        }
+    });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -225,6 +231,7 @@ async fn issue_session(
     api: String,
     follow_up: &str,
     auto: bool,
+    vercel_api: Option<&str>,
 ) -> IssueSession {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -253,6 +260,14 @@ async fn issue_session(
         ..Default::default()
     };
     config.sandbox.process.allow_insecure = true;
+    // Watching the pull request's checks after delivery: only in the test
+    // about it, quickly.
+    config.pull_request_checks.enabled = vercel_api.is_some();
+    config.pull_request_checks.poll_secs = 1;
+    config.pull_request_checks.no_checks_after_secs = 3;
+    if let Some(url) = vercel_api {
+        config.pull_request_checks.vercel_api_url = url.into();
+    }
     config.agents = vec![AgentSpec {
         name: "scripted".into(),
         adapter: "command".into(),
@@ -366,7 +381,7 @@ async fn agent_works_an_issue_and_delivers_a_pull_request() {
         base,
         sid,
         branch,
-    } = issue_session(dir.path(), db, api, TURN_TWO, false).await;
+    } = issue_session(dir.path(), db, api, TURN_TWO, false, None).await;
 
     let wait = |status: &'static str, turns: usize| {
         let base = base.clone();
@@ -624,7 +639,7 @@ async fn agent_delivers_its_own_pull_request() {
     let api = mock_github(log.clone()).await;
     let IssueSession {
         base, sid, branch, ..
-    } = issue_session(dir.path(), db, api, TURN_TWO_AUTO, true).await;
+    } = issue_session(dir.path(), db, api, TURN_TWO_AUTO, true, None).await;
 
     // Nobody clicks Deliver: the failed check goes back to the agent, it
     // fixes the commit and proposes again, and the pull request opens. The
@@ -701,6 +716,211 @@ async fn agent_delivers_its_own_pull_request() {
     assert_eq!(
         events.iter().filter(|e| e["event"] == "turn_ended").count(),
         2
+    );
+}
+
+/// Turns of an agent whose pull request's preview fails: first the team's
+/// check (commit message), then the Vercel build, which it fixes with a new
+/// commit.
+const FIX_THE_PREVIEW: &str = r#"
+mcp() { curl -s -X POST "$AGENTCORE_GATEWAY_URL" -H "Authorization: Bearer $AGENTCORE_GATEWAY_TOKEN" -H 'Content-Type: application/json' -d "$1"; echo; }
+case "$0" in
+  *"Commit messages follow the convention"*) git commit -q --amend -m 'feat: add hello file' ;;
+  *"Module not found"*) echo fixed > table.txt && git add table.txt && git commit -qm 'fix: add the missing table' ;;
+  *) echo "unexpected follow-up: $0"; exit 0 ;;
+esac
+mcp '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"propose_pull_request","arguments":{"title":"feat: say hello","body":"Adds hello.txt as requested in #7."}}}'
+echo proposed
+"#;
+
+/// Mock GitHub routes for a commit's checks: the first commit asked about
+/// fails its Vercel preview, later ones pass and have a preview.
+fn checks_routes(router: axum::Router, first: Arc<Mutex<Option<String>>>) -> axum::Router {
+    let f1 = first.clone();
+    router
+        .route(
+            "/repos/acme/demo/commits/{sha}/status",
+            get(move |UrlPath(sha): UrlPath<String>| {
+                let first = f1.clone();
+                async move {
+                    let failing = first.lock().unwrap().get_or_insert(sha.clone()) == &sha;
+                    Json(json!({ "statuses": [ if failing {
+                        json!({ "context": "Vercel", "state": "failure",
+                                "description": "Deployment has failed — run this Vercel CLI command: npx vercel inspect dpl_abc --logs",
+                                "target_url": "https://vercel.com/acme-team/demo/abc123" })
+                    } else {
+                        json!({ "context": "Vercel", "state": "success", "description": "Deployment has completed",
+                                "target_url": "https://vercel.com/acme-team/demo/def456" })
+                    } ] }))
+                }
+            }),
+        )
+        .route(
+            "/repos/acme/demo/commits/{sha}/check-runs",
+            get(|| async { Json(json!({ "total_count": 0, "check_runs": [] })) }),
+        )
+        .route(
+            "/repos/acme/demo/deployments",
+            get(move |q: axum::extract::Query<std::collections::HashMap<String, String>>| {
+                let first = first.clone();
+                async move {
+                    let sha = q.get("sha").cloned().unwrap_or_default();
+                    let fixed = first.lock().unwrap().as_ref().is_some_and(|f| *f != sha);
+                    Json(if fixed {
+                        json!([{ "id": 99, "environment": "Preview", "production_environment": false }])
+                    } else {
+                        json!([])
+                    })
+                }
+            }),
+        )
+        .route(
+            "/repos/acme/demo/deployments/99/statuses",
+            get(|| async { Json(json!([{ "state": "success", "environment_url": "https://demo-git-agent.vercel.app" }])) }),
+        )
+}
+
+/// Vercel's API: the build log of the failed deployment.
+async fn mock_vercel(log: Log) -> String {
+    let app = axum::Router::new().route(
+        "/v3/deployments/{id}/events",
+        get(
+            move |UrlPath(id): UrlPath<String>,
+                  q: axum::extract::Query<std::collections::HashMap<String, String>>,
+                  headers: axum::http::HeaderMap| {
+                let log = log.clone();
+                async move {
+                    let auth = headers.get("authorization").and_then(|h| h.to_str().ok()).unwrap_or_default().to_string();
+                    log.lock().unwrap().push((format!("vercel log {id}"), json!({ "slug": q.get("slug"), "auth": auth })));
+                    Json(json!([
+                        { "type": "command", "payload": { "text": "Running \"npm run vercel-build\"" } },
+                        { "type": "stderr", "payload": { "text": "Failed to compile." } },
+                        { "type": "stderr", "payload": { "text": "./src/components/coverletter/CoverLetterList.tsx" } },
+                        { "type": "stderr", "payload": { "text": "Module not found: Can't resolve './ui/table'" } },
+                    ]))
+                }
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn failed_preview_goes_back_to_the_agent() {
+    let Some((_, db)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let bare = remote(dir.path());
+    let log: Log = Arc::default();
+    let api = mock_github_with(log.clone(), |r| checks_routes(r, Arc::default())).await;
+    let vercel = mock_vercel(log.clone()).await;
+    let IssueSession {
+        base, sid, branch, ..
+    } = issue_session(dir.path(), db, api, FIX_THE_PREVIEW, true, Some(&vercel)).await;
+
+    // An admin connects Vercel (operators cannot; the token is not shown).
+    let token = json!({ "token": "vercel_test_token" });
+    assert_eq!(
+        http(
+            "PUT",
+            &format!("{base}/integrations/vercel"),
+            "alice",
+            Some(token.clone())
+        )
+        .await
+        .0,
+        403
+    );
+    let (code, conn) = http(
+        "PUT",
+        &format!("{base}/integrations/vercel"),
+        "admin",
+        Some(token),
+    )
+    .await;
+    assert_eq!(code, 200, "{conn}");
+    assert!(!conn.to_string().contains("vercel_test_token"));
+    assert!(conn["token_hint"].is_string());
+
+    // Delivered, the preview fails, the agent gets the build log, fixes it
+    // and delivers again; the second commit passes and has a preview.
+    let mut events = Vec::new();
+    for _ in 0..600 {
+        let (_, e) = http(
+            "GET",
+            &format!("{base}/sessions/{sid}/events"),
+            "alice",
+            None,
+        )
+        .await;
+        events = e.as_array().cloned().unwrap_or_default();
+        let passed = events
+            .iter()
+            .any(|e| e["event"] == "pull_request_checked" && e["report"]["state"] == "passed");
+        if passed {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let reports: Vec<&Value> = events
+        .iter()
+        .filter(|e| e["event"] == "pull_request_checked")
+        .map(|e| &e["report"])
+        .collect();
+    let failed = reports
+        .iter()
+        .find(|r| r["state"] == "failed")
+        .unwrap_or_else(|| panic!("no failed report: {reports:?}"));
+    assert_eq!(failed["sent_to_agent"], 1, "{failed}");
+    assert_eq!(failed["checks"][0]["name"], "Vercel");
+    let passed = reports
+        .iter()
+        .find(|r| r["state"] == "passed")
+        .unwrap_or_else(|| panic!("the fix was not checked: {reports:?}"));
+    assert_eq!(passed["preview_url"], "https://demo-git-agent.vercel.app");
+    assert_ne!(passed["commit"], failed["commit"]);
+
+    let told: Vec<&str> = events
+        .iter()
+        .filter(|e| e["event"] == "messages_delivered")
+        .flat_map(|e| e["messages"].as_array().unwrap())
+        .filter_map(|m| m["text"].as_str())
+        .collect();
+    let about_preview = told
+        .iter()
+        .find(|t| t.contains("checks on your pull request"))
+        .unwrap_or_else(|| panic!("{told:?}"));
+    assert!(
+        about_preview.contains("Module not found: Can't resolve './ui/table'"),
+        "{about_preview}"
+    );
+    assert!(about_preview.contains("attempt 1 of 3"), "{about_preview}");
+    assert_eq!(
+        events.iter().filter(|e| e["event"] == "delivered").count(),
+        2
+    );
+    assert_eq!(
+        git(
+            &bare,
+            &["log", "--format=%s", "-1", &format!("refs/heads/{branch}")]
+        ),
+        "fix: add the missing table"
+    );
+    let log = log.lock().unwrap();
+    let vercel_call = &log
+        .iter()
+        .find(|(w, _)| w == "vercel log dpl_abc123")
+        .unwrap()
+        .1;
+    assert_eq!(vercel_call["slug"], "acme-team");
+    assert_eq!(vercel_call["auth"], "Bearer vercel_test_token");
+    assert!(
+        log.iter().all(|(w, _)| !w.starts_with("unexpected")),
+        "{log:?}"
     );
 }
 

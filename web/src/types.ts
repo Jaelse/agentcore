@@ -459,6 +459,36 @@ export interface CheckResult {
   detail: string;
 }
 
+/** A message handed to an agent by agentcore, a colleague or a person. */
+export interface DeliveredMessage {
+  message_id: string;
+  from: string;
+  to: string;
+  text: string;
+  sent_at: string;
+}
+
+export type RemoteCheckState = "pending" | "passed" | "failed" | "needs_person" | "neutral";
+
+export interface RemoteCheck {
+  name: string;
+  state: RemoteCheckState;
+  description?: string;
+  url?: string;
+}
+
+/** The repository's own checks (CI, preview deployment) on a delivered commit. */
+export interface PullRequestChecks {
+  pull_request_url: string;
+  commit: string;
+  state: "pending" | "passed" | "failed" | "needs_person" | "none" | "timed_out";
+  checks: RemoteCheck[];
+  preview_url?: string;
+  /** The failures went back to the agent (attempt number). */
+  sent_to_agent?: number;
+  note?: string;
+}
+
 export interface PullRequestProposal {
   title: string;
   body: string;
@@ -503,6 +533,8 @@ export type EventKind =
   | { event: "checks_completed"; requested_by: Principal; passed: boolean; results: CheckResult[] }
   | { event: "pull_request_proposed"; proposal: PullRequestProposal }
   | { event: "delivered"; by: Principal; branch: string; commit: string; pull_request_url: string | null }
+  | { event: "pull_request_checked"; report: PullRequestChecks }
+  | { event: "messages_delivered"; messages: DeliveredMessage[] }
   | { event: "output"; stream: "stdout" | "stderr"; line: string }
   | { event: "action_requested"; action_id: string; action: Action; requested_by: Principal }
   | { event: "policy_evaluated"; action_id: string; verdict: Verdict }
@@ -607,6 +639,12 @@ export interface IssueSummary {
   labels: string[];
   assignees: string[];
   milestone: string | null;
+}
+
+export interface TokenConnection {
+  token_hint: string;
+  updated_at: string;
+  updated_by: string;
 }
 
 export interface GitHubConnection {

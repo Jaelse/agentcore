@@ -280,6 +280,16 @@ label { display: grid; gap: 4px; font-weight: 600; font-size: 12px; color: var(-
 .checks li.warn { color: var(--attention); }
 .checks li.skipped { color: var(--muted); }
 .checks .out { color: var(--text); margin-top: 4px; }
+.conv-card.warn { border-left: 4px solid var(--attention); }
+.checks li a { color: inherit; }
+.remote-preview { margin: 8px 0 2px; }
+.remote-preview .btn { display: inline-block; text-decoration: none; }
+.remote-note { margin: 8px 0 0; color: var(--muted); }
+.conv-card.inbox { border-left: 4px solid var(--muted); }
+.conv-card.inbox summary { cursor: pointer; margin-top: 4px; }
+.conv-card.inbox .out { margin-top: 6px; white-space: pre-wrap; }
+.inbox-text { margin: 4px 0 0; }
+.chip.bad { background: var(--danger-bg, var(--attention-bg)); color: var(--danger); border-color: transparent; }
 .composer { padding: 10px; display: grid; gap: 8px; position: sticky; bottom: 8px; }
 .composer .row { justify-content: space-between; }
 

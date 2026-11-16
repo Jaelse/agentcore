@@ -184,9 +184,58 @@ sequenceDiagram
    proposes again, which updates the same pull request. The agent still has no
    GitHub credentials, and merging stays with people. Set `auto = false` to
    deliver from the session page instead.
-7. **Code review happens on GitHub**, like for anyone else. To address review
+7. **Checks and preview.** agentcore then watches the pull request's own
+   checks and preview deployment and sends failures back to the agent; see
+   [below](#after-delivery-checks-and-preview).
+8. **Code review happens on GitHub**, like for anyone else. To address review
    comments, continue the session and deliver again: the same pull request is
    updated.
+
+## After delivery: checks and preview
+
+The role's checks run in the sandbox before anything leaves it. The
+repository usually has more: GitHub Actions, and a preview deployment that
+services such as Vercel, Netlify or Render build for every pull request.
+agentcore watches those too, on the commit it delivered:
+
+```mermaid
+flowchart TB
+    D["Delivered: branch pushed,<br/>pull request opened"] --> W["agentcore asks GitHub every 30 s:<br/>check runs, commit statuses,<br/>preview deployment"]
+    W -->|"all green"| P["✓ Checks passed<br/>+ Preview link on the session"]
+    W -->|"a build or test failed"| L["agentcore reads the log<br/>(GitHub Actions job log,<br/>Vercel build log)"]
+    L --> A["Message to the agent:<br/>what failed + the log"]
+    A --> F["Agent fixes, commits,<br/>propose_pull_request"] --> D
+    W -->|"blocked, no access, cancelled"| H["! Needs a person<br/>(not sent to the agent)"]
+    A -.->|"after 3 attempts"| H
+```
+
+- **Where it shows.** The session header gets a checks chip (*Checks
+  running…*, *✓ Checks passed*, *✗ Checks failed · agent fixing*, *! Checks
+  need a person*) and a **Preview ↗** link once the preview deployment is
+  ready, so people can try the change from any device, a phone included,
+  without running anything. The conversation has one card per delivered
+  commit with each check, and the message the agent got.
+- **What goes to the agent.** Failures a change to the code can fix: a
+  failed GitHub Actions job (with its failure annotations and the end of its
+  log), a failed check run (with its summary), a failed commit status such as
+  a Vercel build. The message asks the agent to fix the cause, run the same
+  build in its sandbox, and propose again, which updates the same pull
+  request and is watched again. Department agents get it in their inbox, so
+  it reaches them in their next turn even in a later session.
+- **What goes to people.** Failures the hosting provider decided (a
+  *blocked* or *cancelled* deployment, no access, quota or billing), checks
+  that need an action on GitHub, checks that are still running after 45
+  minutes, and anything still failing after the agent has tried 3 times.
+- **Logs.** The sandbox has no network, so agentcore reads the logs and
+  hands the agent only the text: GitHub Actions logs with the GitHub token;
+  Vercel build logs with a Vercel token an admin adds under **Settings →
+  Vercel** (read access is enough; it is encrypted and agents never see it).
+  Without it, the agent learns which check failed and is asked to reproduce
+  it in its sandbox.
+
+Settings: [`[pull_request_checks]`](CONFIGURATION.md#pull_request_checks).
+The watch runs on the node that delivered; if that node restarts, the next
+delivery starts a new one.
 
 ## Whole departments on a repository
 

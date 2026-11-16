@@ -66,6 +66,7 @@ pub use rhythm::{GoalInput, GoalUpdate, ScheduleInput, ScheduleUpdate};
 pub use spending::{BudgetInput, BudgetUpdate, PriceInput};
 pub use teamwork::{
     BoardColumns, BoardConfig, GitHubConfig, GitHubConnection, GitHubUpdate, Project, ProjectInput,
+    TokenConnection,
 };
 pub use token_pool::{Lease, NewPoolToken, PoolToken};
 pub use work_items::{Acquired, NewWorkItem};

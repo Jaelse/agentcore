@@ -229,6 +229,7 @@ class AgentEvent {
       'checks_completed' => 'Checks ${r['passed'] == true ? 'passed' : 'failed'}',
       'pull_request_proposed' => 'Proposed PR: ${(r['proposal'] as Json?)?['title'] ?? ''}',
       'delivered' => 'Delivered ${r['branch']}${r['pull_request_url'] != null ? ' → ${r['pull_request_url']}' : ''}',
+      'pull_request_checked' => _prChecks(r['report']),
       'output' => _str(r['line']),
       'action_requested' => 'Requested: ${actionSummary(r['action'])}',
       'policy_evaluated' => 'Policy: ${(r['verdict'] as Json?)?['verdict']}',
@@ -260,6 +261,21 @@ class AgentEvent {
       'denied' => 'Action denied: ${o['reason']}',
       _ => 'Action completed',
     };
+  }
+
+  /// The repository's own checks on a delivered pull request, and its preview.
+  static String _prChecks(Object? r) {
+    if (r is! Json) return 'Pull request checks';
+    final state = switch (r['state']) {
+      'pending' => 'running',
+      'passed' => 'passed',
+      'failed' => r['sent_to_agent'] != null ? 'failed, sent to the agent' : 'failed',
+      'needs_person' => 'need a person',
+      'timed_out' => 'still running',
+      _ => 'none reported',
+    };
+    final preview = r['preview_url'];
+    return 'Pull request checks $state${preview is String ? ' · preview $preview' : ''}';
   }
 }
 

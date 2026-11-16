@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::{
     Action, ActionOutcome, CheckResult, DeliveredMessage, ModelCallOutcome, Principal,
-    PullRequestProposal, SessionId, SessionStatus, Verdict,
+    PullRequestChecks, PullRequestProposal, SessionId, SessionStatus, Verdict,
 };
 
 /// A single, immutable fact about a session. Events are numbered per session
@@ -95,6 +95,12 @@ pub enum EventKind {
         branch: String,
         commit: String,
         pull_request_url: Option<String>,
+    },
+    /// What the repository's own checks (CI, preview deployment) report on
+    /// the delivered commit, as agentcore watches them; recorded whenever
+    /// it changes.
+    PullRequestChecked {
+        report: PullRequestChecks,
     },
     /// A line of output produced by the agent process.
     Output {
@@ -200,6 +206,7 @@ impl EventKind {
             Self::ChecksCompleted { .. } => "checks_completed",
             Self::PullRequestProposed { .. } => "pull_request_proposed",
             Self::Delivered { .. } => "delivered",
+            Self::PullRequestChecked { .. } => "pull_request_checked",
             Self::Output { .. } => "output",
             Self::ActionRequested { .. } => "action_requested",
             Self::PolicyEvaluated { .. } => "policy_evaluated",
