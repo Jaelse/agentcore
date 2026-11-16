@@ -180,7 +180,22 @@ async fn run(
             continue;
         }
         match overall_state {
-            RemoteChecksState::Passed => state.pr_watches.passed(session),
+            RemoteChecksState::Passed => {
+                state.pr_watches.passed(session);
+                if let (Some(preview), Some(branch)) = (
+                    report.preview_url.clone(),
+                    state
+                        .manager
+                        .get(session)
+                        .ok()
+                        .and_then(|s| s.context().work_branch),
+                ) {
+                    record(state, session, report).await;
+                    crate::review::preview_ready(state, session, project.id, &branch, &preview)
+                        .await;
+                    return;
+                }
+            }
             RemoteChecksState::Failed => {
                 // The report first, then the message it announces, so the
                 // conversation reads in order.
@@ -278,7 +293,7 @@ async fn record(state: &AppState, session: SessionId, report: PullRequestChecks)
 /// Hand `text` to the agent: department agents through their mailbox (it
 /// waits for their next turn, even in a later session); others in their
 /// session as soon as it waits for input.
-async fn tell(state: &AppState, session: SessionId, text: &str) -> Result<(), String> {
+pub(crate) async fn tell(state: &AppState, session: SessionId, text: &str) -> Result<(), String> {
     let live = match state.lookup(session).await {
         Ok(SessionRef::Live(s)) => Some(s),
         _ => None,

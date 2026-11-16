@@ -38,6 +38,8 @@ pub struct Config {
     #[serde(default)]
     pub pull_request_checks: PullRequestChecksConfig,
     #[serde(default)]
+    pub review: ReviewConfig,
+    #[serde(default)]
     pub agents: Vec<AgentSpec>,
 }
 
@@ -106,6 +108,37 @@ impl Default for PullRequestChecksConfig {
             no_checks_after_secs: 300,
             max_fix_attempts: 3,
             vercel_api_url: "https://api.vercel.com".into(),
+        }
+    }
+}
+
+/// Reviewing a delivered pull request with the agent, on its preview, in a
+/// headless Chromium that agentcore runs. See docs/WAYS_OF_WORKING.md.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ReviewConfig {
+    pub enabled: bool,
+    /// The Chromium (or Chrome) to run. Default: `AGENTCORE_CHROMIUM`, then
+    /// the first one found on the `PATH` or in the usual places.
+    pub chromium: Option<std::path::PathBuf>,
+    /// Run Chromium in its own sandbox. Turn off only where it cannot start
+    /// (no user namespaces); it is always off when agentcore runs as root.
+    pub chromium_sandbox: bool,
+    /// How many review browsers may run at once on this node.
+    pub max_browsers: usize,
+    /// Close a review's browser after this long without use (it starts
+    /// again when the agent next uses it).
+    pub idle_mins: u64,
+}
+
+impl Default for ReviewConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            chromium: None,
+            chromium_sandbox: true,
+            max_browsers: 3,
+            idle_mins: 15,
         }
     }
 }

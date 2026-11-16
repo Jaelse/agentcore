@@ -86,7 +86,9 @@ the audit log proves which exact policy governed the session.
 | `department` | Default for the workers of a [department](MULTI_AGENT.md): team messaging and department files allowed, inspection commands and workspace files allowed, everything else needs approval, secrets and destructive commands denied. Longer limits (8 h, 2000 actions) for long-lived agents. |
 
 The default policy also allows reading GitHub (`github_list_*`, `github_get_*`,
-`propose_pull_request`) and requires approval for GitHub writes. A role picks
+`propose_pull_request`) and the review tools (`browser_*`, `review_show`,
+which only open the pull request's preview while a person reviews with the
+agent), and requires approval for GitHub writes. A role picks
 its policy with `policy = "..."`; see [Ways of working](WAYS_OF_WORKING.md).
 
 Department agents use tool calls named `team_list_colleagues`,

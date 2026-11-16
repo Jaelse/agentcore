@@ -42,7 +42,8 @@ pub use releases::{
 pub use session::{SessionId, SessionInfo, SessionStatus};
 pub use work::{
     ChangedFile, Changes, CheckResult, Commit, IssueRef, PullRequestChecks, PullRequestProposal,
-    RemoteCheck, RemoteCheckState, RemoteChecksState, SessionContext,
+    RemoteCheck, RemoteCheckState, RemoteChecksState, ReviewDevice, ReviewInfo, ReviewOutcome,
+    ReviewStep, ReviewVerdict, SessionContext,
 };
 
 /// Marker placed in the environment of every sandboxed agent and attached to

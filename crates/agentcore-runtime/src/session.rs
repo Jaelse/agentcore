@@ -831,6 +831,17 @@ impl Session {
             .map(|_| ())
     }
 
+    /// Record a review of the delivered pull request (started, a step the
+    /// agent showed, finished). Other kinds of events are refused.
+    pub fn record_review(&self, kind: EventKind) -> Result<(), RuntimeError> {
+        match kind {
+            EventKind::ReviewStarted { .. }
+            | EventKind::ReviewStepShown { .. }
+            | EventKind::ReviewFinished { .. } => self.emit(kind).map(|_| ()),
+            _ => Err(RuntimeError::Workspace("not a review event".into())),
+        }
+    }
+
     /// Main loop: create the sandbox, launch the agent, stream its output and
     /// wait for it to exit, be stopped or exceed its time budget.
     pub(crate) async fn run(

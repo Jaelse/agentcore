@@ -182,6 +182,26 @@ the code can fix back to the agent. See
 | `max_fix_attempts` | `3` | Times failures go back to the agent in one session before a person is needed |
 | `vercel_api_url` | `https://api.vercel.com` | Vercel's API, for build logs (the token is set in the UI) |
 
+## `[review]`
+
+Reviewing a delivered pull request with the agent: the agent shows a person
+the change on its preview, in a headless Chromium that agentcore runs. See
+[Ways of working](WAYS_OF_WORKING.md#reviewing-with-the-agent).
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Offer *Review with agent* and the browser tools (role capability `previews:review`) |
+| `chromium` | – | The Chromium or Chrome to run. Default: `AGENTCORE_CHROMIUM`, then `chromium`, `chromium-browser`, `google-chrome`, `chrome-headless-shell` on the `PATH`, then the usual macOS locations |
+| `chromium_sandbox` | `true` | Run Chromium in its own sandbox. Turn off only on hosts where it cannot start (no user namespaces); `AGENTCORE_CHROMIUM_NO_SANDBOX=1` does the same. It is always off when agentcore runs as root, as in the container image |
+| `max_browsers` | `3` | Review browsers that may run at once on this node (each uses about 200–400 MB of memory) |
+| `idle_mins` | `15` | Close a review's browser after this long without use; it starts again when the agent next uses it |
+
+The container image includes Chromium (build with
+`--build-arg REVIEW_BROWSER=false` to leave it out, about 300 MB). On a VM,
+install it with the system's package manager (`apt-get install chromium`).
+How the browser reaches a project's protected previews (Vercel's bypass
+secret, a reviewer login, other allowed sites) is set per project in the UI.
+
 ### Set in the web UI, not in the file
 
 Organisation settings live in PostgreSQL, so every node shares them, and are

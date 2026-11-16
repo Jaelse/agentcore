@@ -181,8 +181,9 @@ sequenceDiagram
 ```
 
 Built-in tools (`run_command`, `read_file`, `write_file`, `list_files`) run in
-the sandbox. Role tools (`github_*`, `propose_pull_request`) are executed by
-agentcore, but go through exactly the same policy, approval and audit steps.
+the sandbox. Role tools (`github_*`, `propose_pull_request`, and the review
+tools `browser_*` and `review_show`) are executed by agentcore, but go
+through exactly the same policy, approval and audit steps.
 
 ## Stopping
 
@@ -417,6 +418,21 @@ build logs with the Vercel connection) and sends them to the agent (department
 agents through their inbox), up to `max_fix_attempts` per session; failures a
 person must resolve are only recorded. A new delivery of the session replaces
 its watch.
+
+A person can then review the change with the agent (`review.rs`). The
+review belongs to the pull request's branch (project and branch, kept in
+memory on the node), so a follow-up session on the same branch carries it
+on. The agent's `browser_*` tools drive a headless Chromium on the server
+(`browser.rs`, the DevTools protocol over a WebSocket), one per review,
+started on first use and closed when idle. Every request the page makes is
+paused and checked first (`Fetch` interception, also in frames and workers):
+top-level pages only on the preview's origin or hosts allowed for the
+project, nothing else on a private or local address, and Vercel's bypass
+header only on requests to the preview. Screenshots are stored in
+PostgreSQL (`screenshots`) and returned to the agent as MCP image content;
+events carry only their id. When a person asks for changes and the next
+delivery's checks pass with a new preview, `pr_checks` calls
+`review::preview_ready`, which tells the agent to show what changed.
 
 ## Persistence
 

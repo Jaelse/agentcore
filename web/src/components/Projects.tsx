@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, api } from "../api";
-import type { Board, BoardItem, IssueSummary, Me, Project, SessionInfo, SystemCard, TeamRole } from "../types";
+import type {
+  Board,
+  BoardItem,
+  IssueSummary,
+  Me,
+  PreviewAccess,
+  Project,
+  SessionInfo,
+  SystemCard,
+  TeamRole,
+} from "../types";
 
 interface Props {
   me: Me;
@@ -62,6 +72,7 @@ export function Projects({ me, card, onStarted, onError }: Props) {
       </aside>
       <main className="main">
         {editing ? (
+          <>
           <ProjectForm
             project={editing === "new" ? null : editing}
             card={card}
@@ -79,6 +90,8 @@ export function Projects({ me, card, onStarted, onError }: Props) {
             onCancel={() => setEditing(null)}
             onError={onError}
           />
+          {editing !== "new" && <PreviewAccessCard project={editing} onError={onError} />}
+          </>
         ) : project ? (
           <ProjectView
             key={project.id}
@@ -517,6 +530,142 @@ function ProjectForm({
             }}
           >
             Delete project
+          </button>
+        )}
+      </div>
+    </form>
+  );
+}
+
+/** How agentcore's review browser gets into this project's previews. */
+function PreviewAccessCard({ project, onError }: { project: Project; onError: (err: unknown) => void }) {
+  const [access, setAccess] = useState<PreviewAccess | null | undefined>(undefined);
+  const [bypass, setBypass] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [hosts, setHosts] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api
+      .previewAccess(project.id)
+      .then((a) => {
+        setAccess(a);
+        setUsername(a?.username ?? "");
+        setHosts((a?.extra_hosts ?? []).join("\n"));
+      })
+      .catch(onError);
+  }, [project.id, onError]);
+
+  const save = async (body: Parameters<typeof api.savePreviewAccess>[1]) => {
+    setBusy(true);
+    try {
+      const a = await api.savePreviewAccess(project.id, body);
+      setAccess(a);
+      setBypass("");
+      setPassword("");
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form
+      className="card pad project-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void save({
+          bypass_secret: bypass.trim() || undefined,
+          username: username.trim(),
+          password: password || undefined,
+          extra_hosts: hosts
+            .split(/[\s,]+/)
+            .map((h) => h.trim())
+            .filter(Boolean),
+        });
+      }}
+    >
+      <h2>Preview access</h2>
+      <p className="muted">
+        For reviewing pull requests with the agent: agentcore opens the preview in its own browser, and the agent shows
+        you how the change works. If the previews are protected or need a login, tell agentcore how to get in. Secrets
+        are stored encrypted; the agent never sees them.
+      </p>
+      {access === undefined ? (
+        <p className="muted">Loading…</p>
+      ) : (
+        <ul className="small preview-access-state">
+          <li>
+            Vercel protection bypass:{" "}
+            {access?.bypass_hint ? <code>{access.bypass_hint}</code> : <span className="muted">not set</span>}
+          </li>
+          <li>
+            Reviewer login:{" "}
+            {access?.username ? (
+              <>
+                <code>{access.username}</code> {access.has_password ? "with a password" : <span className="muted">(no password)</span>}
+              </>
+            ) : (
+              <span className="muted">not set</span>
+            )}
+          </li>
+          {access && (
+            <li className="muted">
+              Changed {new Date(access.updated_at).toLocaleString()} by {access.updated_by}
+            </li>
+          )}
+        </ul>
+      )}
+      <div className="grid-2">
+        <label>
+          {access?.bypass_hint ? "New Vercel protection bypass secret" : "Vercel protection bypass secret"}
+          <input
+            type="password"
+            autoComplete="off"
+            value={bypass}
+            onChange={(e) => setBypass(e.target.value)}
+            placeholder="Vercel → Project → Settings → Deployment Protection"
+          />
+        </label>
+        <span />
+        <label>
+          Reviewer login: user name or email
+          <input autoComplete="off" value={username} onChange={(e) => setUsername(e.target.value)} />
+        </label>
+        <label>
+          {access?.has_password ? "New password" : "Password"}
+          <input
+            type="password"
+            autoComplete="new-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="A test account on the preview, never a real person's"
+          />
+        </label>
+      </div>
+      <label>
+        Other sites the preview may open (one per line)
+        <textarea
+          rows={2}
+          value={hosts}
+          onChange={(e) => setHosts(e.target.value)}
+          placeholder="e.g. a sign-in page: accounts.example.com or *.clerk.accounts.dev"
+        />
+      </label>
+      <div className="row">
+        <button className="btn primary" disabled={busy}>
+          {busy ? "Saving…" : "Save preview access"}
+        </button>
+        {access?.bypass_hint && (
+          <button type="button" className="btn ghost" disabled={busy} onClick={() => save({ bypass_secret: "" })}>
+            Remove bypass secret
+          </button>
+        )}
+        {access?.has_password && (
+          <button type="button" className="btn ghost" disabled={busy} onClick={() => save({ password: "" })}>
+            Remove password
           </button>
         )}
       </div>

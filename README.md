@@ -34,6 +34,7 @@ flowchart LR
 | Conversation | Agents wait after each turn; send follow-ups ("also add tests") and they continue in the same workspace and conversation. |
 | Review & delivery | *Changes* tab with commits and diff. *Deliver* runs the checks, pushes the agent's branch with agentcore's credentials, opens/updates the PR (issue link, AI disclosure) and moves the card to *In review*. |
 | Checks & preview | After delivery agentcore watches the PR's GitHub Actions, commit statuses and preview deployment (Vercel, Netlify, ...): a **Preview ↗** link to try the change from any device, and failed builds go back to the agent with their log to fix. |
+| Review with the agent | On the preview, the agent shows a reviewer step by step how the change works (screenshots in the conversation, phone or desktop size), tries what they ask, and makes the changes they request. The browser runs on the agentcore server and only opens the preview. |
 | Hostable | Single binary + static UI, PostgreSQL, Docker image, docker-compose with an isolated sandbox network, token auth with admin/operator/viewer roles. |
 | Model gateway | Agents call LLMs through agentcore with a per-session token. Real API keys are stored AES-256-GCM encrypted in PostgreSQL and never enter a sandbox; per-provider model allow-lists and per-session call limits apply. Every call is logged with token usage and full request/response. **Stop** aborts calls that are still streaming. Providers are managed in the web UI. |
 | See what the agent does | **Live view**, like a screen share: the agent's own terminal, the command it is running with its output, the model's reasoning, text and tool calls as they stream, the files it changes and the processes in its sandbox. Finished sessions can be **replayed** from a tamper-evident terminal recording. Plus a timeline of every action, policy verdict, approval and outcome. |
@@ -116,13 +117,17 @@ socket gives agentcore root-equivalent access to its host.
    to the repositories you link, plus read access to actions, checks, commit
    statuses and deployments). It is stored encrypted; agents never see it.
    Optionally add a Vercel token under **Settings → Vercel** for build logs of
-   failed previews.
+   failed previews, and per project, **Preview access** for protected
+   previews (Vercel bypass secret, reviewer login).
 2. **Projects → New project** (admin): repository, base branch, agent, default
    role, optionally the GitHub Projects board (owner + number, status column
    names, sprint field), and notes for agents.
 3. On the project's board, **Start agent** on a card, pick a role, add
    instructions if needed. Follow the conversation, answer, review the
    *Changes*, then **Deliver**.
+4. Once the pull request has a preview, **Review with agent** (phone or
+   desktop): the agent shows you on the preview how the change works, step
+   by step, tries what you ask, and makes the changes you request.
 
 ## Running opencode
 

@@ -7,6 +7,7 @@
 
 pub mod api;
 pub mod auth;
+mod browser;
 pub mod budgets;
 pub mod catalog;
 pub mod cluster;
@@ -28,6 +29,7 @@ pub mod org;
 pub mod outbox;
 mod pr_checks;
 pub mod releases;
+mod review;
 pub mod sessions;
 pub mod signing;
 pub mod teamwork;
@@ -74,6 +76,8 @@ pub struct AppState {
     pub agent_catalog: Arc<catalog::AgentCatalog>,
     /// Pull requests whose checks this node watches after delivery.
     pub(crate) pr_watches: Arc<pr_checks::Watches>,
+    /// Reviews of delivered pull requests with the agent, on this node.
+    pub(crate) reviews: Arc<review::Reviews>,
 }
 
 impl AppState {
@@ -159,6 +163,7 @@ impl AppState {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .context("building cluster HTTP client")?;
+        let reviews = Arc::new(review::Reviews::new(config.review.max_browsers));
         let state = Self {
             manager: Arc::new(manager),
             config: Arc::new(config),
@@ -173,6 +178,7 @@ impl AppState {
             templates: Arc::new(catalog),
             agent_catalog: Arc::new(agent_catalog),
             pr_watches: Arc::default(),
+            reviews,
         };
         state.reload_agents().await;
         Ok(state)
@@ -251,6 +257,13 @@ pub fn router(state: AppState) -> Router {
                 .put(teamwork::put_vercel)
                 .delete(teamwork::delete_vercel),
         )
+        .route(
+            "/projects/{id}/preview-access",
+            get(review::get_access).put(review::put_access),
+        )
+        .route("/sessions/{id}/review", post(review::start))
+        .route("/sessions/{id}/review/finish", post(review::finish))
+        .route("/sessions/{id}/screenshots/{shot}", get(review::screenshot))
         .route(
             "/projects",
             get(teamwork::list_projects).post(teamwork::create_project),

@@ -166,6 +166,31 @@ fn render_outcome(outcome: ActionOutcome) -> Value {
     }
 }
 
+/// A browser tool's result (`page` text and a `screenshot` id) as text plus
+/// the image, so the agent sees the page. The image itself is not in the
+/// audit log, only its id.
+async fn with_screenshot(
+    state: &AppState,
+    session: agentcore_core::SessionId,
+    outcome: &ActionOutcome,
+) -> Option<Value> {
+    use base64::Engine;
+    let ActionOutcome::Succeeded { output } = outcome else {
+        return None;
+    };
+    let page = output.get("page")?.as_str()?;
+    let shot = output.get("screenshot")?.as_str()?.parse().ok()?;
+    let (mime, bytes) = state.store.screenshot(session, shot).await.ok()??;
+    Some(json!({
+        "content": [
+            { "type": "text", "text": page },
+            { "type": "image", "mimeType": mime,
+              "data": base64::engine::general_purpose::STANDARD.encode(bytes) },
+        ],
+        "isError": false,
+    }))
+}
+
 pub async fn handle(
     State(state): State<AppState>,
     Path(id): Path<SessionId>,
@@ -240,7 +265,10 @@ pub async fn handle(
             match mapped {
                 Err(message) => rpc_result(&id, tool_text(message, true)),
                 Ok((action, contents)) => match session.request_action(action, contents).await {
-                    Ok(outcome) => rpc_result(&id, render_outcome(outcome)),
+                    Ok(outcome) => match with_screenshot(&state, session.id(), &outcome).await {
+                        Some(result) => rpc_result(&id, result),
+                        None => rpc_result(&id, render_outcome(outcome)),
+                    },
                     Err(RuntimeError::NotRunning) => {
                         rpc_result(&id, tool_text("the session has been stopped", true))
                     }

@@ -5,6 +5,9 @@ import type {
   CheckResult,
   GitHubConnection,
   TokenConnection,
+  PreviewAccess,
+  ReviewDevice,
+  ReviewVerdict,
   IssueSummary,
   Project,
   PullRequestProposal,
@@ -169,6 +172,13 @@ export const api = {
   vercel: () => request<TokenConnection | null>("GET", "/integrations/vercel"),
   saveVercel: (token: string) => request<TokenConnection>("PUT", "/integrations/vercel", { token }),
   deleteVercel: () => request<void>("DELETE", "/integrations/vercel"),
+  previewAccess: (project: string) =>
+    request<PreviewAccess | null>("GET", `/projects/${project}/preview-access`),
+  /** A secret left out is kept; an empty string removes it. */
+  savePreviewAccess: (
+    project: string,
+    body: { bypass_secret?: string; username?: string; password?: string; extra_hosts?: string[] },
+  ) => request<PreviewAccess>("PUT", `/projects/${project}/preview-access`, body),
   projects: () => request<Project[]>("GET", "/projects"),
   saveProject: (
     id: string | null,
@@ -191,6 +201,20 @@ export const api = {
   ) => request<SessionInfo>("POST", `/projects/${id}/sessions`, body),
   createSession: (agent: string, task: string, policy?: string) =>
     request<SessionInfo>("POST", "/sessions", { agent, task, policy: policy || undefined }),
+  /** Review the session's pull request with the agent, on its preview. */
+  startReview: (id: string, device: ReviewDevice) =>
+    request<{ session_id: string | null; note?: string }>("POST", `/sessions/${id}/review`, { device }),
+  finishReview: (id: string, verdict: ReviewVerdict, comment: string) =>
+    request<{ session_id: string | null; note?: string }>("POST", `/sessions/${id}/review/finish`, {
+      verdict,
+      comment,
+    }),
+  /** A screenshot as an object URL (revoke it when done). */
+  async screenshot(id: string, shot: string): Promise<string> {
+    const res = await fetch(`/api/v1/sessions/${id}/screenshots/${shot}`, { headers: headers() });
+    if (!res.ok) throw new ApiError(res.status, res.statusText);
+    return URL.createObjectURL(await res.blob());
+  },
   pause: (id: string) => request<SessionInfo>("POST", `/sessions/${id}/pause`),
   resume: (id: string) => request<SessionInfo>("POST", `/sessions/${id}/resume`),
   /** Type into the agent's terminal (keystrokes as a terminal sends them). */

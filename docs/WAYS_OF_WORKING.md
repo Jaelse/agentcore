@@ -57,7 +57,8 @@ policy = "default"                       # guardrails for this job
 
 # GitHub tools this job gets (everything else is not offered to the agent)
 capabilities = ["issues:read", "issues:comment", "milestones:read",
-                "board:read", "discussions:read", "pull_requests:propose"]
+                "board:read", "discussions:read", "pull_requests:propose",
+                "previews:review"]
 
 # The team's own conventions, loaded when present
 repo_docs = ["AGENTS.md", "CONTRIBUTING.md", ".github/pull_request_template.md"]
@@ -105,6 +106,7 @@ optional = false                         # optional checks report but don't bloc
 | `board:read` / `board:write` | `github_list_board_items` (columns, sprint) / `github_set_board_status` |
 | `discussions:read` / `discussions:write` | `github_list_discussions`, `github_get_discussion` / `github_comment_on_discussion` |
 | `pull_requests:propose` | `propose_pull_request` |
+| `previews:review` | `browser_open`, `browser_look`, `browser_click`, `browser_type`, `browser_select`, `browser_press`, `browser_scroll`, `browser_back`, `browser_device`, `browser_sign_in`, `review_show` (only work while a person [reviews with the agent](#reviewing-with-the-agent)) |
 
 Tools only ever act on the project's own repository and board. Every call
 is still checked by the guardrail policy (e.g. the default policy lets a
@@ -187,7 +189,11 @@ sequenceDiagram
 7. **Checks and preview.** agentcore then watches the pull request's own
    checks and preview deployment and sends failures back to the agent; see
    [below](#after-delivery-checks-and-preview).
-8. **Code review happens on GitHub**, like for anyone else. To address review
+8. **Review it with the agent.** Once there is a preview, press *Review with
+   agent*: the agent opens the preview and shows you, step by step, how the
+   change works, and tries whatever you ask; see
+   [below](#reviewing-with-the-agent). Works from a phone.
+9. **Code review happens on GitHub**, like for anyone else. To address review
    comments, continue the session and deliver again: the same pull request is
    updated.
 
@@ -236,6 +242,65 @@ flowchart TB
 Settings: [`[pull_request_checks]`](CONFIGURATION.md#pull_request_checks).
 The watch runs on the node that delivered; if that node restarts, the next
 delivery starts a new one.
+
+## Reviewing with the agent
+
+People who do not read code can still review the change as a user, from any
+device: the agent shows them. On a session whose pull request has a preview,
+press **Review with agent** and choose **Phone** or **Desktop** (the screen
+size the agent uses).
+
+```mermaid
+flowchart TB
+    S["Review with agent<br/>(phone or desktop)"] --> P["Agent writes a short test plan<br/>from the pull request and issue"]
+    P --> B["Agent goes through it on the preview,<br/>in agentcore's browser"]
+    B --> C["Each step in the conversation:<br/>screenshot, what it did, ✓ or !"]
+    C --> Q["You ask: “what if the name is empty?”<br/>It tries it and shows you"]
+    Q --> V{"You decide"}
+    V -->|"✓ Approve"| G["Comment on the pull request:<br/>approved + the steps shown"]
+    V -->|"Request changes"| F["Agent makes them, delivers again"]
+    F --> N["New preview ready (checks passed)"] --> B2["Agent shows you what changed"] --> V
+```
+
+- **What you see.** Each step is a card in the conversation: the screen as
+  the agent saw it, what it did and expected, and whether it worked (✓) or
+  not (!). A bar under the conversation has **✓ Approve** and **Request
+  changes**. Ask the agent anything in the message box meanwhile; it shows
+  you the result the same way.
+- **Approve** posts a comment on the pull request with who approved it and
+  the steps the agent showed. Merging stays a separate step on GitHub.
+- **Request changes** asks for what you write (and whatever you asked during
+  the review). The agent changes the code and delivers again; once the new
+  preview is ready (its checks passed), agentcore tells the agent, and it
+  shows you what changed. The same comment goes on the pull request.
+- **Later is fine.** If the agent's session has ended, the review starts a
+  new session on the same branch (the same pull request); a department
+  agent gets it in its inbox.
+
+**How the browser works.** The agent's sandbox has no network, so the
+browser (a headless Chromium) runs on the agentcore server and the agent
+drives it with tools: it reads each page as text with numbered controls and
+a screenshot, clicks, types and scrolls. The browser only opens pages on the
+pull request's preview (and sites an admin allows for the project, such as
+a sign-in page); it refuses private and local network addresses that are not
+the preview itself, never opens new windows, and closes after 15 minutes
+without use. Every step is in the audit log.
+
+**Protected previews and logins.** Under **Projects → Edit → Preview
+access**, an admin can save:
+
+- Vercel's **Protection Bypass for Automation** secret, if previews are
+  behind Vercel Authentication (Vercel → Project → Settings → Deployment
+  Protection). It is only sent to the preview.
+- A **reviewer login** for a test account on the preview. The agent calls
+  `browser_sign_in` and agentcore types it; the agent never sees the
+  password.
+- **Other sites** the preview may send the browser to, such as an external
+  sign-in page (`accounts.example.com`, `*.clerk.accounts.dev`).
+
+The server needs Chromium (the container image includes it); see
+[`[review]`](CONFIGURATION.md#review). Open reviews live on the node that
+runs them: after a restart, start the review again.
 
 ## Whole departments on a repository
 

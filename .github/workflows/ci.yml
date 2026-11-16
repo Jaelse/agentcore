@@ -21,6 +21,9 @@ jobs:
           --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 20
     env:
       AGENTCORE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      # The review tests drive the runner's Chrome, whose sandbox cannot
+      # start on these runners.
+      AGENTCORE_CHROMIUM_NO_SANDBOX: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

@@ -61,6 +61,10 @@ pub enum Capability {
     /// Propose a pull request (title/body) for a human to deliver.
     #[serde(rename = "pull_requests:propose")]
     PullRequestsPropose,
+    /// Show a reviewer the delivered change on its preview, in a browser
+    /// agentcore runs (only while a person reviews with the agent).
+    #[serde(rename = "previews:review")]
+    PreviewsReview,
 }
 
 /// Board columns, mapped to the project's real column names per project.
@@ -342,6 +346,21 @@ pub struct IssueContext {
     pub comments: Vec<(String, String)>,
 }
 
+/// The browser and review tools (`previews:review`).
+pub const REVIEW_TOOLS: &[&str] = &[
+    "browser_open",
+    "browser_look",
+    "browser_click",
+    "browser_type",
+    "browser_select",
+    "browser_press",
+    "browser_scroll",
+    "browser_back",
+    "browser_device",
+    "browser_sign_in",
+    "review_show",
+];
+
 /// Tool names offered per capability (must match the server's tool table).
 pub fn tools_for(capability: Capability) -> &'static [&'static str] {
     match capability {
@@ -355,6 +374,7 @@ pub fn tools_for(capability: Capability) -> &'static [&'static str] {
         Capability::DiscussionsRead => &["github_list_discussions", "github_get_discussion"],
         Capability::DiscussionsWrite => &["github_comment_on_discussion"],
         Capability::PullRequestsPropose => &["propose_pull_request"],
+        Capability::PreviewsReview => REVIEW_TOOLS,
     }
 }
 

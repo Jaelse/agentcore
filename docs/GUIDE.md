@@ -90,11 +90,17 @@ Reference: [Spending and budgets](MULTI_AGENT.md#spending-and-budgets).
    If the app is previewed on **Vercel**, add a Vercel token under
    **Settings → Vercel** so the agent also gets the build log of a failed
    preview. The session then shows a **Preview ↗** link to try the change,
-   from a phone too.
+   from a phone too, and **Review with agent**: the agent opens the preview
+   and shows you step by step how the change works.
 2. **Projects → New project**: the repository, its default branch, and
    notes for the team (how to build and test, conventions). Protect the
    default branch with required reviews on GitHub, so every agent pull
    request needs a person.
+3. **Projects → Edit → Preview access**, if the previews are protected or
+   need a login: Vercel's *Protection Bypass for Automation* secret, a
+   reviewer login for a test account, and other sites the preview may open
+   (such as a sign-in page). The review browser runs on the agentcore
+   server and needs Chromium there (the container image has it).
 
 Reference: [Ways of working](WAYS_OF_WORKING.md),
 [Working on a repository](MULTI_AGENT.md#working-on-a-repository).

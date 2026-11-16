@@ -43,6 +43,8 @@ class _SessionScreenState extends State<SessionScreen> {
     'pull_request_proposed',
     'delivered',
     'pull_request_checked',
+    'review_started',
+    'review_finished',
   };
 
   @override

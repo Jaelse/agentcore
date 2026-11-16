@@ -4,7 +4,8 @@ use uuid::Uuid;
 
 use crate::{
     Action, ActionOutcome, CheckResult, DeliveredMessage, ModelCallOutcome, Principal,
-    PullRequestChecks, PullRequestProposal, SessionId, SessionStatus, Verdict,
+    PullRequestChecks, PullRequestProposal, ReviewInfo, ReviewStep, ReviewVerdict, SessionId,
+    SessionStatus, Verdict,
 };
 
 /// A single, immutable fact about a session. Events are numbered per session
@@ -101,6 +102,22 @@ pub enum EventKind {
     /// it changes.
     PullRequestChecked {
         report: PullRequestChecks,
+    },
+    /// A person started reviewing the delivered pull request with the
+    /// agent, on its preview.
+    ReviewStarted {
+        review: ReviewInfo,
+    },
+    /// The agent showed the reviewer a step on the preview.
+    ReviewStepShown {
+        step: ReviewStep,
+    },
+    /// The reviewer finished the review.
+    ReviewFinished {
+        verdict: ReviewVerdict,
+        by: Principal,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        comment: String,
     },
     /// A line of output produced by the agent process.
     Output {
@@ -207,6 +224,9 @@ impl EventKind {
             Self::PullRequestProposed { .. } => "pull_request_proposed",
             Self::Delivered { .. } => "delivered",
             Self::PullRequestChecked { .. } => "pull_request_checked",
+            Self::ReviewStarted { .. } => "review_started",
+            Self::ReviewStepShown { .. } => "review_step_shown",
+            Self::ReviewFinished { .. } => "review_finished",
             Self::Output { .. } => "output",
             Self::ActionRequested { .. } => "action_requested",
             Self::PolicyEvaluated { .. } => "policy_evaluated",

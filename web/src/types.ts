@@ -489,6 +489,40 @@ export interface PullRequestChecks {
   note?: string;
 }
 
+export type ReviewDevice = "phone" | "desktop";
+
+/** A person reviewing the delivered pull request with the agent, on its preview. */
+export interface ReviewInfo {
+  pull_request_url: string;
+  preview_url: string;
+  device: ReviewDevice;
+  reviewer: string;
+}
+
+export type ReviewOutcome = "as_expected" | "problem" | "info";
+
+/** A step the agent showed the reviewer on the preview. */
+export interface ReviewStep {
+  title: string;
+  note?: string;
+  outcome: ReviewOutcome;
+  url: string;
+  /** Screenshot id: GET /sessions/{id}/screenshots/{shot}. */
+  screenshot?: string;
+}
+
+export type ReviewVerdict = "approved" | "changes_requested";
+
+/** How agentcore's review browser gets into a project's previews (no secrets). */
+export interface PreviewAccess {
+  bypass_hint?: string;
+  username?: string;
+  has_password: boolean;
+  extra_hosts: string[];
+  updated_at: string;
+  updated_by: string;
+}
+
 export interface PullRequestProposal {
   title: string;
   body: string;
@@ -534,6 +568,9 @@ export type EventKind =
   | { event: "pull_request_proposed"; proposal: PullRequestProposal }
   | { event: "delivered"; by: Principal; branch: string; commit: string; pull_request_url: string | null }
   | { event: "pull_request_checked"; report: PullRequestChecks }
+  | { event: "review_started"; review: ReviewInfo }
+  | { event: "review_step_shown"; step: ReviewStep }
+  | { event: "review_finished"; verdict: ReviewVerdict; by: Principal; comment?: string }
   | { event: "messages_delivered"; messages: DeliveredMessage[] }
   | { event: "output"; stream: "stdout" | "stderr"; line: string }
   | { event: "action_requested"; action_id: string; action: Action; requested_by: Principal }
