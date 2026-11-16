@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
-import type { AgentEvent, CheckResult, Me, PullRequestChecks, SessionInfo } from "../types";
+import type { AgentEvent, CheckResult, Me, PullRequestChecks, ReviewStep, SessionInfo } from "../types";
 import { actionSummary, principalLabel } from "../types";
+import { ReviewBar, ReviewStepCard, reviewState } from "./Review";
 
 type Item =
   | { kind: "task"; text: string; by: string; at: string }
@@ -12,7 +13,8 @@ type Item =
   | { kind: "proposal"; title: string; body: string; at: string }
   | { kind: "delivered"; url: string | null; branch: string; by: string; at: string }
   | { kind: "remote"; report: PullRequestChecks; at: string }
-  | { kind: "inbox"; from: string; text: string; at: string };
+  | { kind: "inbox"; from: string; text: string; at: string }
+  | { kind: "step"; step: ReviewStep; at: string };
 
 function build(events: AgentEvent[]): Item[] {
   const items: Item[] = [];
@@ -80,6 +82,28 @@ function build(events: AgentEvent[]): Item[] {
         else items.push(item);
         break;
       }
+      case "review_started":
+        items.push({
+          kind: "note",
+          text: `${e.review.reviewer} is reviewing the pull request with the agent, on the ${e.review.device} preview`,
+          at: e.timestamp,
+          tone: "attention",
+        });
+        break;
+      case "review_step_shown":
+        items.push({ kind: "step", step: e.step, at: e.timestamp });
+        break;
+      case "review_finished":
+        items.push({
+          kind: "note",
+          text:
+            e.verdict === "approved"
+              ? `${principalLabel(e.by)} approved the pull request after the review${e.comment ? `: “${e.comment}”` : ""}`
+              : `${principalLabel(e.by)} asked for changes${e.comment ? `: “${e.comment}”` : ""}`,
+          at: e.timestamp,
+          tone: e.verdict === "approved" ? "ok" : "attention",
+        });
+        break;
       case "paused":
         items.push({ kind: "note", text: `Paused by ${principalLabel(e.by)}`, at: e.timestamp, tone: "attention" });
         break;
@@ -127,6 +151,7 @@ export function Conversation({
   const [sending, setSending] = useState(false);
   const end = useRef<HTMLDivElement>(null);
   const canSend = info.status === "awaiting_input" && me.role !== "viewer";
+  const review = reviewState(events);
 
   useEffect(() => {
     end.current?.scrollIntoView({ block: "nearest" });
@@ -148,9 +173,10 @@ export function Conversation({
   return (
     <div className="conversation">
       {items.map((item, i) => (
-        <ConversationItem key={i} item={item} />
+        <ConversationItem key={i} item={item} sessionId={info.id} />
       ))}
       <div ref={end} />
+      <ReviewBar sessionId={info.id} state={review} canAct={me.role !== "viewer"} onError={onError} />
       {canSend && (
         <form
           className="composer card"
@@ -161,7 +187,11 @@ export function Conversation({
         >
           <textarea
             rows={3}
-            placeholder="Answer a question, correct the course, or ask for more work…"
+            placeholder={
+              review.kind === "open"
+                ? "Ask the agent to show or try something on the preview…"
+                : "Answer a question, correct the course, or ask for more work…"
+            }
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
@@ -182,7 +212,7 @@ export function Conversation({
   );
 }
 
-function ConversationItem({ item }: { item: Item }) {
+function ConversationItem({ item, sessionId }: { item: Item; sessionId: string }) {
   const time = <time className="muted small">{new Date(item.at).toLocaleTimeString()}</time>;
   switch (item.kind) {
     case "task":
@@ -246,6 +276,8 @@ function ConversationItem({ item }: { item: Item }) {
       );
     case "remote":
       return <RemoteChecksCard report={item.report} time={time} />;
+    case "step":
+      return <ReviewStepCard sessionId={sessionId} step={item.step} time={time} />;
     case "inbox": {
       // Long messages (build logs) start folded: the first line says what it is.
       const [first, ...rest] = item.text.split("\n");

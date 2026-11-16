@@ -1885,6 +1885,7 @@ async fn build_agent_session(
     }
     let mut repo = None;
     let mut mirror_cell = None;
+    let mut review_cell = None;
 
     // Workers of a department linked to a project get the repository: a
     // checkout of their work item's branch (with sandbox access), GitHub
@@ -1892,13 +1893,14 @@ async fn build_agent_session(
     // and delivery as a pull request.
     if let Some((project, role)) = linked {
         let (gh, config, token) = state.require_github().await?;
-        let github = crate::teamwork::GitHubTools::new(Some(gh), &project, &role);
+        let (github, cell) = crate::teamwork::project_tools(state, Some(gh), &project, &role);
         let github_tools: Vec<String> = github
             .definitions()
             .iter()
             .filter_map(|d| d["name"].as_str().map(String::from))
             .collect();
-        tools.push(Arc::new(github));
+        tools.push(github);
+        review_cell = cell;
         context.role = Some(role.name.clone());
         context.project_id = Some(project.id);
         context.project_name = Some(project.name.clone());
@@ -1994,6 +1996,9 @@ async fn build_agent_session(
     };
     if let Some(cell) = mirror_cell {
         let _ = cell.set(state.mirror_path(&session));
+    }
+    if let Some(cell) = review_cell {
+        let _ = cell.set(session.id());
     }
     // A session carried on did not get a new prompt: its mail is delivered
     // as usual once it waits for input.

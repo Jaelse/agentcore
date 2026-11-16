@@ -751,6 +751,10 @@ pub struct StartRequest {
     pub agent: Option<String>,
     #[serde(default)]
     pub policy: Option<String>,
+    /// Carry on this existing branch (and its pull request) instead of
+    /// starting a new one, e.g. to review or change delivered work.
+    #[serde(default)]
+    pub branch: Option<String>,
 }
 
 /// Start a session on a project, or (with `resume`) carry one on that the
@@ -786,11 +790,15 @@ pub async fn start_session(
         }
     };
     let id_hint = Uuid::now_v7().to_string();
-    let work_branch = role.branch_name(
-        issue.as_ref().map(|i| i.number),
-        issue.as_ref().map_or(&task, |i| &i.title),
-        &id_hint,
-    );
+    let continues = req.branch.is_some();
+    let work_branch = match &req.branch {
+        Some(branch) => branch.clone(),
+        None => role.branch_name(
+            issue.as_ref().map(|i| i.number),
+            issue.as_ref().map_or(&task, |i| &i.title),
+            &id_hint,
+        ),
+    };
     let context = SessionContext {
         role: Some(role.name.clone()),
         project_id: Some(project.id),
@@ -829,7 +837,7 @@ pub async fn start_session(
         project_notes: project.notes.clone(),
     };
     let models = state.store.enabled_endpoints().await?;
-    let tools = GitHubTools::new(Some(gh.clone()), project, &role);
+    let (tools, session_cell) = project_tools(state, Some(gh.clone()), project, &role);
     // The mirror path is per session; the session id is only known after
     // creation, so the setup reads it lazily through a shared cell.
     let mirror_cell: Arc<std::sync::OnceLock<PathBuf>> = Arc::default();
@@ -842,7 +850,7 @@ pub async fn start_session(
             repo: project.repo_name.clone(),
             branch: project.default_branch.clone(),
             work_branch,
-            resume: false,
+            resume: continues,
             mirror: PathBuf::new(),
         },
     };
@@ -857,7 +865,7 @@ pub async fn start_session(
         models,
         role: Some(role.clone()),
         workspace: Some(Arc::new(setup)),
-        tools: Some(Arc::new(tools)),
+        tools: Some(tools),
         work_item: Some(work_item),
         context,
         ..Default::default()
@@ -865,8 +873,15 @@ pub async fn start_session(
     let Some(resume) = resume else {
         let session = state.manager.create(request, by.clone(), options)?;
         let _ = mirror_cell.set(state.mirror_path(&session));
+        if let Some(cell) = &session_cell {
+            let _ = cell.set(session.id());
+        }
         state.persist_new(&session, spec).await;
         state.follow(session.clone());
+        if continues {
+            // Work on a branch that was already announced.
+            return Ok(session);
+        }
         announce_start(
             state,
             gh,
@@ -882,7 +897,36 @@ pub async fn start_session(
     // knows about it.
     let session = state.manager.resume(request, resume, options)?;
     let _ = mirror_cell.set(state.mirror_path(&session));
+    if let Some(cell) = &session_cell {
+        let _ = cell.set(session.id());
+    }
     Ok(session)
+}
+
+/// The tools of a project session: GitHub for the role, plus the browser
+/// and review tools when the role reviews previews. The cell must be set to
+/// the session's id once it exists.
+pub(crate) fn project_tools(
+    state: &AppState,
+    gh: Option<GitHub>,
+    project: &Project,
+    role: &Role,
+) -> (
+    Arc<dyn ToolHandler>,
+    Option<Arc<std::sync::OnceLock<SessionId>>>,
+) {
+    let github: Arc<dyn ToolHandler> = Arc::new(GitHubTools::new(gh, project, role));
+    let reviews = role
+        .capabilities
+        .contains(&agentcore_roles::Capability::PreviewsReview)
+        && state.config.review.enabled;
+    if !reviews {
+        return (github, None);
+    }
+    let review = crate::review::ReviewTools::new(state, project.id);
+    let cell = review.session.clone();
+    let tools = crate::org::Toolset(vec![github, Arc::new(review)]);
+    (Arc::new(tools), Some(cell))
 }
 
 /// Tell the issue that an agent started working on it.

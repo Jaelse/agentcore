@@ -230,6 +230,12 @@ class AgentEvent {
       'pull_request_proposed' => 'Proposed PR: ${(r['proposal'] as Json?)?['title'] ?? ''}',
       'delivered' => 'Delivered ${r['branch']}${r['pull_request_url'] != null ? ' → ${r['pull_request_url']}' : ''}',
       'pull_request_checked' => _prChecks(r['report']),
+      'review_started' =>
+        '${(r['review'] as Json?)?['reviewer'] ?? 'Someone'} is reviewing with the agent on the preview',
+      'review_step_shown' => _reviewStep(r['step']),
+      'review_finished' =>
+        '${principalLabel(r['by'])} ${r['verdict'] == 'approved' ? 'approved the pull request' : 'asked for changes'}'
+            '${(r['comment'] as String?)?.isNotEmpty == true ? ': ${r['comment']}' : ''}',
       'output' => _str(r['line']),
       'action_requested' => 'Requested: ${actionSummary(r['action'])}',
       'policy_evaluated' => 'Policy: ${(r['verdict'] as Json?)?['verdict']}',
@@ -264,6 +270,16 @@ class AgentEvent {
   }
 
   /// The repository's own checks on a delivered pull request, and its preview.
+  static String _reviewStep(Object? r) {
+    if (r is! Json) return 'Review step';
+    final mark = switch (r['outcome']) {
+      'as_expected' => '✓ ',
+      'problem' => '! ',
+      _ => '',
+    };
+    return 'Shown: $mark${r['title'] ?? ''}';
+  }
+
   static String _prChecks(Object? r) {
     if (r is! Json) return 'Pull request checks';
     final state = switch (r['state']) {

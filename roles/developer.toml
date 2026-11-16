@@ -10,6 +10,7 @@ capabilities = [
   "board:read",
   "discussions:read",
   "pull_requests:propose",
+  "previews:review",
 ]
 
 # The team's own conventions. Whatever exists is given to the agent verbatim.

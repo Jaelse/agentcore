@@ -972,6 +972,23 @@ fn describe(kind: &EventKind) -> (Level, String) {
                     .unwrap_or_default()
             ),
         ),
+        EventKind::ReviewStarted { review } => (
+            Info,
+            format!(
+                "{} started reviewing {} with the agent on {}",
+                review.reviewer, review.pull_request_url, review.preview_url
+            ),
+        ),
+        EventKind::ReviewStepShown { step } => (
+            Info,
+            format!(
+                "review step shown: {} ({:?}) on {}",
+                step.title, step.outcome, step.url
+            ),
+        ),
+        EventKind::ReviewFinished { verdict, by, .. } => {
+            (Info, format!("review finished by {by}: {verdict:?}"))
+        }
         EventKind::PullRequestChecked { report } => {
             use agentcore_core::RemoteChecksState as S;
             let level = match report.state {

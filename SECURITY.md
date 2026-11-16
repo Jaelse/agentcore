@@ -108,6 +108,11 @@ do, and every attempt is recorded.
       agents), and give every node the same master key and operator list.
 - [ ] Set organisation limits (departments, agents per department) and each
       node's `max_agents` to what you can supervise and pay for.
+- [ ] Reviews with the agent run a browser on the agentcore host. Give the
+      reviewer login a test account with no real data, keep Chromium's own
+      sandbox on (`[review] chromium_sandbox`) unless the host cannot run it,
+      and turn reviews off (`[review] enabled = false`) where previews must
+      not be opened from the agentcore network.
 - [ ] Business data: give PostgreSQL sources a database user that can only
       `SELECT` the tables departments need (queries also run in a read-only
       transaction with a time limit, but a read-only role is the real
@@ -164,6 +169,14 @@ do, and every attempt is recorded.
   organisation or changes it; review drafts as if a stranger wrote them.
 * Budgets act on recorded costs with a few seconds of delay; calls in flight
   can take spending over a limit. Keep a spending limit at the provider.
+* The review browser runs code an agent wrote (the preview) on the agentcore
+  host. Every HTTP request it makes is checked: pages only on the preview and
+  hosts allowed for the project, and nothing else on private or local
+  addresses. The check resolves names itself, so a name that changes its
+  address between the check and Chromium's own lookup (DNS rebinding) can
+  slip past it, and WebSocket and WebRTC connections are not intercepted.
+  Run agentcore where its network holds nothing a preview must not reach, or
+  turn reviews off.
 
 ## Reporting vulnerabilities
 

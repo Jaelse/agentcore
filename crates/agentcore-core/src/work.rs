@@ -160,3 +160,57 @@ pub enum RemoteCheckState {
     /// Skipped, neutral or cancelled: does not count either way.
     Neutral,
 }
+
+/// A person reviewing a delivered pull request together with the agent: the
+/// agent uses the preview in a browser run by agentcore and shows each step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewInfo {
+    pub pull_request_url: String,
+    pub preview_url: String,
+    /// `phone` or `desktop`: the screen size the agent starts with.
+    pub device: ReviewDevice,
+    /// The person reviewing.
+    pub reviewer: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewDevice {
+    #[default]
+    Phone,
+    Desktop,
+}
+
+/// One step the agent showed the reviewer: what it did on the preview, what
+/// it expected, and the screen afterwards.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewStep {
+    pub title: String,
+    /// What the agent did and what it expected, in plain words.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
+    pub outcome: ReviewOutcome,
+    /// The page the screenshot shows.
+    pub url: String,
+    /// Id of the screenshot (`GET /sessions/{id}/screenshots/{shot}`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screenshot: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewOutcome {
+    /// It worked the way the change is meant to.
+    AsExpected,
+    /// Something did not work or looked wrong.
+    Problem,
+    /// Just showing something (no expectation).
+    Info,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewVerdict {
+    Approved,
+    ChangesRequested,
+}

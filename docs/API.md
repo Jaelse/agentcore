@@ -79,6 +79,9 @@ before).
 | `GET /sessions/{id}/changes` | V | Commits, files and diff against the base commit (`null` for non-repository sessions) |
 | `POST /sessions/{id}/checks` | O | Run the role's checks: `{passed, checks: [...]}` |
 | `POST /sessions/{id}/deliver` | O | `{title?, body?, draft?}` (defaults from the agent's proposal) → `{branch, commit, pull_request: {number, url}, checks}`, or **409** `{error, checks}` when a required check fails |
+| `POST /sessions/{id}/review` | O | Review the pull request with the agent on its latest preview: `{device: "phone" \| "desktop"}` → `{session_id}` (the session the review runs in: this one, or a new session on the same branch when this one has ended) or `{session_id: null, note}` (a department agent's inbox). **409** when there is no preview yet or the server has no Chromium. See [Reviewing with the agent](WAYS_OF_WORKING.md#reviewing-with-the-agent) |
+| `POST /sessions/{id}/review/finish` | O | `{verdict: "approved" \| "changes_requested", comment?}`: comments on the pull request; for changes, the agent makes them and shows the new preview → `{session_id}`. **409** when no review is open |
+| `GET /sessions/{id}/screenshots/{shot}` | V | A screenshot of the review browser (JPEG) |
 | `GET /sessions/{id}/live` | V | Live view frames (SSE), see below |
 | `POST /sessions/{id}/pause` | O | Freeze the agent and everything it runs → session info |
 | `POST /sessions/{id}/resume` | O | Continue after a pause → session info |
@@ -98,7 +101,9 @@ before).
 | `DELETE /projects/{id}` | A | Delete (sessions and audit logs are kept) |
 | `GET /projects/{id}/board` | V | `{board: {title, columns, current_iteration, items[]}, config}` |
 | `GET /projects/{id}/issues?state=open` | V | Issues (when the project has no board) |
-| `POST /projects/{id}/sessions` | O | Start an agent: `{issue_number?, task?, role?, agent?, policy?}` |
+| `POST /projects/{id}/sessions` | O | Start an agent: `{issue_number?, task?, role?, agent?, policy?, branch?}` (`branch`: carry on that existing branch and its pull request instead of a new one) |
+| `GET /projects/{id}/preview-access` | O | How the review browser gets into previews: `{bypass_hint?, username?, has_password, extra_hosts[], updated_at, updated_by}` or `null` (never the secrets) |
+| `PUT /projects/{id}/preview-access` | A | `{bypass_secret?, username?, password?, extra_hosts?}`: a secret left out is kept, an empty string removes it |
 | `GET /roles` | V | Roles with tools, checks, workflow and digest |
 | `GET /integrations/github` | O | Connection (token hint only) |
 | `PUT /integrations/github` | A | `{token?, api_url, web_url, commit_name, commit_email}` |
@@ -168,6 +173,7 @@ reconnect with `?after=<last seq>`. Event types: `session_created`,
 `approval_requested`, `approval_resolved`, `action_completed`, `model_call`,
 `user_message`, `messages_delivered`, `checks_completed`, `pull_request_proposed`, `delivered`,
 `pull_request_checked` (the repository's own checks on the delivered commit: `{report: {pull_request_url, commit, state, checks[], preview_url?, sent_to_agent?, note?}}`, with `state` one of `pending`, `passed`, `failed`, `needs_person`, `none`, `timed_out`),
+`review_started` (`{review: {pull_request_url, preview_url, device, reviewer}}`), `review_step_shown` (`{step: {title, note?, outcome, url, screenshot?}}`, `outcome` one of `as_expected`, `problem`, `info`), `review_finished` (`{verdict, by, comment?}`),
 `status_changed`, `paused`, `resumed`, `session_recovered` (another node carried the session on: `{node, reason}`), `stop_requested`, `turn_ended`,
 `recording_closed`, `session_ended`. The same JSON objects form the audit log.
 Session statuses: `pending`, `running`, `awaiting_approval`, `awaiting_input`,
@@ -279,6 +285,7 @@ MCP over Streamable HTTP (JSON responses, protocol `2025-06-18`). Methods:
 | `write_file {path, content}` | `file_write` | Audit records the SHA-256 of the content |
 | `list_files {path?}` | `exec` (`ls -la`) | |
 | `github_*`, `propose_pull_request` | `tool_call` | Only those the session's role allows; see [Ways of working](WAYS_OF_WORKING.md) |
+| `browser_*`, `review_show` | `tool_call` | Roles with `previews:review`; work only while a person reviews with the agent. Browser results are the page as text plus an image content item (the screenshot); the audit log keeps the screenshot's id, not the image ([Reviewing with the agent](WAYS_OF_WORKING.md#reviewing-with-the-agent)) |
 | `team_*` | `tool_call` | Department agents: messages, department files, goals ([Agent tools](MULTI_AGENT.md#agent-tools)) |
 | `data_list_sources`, `data_query` | `tool_call` | Workers of departments granted business data ([Business data](MULTI_AGENT.md#business-data)) |
 | `insights_*` | `tool_call` | Workers of departments granted `insights`: metrics and proposals ([The retrospective](MULTI_AGENT.md#the-retrospective)) |

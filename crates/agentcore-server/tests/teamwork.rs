@@ -1614,3 +1614,271 @@ fn agent_home(data: &std::path::Path, context: &Value) -> std::path::PathBuf {
         .join(context["org_agent_id"].as_str().unwrap())
         .join("home")
 }
+
+/// The agent during a review: walks the preview and shows the step; after
+/// "changes" it commits a fix and proposes again; once the new preview is
+/// ready it shows the change.
+const REVIEWING_AGENT: &str = r#"
+mcp() { curl -s -X POST "$AGENTCORE_GATEWAY_URL" -H "Authorization: Bearer $AGENTCORE_GATEWAY_TOKEN" -H 'Content-Type: application/json' -d "$1"; echo; }
+call() { mcp "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"$1\",\"arguments\":$2}}"; }
+case "$0" in
+  *"Commit messages follow the convention"*)
+    git commit -q --amend -m 'feat: add hello file'
+    call propose_pull_request '{"title":"feat: say hello","body":"Adds hello.txt as requested in #7."}' ;;
+  *"wants to review your pull request"*)
+    call browser_open '{"url":"/"}' | grep -o '\[1\] textbox \\"Name\\"'
+    call browser_type '{"ref":1,"text":"Ana"}' > /dev/null
+    call browser_click '{"ref":2}' | grep -o 'Added Ana'
+    call review_show '{"title":"Add a customer","note":"Typed Ana and pressed Add; expected her in the list.","outcome":"as_expected"}' ;;
+  *"asked for changes"*)
+    echo hi > hi.txt && git add hi.txt && git commit -qm 'fix: greet customers'
+    call propose_pull_request '{"title":"feat: say hello","body":"Adds hello.txt as requested in #7."}' ;;
+  *"new preview with your changes is ready"*)
+    call browser_open '{}' > /dev/null
+    call review_show '{"title":"The greeting","outcome":"as_expected"}' ;;
+  *) echo "other: $0" ;;
+esac
+"#;
+
+/// A Chromium for the review tests: `AGENTCORE_CHROMIUM`, or one on the PATH.
+fn has_chromium() -> bool {
+    if std::env::var_os("AGENTCORE_CHROMIUM").is_some() {
+        return true;
+    }
+    let names = [
+        "chromium",
+        "chromium-browser",
+        "google-chrome",
+        "google-chrome-stable",
+    ];
+    std::env::var_os("PATH").is_some_and(|p| {
+        std::env::split_paths(&p).any(|d| names.iter().any(|n| d.join(n).is_file()))
+    })
+}
+
+/// A preview of the app: a form that adds a customer. Records the bypass
+/// secret it receives.
+async fn mock_preview(seen: Log) -> String {
+    let app = axum::Router::new().route(
+        "/",
+        get(move |headers: axum::http::HeaderMap| {
+            let seen = seen.clone();
+            async move {
+                let secret = headers
+                    .get("x-vercel-protection-bypass")
+                    .and_then(|h| h.to_str().ok())
+                    .map(String::from);
+                seen.lock().unwrap().push(("preview".into(), json!(secret)));
+                axum::response::Html(
+                    r#"<html><head><title>Customers</title></head><body>
+                    <form onsubmit="event.preventDefault(); document.getElementById('out').textContent = 'Added ' + document.getElementById('name').value;">
+                      <label for="name">Name</label><input id="name"><button type="submit">Add customer</button>
+                    </form><p id="out"></p></body></html>"#,
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}/")
+}
+
+/// Every commit's checks pass, with `preview` as its preview deployment.
+fn passing_routes(router: axum::Router, preview: String) -> axum::Router {
+    router
+        .route(
+            "/repos/acme/demo/commits/{sha}/status",
+            get(|| async {
+                Json(json!({ "statuses": [{ "context": "Vercel", "state": "success",
+                    "description": "Deployment has completed", "target_url": "https://vercel.com/acme-team/demo/x" }] }))
+            }),
+        )
+        .route(
+            "/repos/acme/demo/commits/{sha}/check-runs",
+            get(|| async { Json(json!({ "total_count": 0, "check_runs": [] })) }),
+        )
+        .route(
+            "/repos/acme/demo/deployments",
+            get(|| async {
+                Json(json!([{ "id": 7, "environment": "Preview", "production_environment": false }]))
+            }),
+        )
+        .route(
+            "/repos/acme/demo/deployments/7/statuses",
+            get(move || {
+                let preview = preview.clone();
+                async move { Json(json!([{ "state": "success", "environment_url": preview }])) }
+            }),
+        )
+}
+
+async fn events_until(base: &str, sid: &str, done: impl Fn(&[Value]) -> bool) -> Vec<Value> {
+    let mut events = Vec::new();
+    for _ in 0..900 {
+        let (_, e) = http(
+            "GET",
+            &format!("{base}/sessions/{sid}/events"),
+            "alice",
+            None,
+        )
+        .await;
+        events = e.as_array().cloned().unwrap_or_default();
+        if done(&events) {
+            return events;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let names: Vec<&Value> = events.iter().map(|e| &e["event"]).collect();
+    panic!("gave up waiting; events: {names:?}");
+}
+
+fn count(events: &[Value], kind: &str) -> usize {
+    events.iter().filter(|e| e["event"] == kind).count()
+}
+
+#[tokio::test]
+async fn review_with_the_agent_on_the_preview() {
+    let Some((_, db)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    if !has_chromium() {
+        eprintln!("no Chromium: skipped");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let _bare = remote(dir.path());
+    let log: Log = Arc::default();
+    let seen: Log = Arc::default();
+    let preview = mock_preview(seen.clone()).await;
+    let p = preview.clone();
+    let api = mock_github_with(log.clone(), move |r| passing_routes(r, p)).await;
+    let vercel = mock_vercel(log.clone()).await;
+    let IssueSession { base, sid, .. } =
+        issue_session(dir.path(), db, api, REVIEWING_AGENT, true, Some(&vercel)).await;
+
+    // An admin saves how the browser gets into the previews; the secrets
+    // are not shown back.
+    let project = http("GET", &format!("{base}/projects"), "alice", None)
+        .await
+        .1[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let access =
+        json!({ "bypass_secret": "s3cret-bypass", "username": "reviewer", "password": "pw-123" });
+    let url = format!("{base}/projects/{project}/preview-access");
+    assert_eq!(
+        http("PUT", &url, "alice", Some(access.clone())).await.0,
+        403
+    );
+    let (code, saved) = http("PUT", &url, "admin", Some(access)).await;
+    assert_eq!(code, 200, "{saved}");
+    assert!(!saved.to_string().contains("s3cret-bypass") && !saved.to_string().contains("pw-123"));
+    assert_eq!(saved["has_password"], true);
+
+    // Delivered; its checks pass with the preview.
+    events_until(&base, &sid, |e| {
+        e.iter()
+            .any(|e| e["event"] == "pull_request_checked" && e["report"]["preview_url"].is_string())
+    })
+    .await;
+
+    // Alice starts the review; the agent shows its step with a screenshot.
+    let (code, started) = http(
+        "POST",
+        &format!("{base}/sessions/{sid}/review"),
+        "alice",
+        Some(json!({ "device": "phone" })),
+    )
+    .await;
+    assert_eq!(code, 200, "{started}");
+    assert_eq!(started["session_id"], sid.as_str());
+    let events = events_until(&base, &sid, |e| count(e, "review_step_shown") >= 1).await;
+    let review = &events
+        .iter()
+        .find(|e| e["event"] == "review_started")
+        .unwrap()["review"];
+    assert_eq!(review["reviewer"], "alice");
+    assert_eq!(review["device"], "phone");
+    assert_eq!(review["preview_url"], preview.as_str());
+    let step = &events
+        .iter()
+        .find(|e| e["event"] == "review_step_shown")
+        .unwrap()["step"];
+    assert_eq!(step["title"], "Add a customer");
+    assert_eq!(step["outcome"], "as_expected");
+    let shot = step["screenshot"].as_str().unwrap();
+    let out = tokio::process::Command::new("curl")
+        .args(["-s", "-H", "Authorization: Bearer alice"])
+        .arg(format!("{base}/sessions/{sid}/screenshots/{shot}"))
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(&out.stdout[..2], &[0xff, 0xd8], "a JPEG screenshot");
+    // The agent read the page and its result (the scripted grep printed them).
+    let said: String = events
+        .iter()
+        .filter(|e| e["event"] == "output")
+        .filter_map(|e| e["line"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(said.contains("Added Ana"), "{said}");
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .all(|(_, s)| s == "s3cret-bypass")
+    );
+
+    // Changes: the agent fixes, delivers, and shows the new preview.
+    let (code, body) = http(
+        "POST",
+        &format!("{base}/sessions/{sid}/review/finish"),
+        "alice",
+        Some(json!({ "verdict": "changes_requested", "comment": "Greet the customer." })),
+    )
+    .await;
+    assert_eq!(code, 200, "{body}");
+    let events = events_until(&base, &sid, |e| count(e, "review_step_shown") >= 2).await;
+    assert_eq!(count(&events, "delivered"), 2);
+    assert_eq!(count(&events, "review_started"), 2, "a second round");
+    let finished = events
+        .iter()
+        .find(|e| e["event"] == "review_finished")
+        .unwrap();
+    assert_eq!(finished["verdict"], "changes_requested");
+    assert_eq!(finished["comment"], "Greet the customer.");
+
+    // Approved: the team sees it on the pull request.
+    let (code, body) = http(
+        "POST",
+        &format!("{base}/sessions/{sid}/review/finish"),
+        "alice",
+        Some(json!({ "verdict": "approved" })),
+    )
+    .await;
+    assert_eq!(code, 200, "{body}");
+    let comments: Vec<String> = log
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(w, _)| w.starts_with("comment #"))
+        .map(|(_, b)| b["body"].as_str().unwrap_or_default().to_string())
+        .collect();
+    let approved = comments
+        .iter()
+        .find(|c| c.contains("**approved**"))
+        .unwrap_or_else(|| panic!("{comments:?}"));
+    assert!(approved.contains("✅ The greeting"), "{approved}");
+    assert!(comments.iter().any(|c| c.contains("Greet the customer.")));
+    // Finished: no review is open any more.
+    let (code, _) = http(
+        "POST",
+        &format!("{base}/sessions/{sid}/review/finish"),
+        "alice",
+        Some(json!({ "verdict": "approved" })),
+    )
+    .await;
+    assert_eq!(code, 409);
+}

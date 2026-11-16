@@ -289,6 +289,28 @@ label { display: grid; gap: 4px; font-weight: 600; font-size: 12px; color: var(-
 .conv-card.inbox summary { cursor: pointer; margin-top: 4px; }
 .conv-card.inbox .out { margin-top: 6px; white-space: pre-wrap; }
 .inbox-text { margin: 4px 0 0; }
+.review-step.ok { border-left: 4px solid var(--ok); }
+.review-step.bad { border-left: 4px solid var(--danger); }
+.review-step:not(.ok):not(.bad) { border-left: 4px solid var(--muted); }
+.review-step-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.review-icon { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; font-size: 12px; color: #fff; }
+.review-icon.ok { background: var(--ok); }
+.review-icon.bad { background: var(--danger); }
+.review-step-note { margin: 6px 0 0; }
+.review-shot { display: block; margin: 8px 0 4px; max-width: 100%; }
+.review-shot img {
+  display: block; max-width: min(100%, 520px); max-height: 480px; width: auto; height: auto;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); object-fit: cover; object-position: top;
+}
+.review-url { overflow-wrap: anywhere; }
+.bad-text { color: var(--danger); }
+.review-bar { padding: 10px 12px; display: grid; gap: 8px; border-left: 4px solid var(--attention); }
+.review-bar-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+.review-actions, .review-choose { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.review-ask { display: grid; gap: 8px; }
+.review-ask .row { justify-content: flex-end; }
+.review-hint { margin: 0; }
+.review-note { max-width: 320px; }
 .chip.bad { background: var(--danger-bg, var(--attention-bg)); color: var(--danger); border-color: transparent; }
 .composer { padding: 10px; display: grid; gap: 8px; position: sticky; bottom: 8px; }
 .composer .row { justify-content: space-between; }
@@ -765,3 +787,4 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
   .explorer-tree { max-height: 50vh; }
   .tree-row { padding: 9px 8px; }
 }
+.preview-access-state { margin: 0; padding-left: 18px; display: grid; gap: 2px; }

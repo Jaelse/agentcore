@@ -14,8 +14,15 @@ COPY crates ./crates
 RUN cargo build --release --locked -p agentcore-cli
 
 FROM debian:bookworm-slim
+# Chromium lets agents show reviewers a pull request's preview (about 300 MB).
+# Build with `--build-arg REVIEW_BROWSER=false` to leave it out; reviews with
+# the agent are then unavailable.
+ARG REVIEW_BROWSER=true
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates docker.io curl git \
+ && if [ "$REVIEW_BROWSER" = "true" ]; then \
+      apt-get install -y --no-install-recommends chromium fonts-liberation fonts-noto-color-emoji; \
+    fi \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/target/release/agentcore /usr/local/bin/agentcore
 COPY --from=web /src/web/dist /opt/agentcore/web/dist

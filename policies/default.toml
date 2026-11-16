@@ -82,6 +82,13 @@ kinds = ["tool_call"]
 tools = ["github_list_*", "github_get_*", "propose_pull_request"]
 
 [[rules]]
+id = "allow-preview-review"
+description = "Showing a reviewer the delivered change on its preview, in agentcore's browser (only while a person reviews with the agent; the browser only opens the preview)."
+effect = "allow"
+kinds = ["tool_call"]
+tools = ["browser_*", "review_show"]
+
+[[rules]]
 id = "allow-insights"
 description = "Reading granted business data and the organisation's metrics, and proposing improvements (people apply them)."
 effect = "allow"

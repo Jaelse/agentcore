@@ -9,6 +9,7 @@ import { Conversation } from "./Conversation";
 import { ChangesView } from "./ChangesView";
 import { DeliverDialog } from "./DeliverDialog";
 import { SessionLogs } from "./LogExport";
+import { ReviewStart, reviewState } from "./Review";
 
 // xterm.js is large: load the live view only when it is opened.
 const LiveView = lazy(() => import("./LiveView").then((m) => ({ default: m.LiveView })));
@@ -49,6 +50,13 @@ export function SessionView({ info, me, archived = false, onChanged, onArchivedC
     .reverse()
     .map((e) => (e.event === "pull_request_checked" ? e.report.preview_url : undefined))
     .find(Boolean);
+  const review = reviewState(events);
+  // A delivered pull request with a preview can be reviewed with the agent
+  // (also after the session ended: a new session carries on its branch).
+  const canReview = canAct && !!preview && !!ctx.work_branch && review.kind !== "open" && review.kind !== "waiting";
+  const reviewStart = canReview && (
+    <ReviewStart sessionId={info.id} onStarted={() => setTab("conversation")} onError={onError} />
+  );
 
   // Reload details (proposal, role) when something relevant happens.
   const lastRelevant = events.filter((e) =>
@@ -204,11 +212,13 @@ export function SessionView({ info, me, archived = false, onChanged, onArchivedC
             >
               {archived ? "Restore" : "Archive"}
             </button>
+            {reviewStart}
             {detailsToggle}
           </div>
         )}
         {canAct && !ended && (
           <div className="session-actions">
+            {reviewStart}
             {info.status === "awaiting_input" && isRepo && detail?.role?.delivery === "pull_request" && (
               <button className="btn primary" onClick={() => setDelivering(true)}>
                 Deliver…

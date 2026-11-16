@@ -58,6 +58,12 @@ dir = "templates"
 # max_wait_mins = 45
 # max_fix_attempts = 3
 
+# Reviewing pull requests with the agent on their preview (needs Chromium).
+# [review]
+# enabled = true
+# chromium = "/usr/bin/chromium"
+# max_browsers = 3
+
 # Only when several agentcore VMs share the database (docs/DEPLOYMENT.md).
 # [cluster]
 # node_name = "vm-1"
