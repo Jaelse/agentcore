@@ -10,6 +10,7 @@ pub mod auth;
 mod browser;
 pub mod budgets;
 pub mod catalog;
+pub mod cloudflare;
 pub mod cluster;
 pub mod config;
 pub mod distribution;
@@ -256,6 +257,16 @@ pub fn router(state: AppState) -> Router {
             get(teamwork::get_vercel)
                 .put(teamwork::put_vercel)
                 .delete(teamwork::delete_vercel),
+        )
+        .route(
+            "/integrations/cloudflare",
+            get(cloudflare::get_connection)
+                .put(cloudflare::put_connection)
+                .delete(cloudflare::delete_connection),
+        )
+        .route(
+            "/integrations/cloudflare/test",
+            post(cloudflare::test_connection),
         )
         .route(
             "/projects/{id}/preview-access",

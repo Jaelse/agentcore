@@ -627,10 +627,21 @@ mod tests {
         }
         assert_eq!(c.blueprints[0].level, Level::Starter);
         assert_eq!(c.blueprints.last().unwrap().id, "complete-company");
-        // Every department but a niche one is somewhere on the complete path.
+        // Every department is somewhere on the complete path, except niche
+        // ones and those tied to one provider.
         let complete = c.blueprint("complete-company").unwrap();
-        let covered: usize = complete.stages.iter().map(|s| s.departments.len()).sum();
-        assert!(covered + 1 >= c.departments.len());
+        let covered: Vec<&str> = complete
+            .stages
+            .iter()
+            .flat_map(|s| s.departments.iter().map(String::as_str))
+            .collect();
+        let missing: Vec<&str> = c
+            .departments
+            .iter()
+            .map(|d| d.id.as_str())
+            .filter(|id| !covered.contains(id))
+            .collect();
+        assert_eq!(missing, ["cloudflare", "supply-chain"]);
     }
 
     #[test]

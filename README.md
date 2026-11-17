@@ -34,13 +34,14 @@ flowchart LR
 | Conversation | Agents wait after each turn; send follow-ups ("also add tests") and they continue in the same workspace and conversation. |
 | Review & delivery | *Changes* tab with commits and diff. *Deliver* runs the checks, pushes the agent's branch with agentcore's credentials, opens/updates the PR (issue link, AI disclosure) and moves the card to *In review*. |
 | Checks & preview | After delivery agentcore watches the PR's GitHub Actions, commit statuses and preview deployment (Vercel, Netlify, ...): a **Preview ↗** link to try the change from any device, and failed builds go back to the agent with their log to fix. |
+| Deploy to Cloudflare | A **Cloudflare deployment engineer** role looks at an application, picks how it runs on Cloudflare (Workers, Pages, framework adapters), provisions D1, KV, R2, Queues, secrets and domains through policy-checked tools, and sets the repository up for git flow: a preview on every pull request, production on every merge. The Cloudflare token stays in agentcore. See [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md). |
 | Review with the agent | On the preview, the agent shows a reviewer step by step how the change works (screenshots in the conversation, phone or desktop size), tries what they ask, and makes the changes they request. The browser runs on the agentcore server and only opens the preview. |
 | Hostable | Single binary + static UI, PostgreSQL, Docker image, docker-compose with an isolated sandbox network, token auth with admin/operator/viewer roles. |
 | Model gateway | Agents call LLMs through agentcore with a per-session token. Real API keys are stored AES-256-GCM encrypted in PostgreSQL and never enter a sandbox; per-provider model allow-lists and per-session call limits apply. Every call is logged with token usage and full request/response. **Stop** aborts calls that are still streaming. Providers are managed in the web UI. |
 | See what the agent does | **Live view**, like a screen share: the agent's own terminal, the command it is running with its output, the model's reasoning, text and tool calls as they stream, the files it changes and the processes in its sandbox. Finished sessions can be **replayed** from a tamper-evident terminal recording. Plus a timeline of every action, policy verdict, approval and outcome. |
 | One-click stop, pause | **STOP AGENT** per session and **Stop all agents** globally: kills the sandbox, denies pending approvals, and records who pressed it. Also enforced by time and action budgets. **Pause** freezes the agent and everything it runs, **Resume** continues exactly where it was. |
 | Multi-agent organisations | **Departments** (rooms) of agents with their own mission, tools, data and policy. Agents talk freely inside a department; departments talk only through the **message router**, which follows a routing policy per department (allowed peers, limits, optional human approval). Watch every message, open any member and ask it about its work (a stopped one starts just to answer), browse each department's files, pause or stop an agent, a department or everything. Admin-set limits on departments and agents. Runs on one or several VMs sharing PostgreSQL. See [docs/MULTI_AGENT.md](docs/MULTI_AGENT.md) and the [Guide](docs/GUIDE.md). |
-| Start small, grow big | **Templates** for 30 business functions and growth paths: start with one software department and grow step by step, or create a complete company at once; the organisation suggests what to add next. Departments can work on a linked GitHub repository and deliver pull requests. |
+| Start small, grow big | **Templates** for 31 business functions and growth paths: start with one software department and grow step by step, or create a complete company at once; the organisation suggests what to add next. Departments can work on a linked GitHub repository and deliver pull requests. |
 | Work that keeps going | **Goals** and scheduled **check-ins** keep the organisation working over days: idle agents sleep (no cost), check-ins and messages wake them, and agents that run out of time or reach the end of their working hours save their work first and continue the next time where they stopped: same workspace, same conversation, plus their notes. Work on the repository belongs to the department: it is saved to GitHub as agents go, and carried on from there after a session ends. Nodes are ephemeral: a session whose machine stops or disappears is carried on by another one, with its workspace and conversation. |
 | Facts and improvement | Departments read granted **business data** (tables, PostgreSQL, HTTP APIs; read-only). A **dashboard** shows how the organisation is doing and what looks inefficient; a **Retrospective** agent proposes improvements with evidence that people apply, change, send back or reject. |
 | Spending control | Every model call is **priced**; **budgets** per organisation or department, in money or tokens, warn, or pause the work and refuse model calls when they run out, and resume next period; **working hours** per department send its agents off duty (they save their work and sleep) outside its schedule. |
@@ -118,7 +119,8 @@ socket gives agentcore root-equivalent access to its host.
    statuses and deployments). It is stored encrypted; agents never see it.
    Optionally add a Vercel token under **Settings → Vercel** for build logs of
    failed previews, and per project, **Preview access** for protected
-   previews (Vercel bypass secret, reviewer login).
+   previews (Vercel bypass secret, reviewer login). To deploy to Cloudflare,
+   connect it under **Settings → Cloudflare** ([docs/CLOUDFLARE.md](docs/CLOUDFLARE.md)).
 2. **Projects → New project** (admin): repository, base branch, agent, default
    role, optionally the GitHub Projects board (owner + number, status column
    names, sprint field), and notes for agents.
@@ -194,7 +196,7 @@ agentcore hash-token '<token>'
 | `roles/` | Roles: `developer`, `project-manager`, `marketing` |
 | `templates/` | Department templates (`departments/`, including the Retrospective), growth paths (`blueprints/`) and the agent catalogue (`agents/`) |
 | `sandbox-image/` | The image agents run in, and `install-agents.sh` to add catalogue agents |
-| `docs/` | Guide, architecture, multi-agent organisations, releases and distribution, agent catalogue, ways of working, deployment, configuration, API, policies, EU AI Act mapping |
+| `docs/` | Guide, architecture, multi-agent organisations, releases and distribution, agent catalogue, ways of working, deploying to Cloudflare, deployment, configuration, API, policies, EU AI Act mapping |
 
 ## Documentation
 
@@ -203,6 +205,7 @@ agentcore hash-token '<token>'
 - [Multi-agent organisations](docs/MULTI_AGENT.md): departments, the message router, building from templates and growing, goals and check-ins, business data, metrics and the retrospective, spending and budgets, the outbox, who may talk to whom, oversight, limits, and running on several VMs.
 - [Agent catalogue](docs/AGENT_CATALOG.md): the open-source agents you can add, how they are connected and guarded, their licenses, and how to add your own.
 - [Ways of working](docs/WAYS_OF_WORKING.md): guardrails vs. roles vs. checks, writing your own roles, how agents fit sprints and kanban.
+- [Deploying to Cloudflare](docs/CLOUDFLARE.md): the Cloudflare deployment engineer role, connecting Cloudflare, where the token goes, the tools and guardrails, previews and build logs.
 - [Deployment](docs/DEPLOYMENT.md): topology, install, several VMs, macOS notes, operations.
 - [Configuration](docs/CONFIGURATION.md): every setting and environment variable.
 - [API](docs/API.md): operator API, live event stream, tool and model gateways.

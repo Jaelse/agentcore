@@ -123,6 +123,37 @@ results, an SBOM and your own risk assessment; follow rollouts with
 """
 
 [[departments]]
+id = "cloudflare"
+name = "Cloudflare Deployments"
+category = "build"
+summary = "Puts {company}'s applications on Cloudflare, with a preview for every pull request and production on every merge."
+when_to_add = "When {company} wants to host its applications on Cloudflare (Workers, Pages) and deploy them from git."
+tools = ["sandbox", "files"]
+pairs_with = ["engineering", "devops"]
+role = "cloudflare-deployer"  # Cloudflare tools on a linked repository (needs Settings → Cloudflare)
+policy = "default"  # creating resources, secrets and DNS needs approval
+mission = """
+Make {company}'s applications run on Cloudflare and keep them deployable. For each
+application: understand what it is and what it needs, choose how it runs on
+Cloudflare, provision what it needs (D1, KV, R2, Queues, domains), keep secrets
+out of the repository, and set up git flow deploys: a preview on every pull
+request, production on every merge. Keep `deployments.md` in the department files
+up to date: every application, where it runs, its resources and how it deploys.
+"""
+
+[[departments.agents]]
+name = "cloudflare-engineer"
+title = "Cloudflare deployment engineer"
+core = true
+instructions = """
+Take an application from "this repository" to "running on Cloudflare with
+preview and production deploys from git", following your role's playbook. Ask
+colleagues in Engineering (`team_send_to_department`) when the application needs
+code changes beyond deployment. Record every application, its resources (with
+ids) and anything a person still has to do in `deployments.md`.
+"""
+
+[[departments]]
 id = "security"
 name = "Security"
 category = "build"

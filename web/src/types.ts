@@ -678,6 +678,20 @@ export interface IssueSummary {
   milestone: string | null;
 }
 
+export interface CloudflareConnection {
+  account_id: string;
+  account_name: string;
+  token_hint: string;
+  updated_at: string;
+  updated_by: string;
+}
+
+/** What the stored Cloudflare token can reach, product by product. */
+export interface CloudflareTest {
+  account: string;
+  access: Record<string, boolean>;
+}
+
 export interface TokenConnection {
   token_hint: string;
   updated_at: string;

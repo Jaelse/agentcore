@@ -8,6 +8,7 @@
 
 mod agents;
 mod announcements;
+mod cloudflare;
 mod crypto;
 mod handoffs;
 mod hours;
@@ -39,6 +40,7 @@ use uuid::Uuid;
 
 pub use agents::InstalledAgent;
 pub use announcements::AnnouncementInput;
+pub use cloudflare::{CloudflareConfig, CloudflareConnection, valid_account_id};
 pub use crypto::{Cipher, MASTER_KEY_ENV};
 pub use handoffs::NewHandoff;
 pub use hours::HoursInput;

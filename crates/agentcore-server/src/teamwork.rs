@@ -903,8 +903,9 @@ pub async fn start_session(
     Ok(session)
 }
 
-/// The tools of a project session: GitHub for the role, plus the browser
-/// and review tools when the role reviews previews. The cell must be set to
+/// The tools of a project session: GitHub for the role, Cloudflare when the
+/// role has Cloudflare capabilities, plus the browser and review tools when
+/// the role reviews previews. The cell must be set to
 /// the session's id once it exists.
 pub(crate) fn project_tools(
     state: &AppState,
@@ -916,17 +917,24 @@ pub(crate) fn project_tools(
     Option<Arc<std::sync::OnceLock<SessionId>>>,
 ) {
     let github: Arc<dyn ToolHandler> = Arc::new(GitHubTools::new(gh, project, role));
+    let mut handlers = vec![github];
+    if let Some(cloudflare) = crate::cloudflare::CloudflareTools::for_role(state, project, role) {
+        handlers.push(Arc::new(cloudflare));
+    }
     let reviews = role
         .capabilities
         .contains(&agentcore_roles::Capability::PreviewsReview)
         && state.config.review.enabled;
-    if !reviews {
-        return (github, None);
+    let mut cell = None;
+    if reviews {
+        let review = crate::review::ReviewTools::new(state, project.id);
+        cell = Some(review.session.clone());
+        handlers.push(Arc::new(review));
     }
-    let review = crate::review::ReviewTools::new(state, project.id);
-    let cell = review.session.clone();
-    let tools = crate::org::Toolset(vec![github, Arc::new(review)]);
-    (Arc::new(tools), Some(cell))
+    if handlers.len() == 1 {
+        return (handlers.remove(0), cell);
+    }
+    (Arc::new(crate::org::Toolset(handlers)), cell)
 }
 
 /// Tell the issue that an agent started working on it.

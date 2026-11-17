@@ -112,6 +112,10 @@ before).
 | `GET /integrations/vercel` | O | Connection (`{token_hint, updated_at, updated_by}`) or `null` |
 | `PUT /integrations/vercel` | A | `{token}`: read access to build logs of failed previews |
 | `DELETE /integrations/vercel` | A | Disconnect |
+| `GET /integrations/cloudflare` | O | Connection (`{account_id, account_name, token_hint, updated_at, updated_by}`) or `null` |
+| `PUT /integrations/cloudflare` | A | `{account_id, token?}`: checked with Cloudflare (token active, account readable) before it is stored; a token left out keeps the stored one |
+| `DELETE /integrations/cloudflare` | A | Disconnect |
+| `POST /integrations/cloudflare/test` | A | `{account, access: {workers, pages, d1, kv, r2, queues, zones}}`: what the token can reach |
 
 `board` = `{owner, number, status_field?: "Status", iteration_field?, columns?: {ready, in_progress, in_review, done}}`.
 

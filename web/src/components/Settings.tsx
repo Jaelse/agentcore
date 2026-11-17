@@ -3,7 +3,7 @@ import { api } from "../api";
 import type { AdminEvent, Me, PoolToken, ProviderInfo, ProviderKind, SystemCard } from "../types";
 import { AgentCatalog } from "./AgentCatalog";
 import { LogExport } from "./LogExport";
-import { GitHubSettings, RolesOverview, VercelSettings } from "./TeamSettings";
+import { CloudflareSettings, GitHubSettings, RolesOverview, VercelSettings } from "./TeamSettings";
 
 const DEFAULT_URL: Record<ProviderKind, string> = {
   anthropic: "https://api.anthropic.com",
@@ -98,6 +98,8 @@ export function Settings({
       <GitHubSettings me={me} onError={onError} onChanged={refresh} />
 
       <VercelSettings me={me} onError={onError} />
+
+      <CloudflareSettings me={me} onError={onError} />
 
       <RolesOverview onError={onError} />
 

@@ -79,6 +79,20 @@ kinds = ["tool_call"]
 tools = ["github_list_*", "github_get_*", "propose_pull_request"]
 
 [[rules]]
+id = "allow-cloudflare-reads"
+description = "Reading the connected Cloudflare account (Workers, Pages, D1, KV, R2, Queues, zones, DNS, build logs, secret names). agentcore holds the token; the agent never sees it."
+effect = "allow"
+kinds = ["tool_call"]
+tools = ["cloudflare_get_*", "cloudflare_list_*"]
+
+[[rules]]
+id = "approve-cloudflare-changes"
+description = "Creating Cloudflare resources, setting secrets, DNS records and custom domains, and giving the repository's CI the Cloudflare token: a person approves."
+effect = "require_approval"
+kinds = ["tool_call"]
+tools = ["cloudflare_create_*", "cloudflare_set_*", "cloudflare_add_*", "cloudflare_connect_*"]
+
+[[rules]]
 id = "allow-preview-review"
 description = "Showing a reviewer the delivered change on its preview, in agentcore's browser (only while a person reviews with the agent; the browser only opens the preview)."
 effect = "allow"

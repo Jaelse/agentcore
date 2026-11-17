@@ -536,8 +536,21 @@ async fn failure_detail(
             }
             parts.join("\n\n")
         }
-        Source::Run { output, .. } => output.clone(),
+        Source::Run { output, .. } => {
+            // Cloudflare Pages / Workers Builds report as check runs linking
+            // to the dashboard: hand over the build log, not just the summary.
+            match crate::cloudflare::failed_build_log(state, f.check.url.as_deref()).await {
+                Some(log) if output.is_empty() => log,
+                Some(log) => format!("{output}\n\n{log}"),
+                None => output.clone(),
+            }
+        }
         Source::Status { target_url } => {
+            if let Some(log) =
+                crate::cloudflare::failed_build_log(state, target_url.as_deref()).await
+            {
+                return log;
+            }
             let Some((team, deployment)) = target_url.as_deref().and_then(vercel_deployment) else {
                 return String::new();
             };

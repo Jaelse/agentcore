@@ -128,11 +128,11 @@ flowchart LR
 
 ### The catalogue
 
-30 department templates in five groups (`templates/departments/*.toml`):
+31 department templates in five groups (`templates/departments/*.toml`):
 
 | Group | Departments |
 |---|---|
-| Product & engineering | Engineering, Quality Assurance, Platform & DevOps, Security, Product, Design, Data & Analytics, AI & Machine Learning, Technical Writing, Internal IT |
+| Product & engineering | Engineering, Quality Assurance, Platform & DevOps, Cloudflare Deployments, Security, Product, Design, Data & Analytics, AI & Machine Learning, Technical Writing, Internal IT |
 | Growth | Marketing, Content, Developer Relations, Sales, Partnerships, Communications & PR, Community |
 | Customers | Customer Support, Customer Success |
 | Operations | Operations, Finance, Legal & Compliance, People & HR, Recruiting, Procurement, Supply Chain & Logistics |

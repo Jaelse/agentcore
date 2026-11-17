@@ -40,6 +40,8 @@ pub struct Config {
     #[serde(default)]
     pub review: ReviewConfig,
     #[serde(default)]
+    pub cloudflare: CloudflareSettings,
+    #[serde(default)]
     pub agents: Vec<AgentSpec>,
 }
 
@@ -108,6 +110,22 @@ impl Default for PullRequestChecksConfig {
             no_checks_after_secs: 300,
             max_fix_attempts: 3,
             vercel_api_url: "https://api.vercel.com".into(),
+        }
+    }
+}
+
+/// Cloudflare's API, for the Cloudflare connection (Settings → Cloudflare)
+/// and the `cloudflare_*` tools of agents. Only changed for tests or a proxy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CloudflareSettings {
+    pub api_url: String,
+}
+
+impl Default for CloudflareSettings {
+    fn default() -> Self {
+        Self {
+            api_url: "https://api.cloudflare.com/client/v4".into(),
         }
     }
 }

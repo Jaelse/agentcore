@@ -92,6 +92,10 @@ Reference: [Spending and budgets](MULTI_AGENT.md#spending-and-budgets).
    preview. The session then shows a **Preview ↗** link to try the change,
    from a phone too, and **Review with agent**: the agent opens the preview
    and shows you step by step how the change works.
+   To host the app on **Cloudflare**, connect it under **Settings →
+   Cloudflare** and give the GitHub token *Secrets: read and write*; then put
+   a *Cloudflare deployment engineer* on it (step 2's role, or the
+   *Cloudflare Deployments* department). See [Deploying to Cloudflare](CLOUDFLARE.md).
 2. **Projects → New project**: the repository, its default branch, and
    notes for the team (how to build and test, conventions). Protect the
    default branch with required reviews on GitHub, so every agent pull
