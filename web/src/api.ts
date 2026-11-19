@@ -3,6 +3,8 @@ import type {
   BoardConfig,
   Changes,
   CheckResult,
+  CloudflareConnection,
+  CloudflareTest,
   GitHubConnection,
   TokenConnection,
   PreviewAccess,
@@ -172,6 +174,12 @@ export const api = {
   vercel: () => request<TokenConnection | null>("GET", "/integrations/vercel"),
   saveVercel: (token: string) => request<TokenConnection>("PUT", "/integrations/vercel", { token }),
   deleteVercel: () => request<void>("DELETE", "/integrations/vercel"),
+  cloudflare: () => request<CloudflareConnection | null>("GET", "/integrations/cloudflare"),
+  /** A token left out keeps the stored one. */
+  saveCloudflare: (body: { account_id: string; token?: string }) =>
+    request<CloudflareConnection>("PUT", "/integrations/cloudflare", body),
+  testCloudflare: () => request<CloudflareTest>("POST", "/integrations/cloudflare/test"),
+  deleteCloudflare: () => request<void>("DELETE", "/integrations/cloudflare"),
   previewAccess: (project: string) =>
     request<PreviewAccess | null>("GET", `/projects/${project}/preview-access`),
   /** A secret left out is kept; an empty string removes it. */

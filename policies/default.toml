@@ -75,11 +75,36 @@ commands = [
 ]
 
 [[rules]]
+id = "allow-wrangler-offline"
+description = "Wrangler commands that need no Cloudflare account (validating, typing and building a Worker); the sandbox has no Cloudflare credentials."
+effect = "allow"
+kinds = ["exec"]
+commands = [
+  "npx wrangler deploy --dry-run*", "npx wrangler versions upload --dry-run*", "npx wrangler types*",
+  "npx wrangler d1 migrations create *", "npx wrangler --version", "npx wrangler check startup*",
+  "npx opennextjs-cloudflare build*",
+]
+
+[[rules]]
 id = "allow-github-reads"
 description = "Reading issues, milestones, the board and discussions."
 effect = "allow"
 kinds = ["tool_call"]
 tools = ["github_list_*", "github_get_*", "propose_pull_request"]
+
+[[rules]]
+id = "allow-cloudflare-reads"
+description = "Reading the connected Cloudflare account (Workers, Pages, D1, KV, R2, Queues, zones, DNS, build logs, secret names). agentcore holds the token; the agent never sees it."
+effect = "allow"
+kinds = ["tool_call"]
+tools = ["cloudflare_get_*", "cloudflare_list_*"]
+
+[[rules]]
+id = "approve-cloudflare-changes"
+description = "Creating Cloudflare resources, setting secrets, DNS records and custom domains, and giving the repository's CI the Cloudflare token: a person approves."
+effect = "require_approval"
+kinds = ["tool_call"]
+tools = ["cloudflare_create_*", "cloudflare_set_*", "cloudflare_add_*", "cloudflare_connect_*"]
 
 [[rules]]
 id = "allow-preview-review"

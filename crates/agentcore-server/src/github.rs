@@ -331,6 +331,39 @@ impl GitHub {
         })
     }
 
+    /// Create or replace a GitHub Actions secret of the repository. The value
+    /// is encrypted for the repository (libsodium sealed box) before it is
+    /// sent; GitHub never returns it.
+    pub async fn set_actions_secret(
+        &self,
+        owner: &str,
+        repo: &str,
+        name: &str,
+        value: &str,
+    ) -> Result<(), GhError> {
+        let (o, r) = (urlencode(owner), urlencode(repo));
+        let key = self
+            .rest(
+                Method::GET,
+                &format!("/repos/{o}/{r}/actions/secrets/public-key"),
+                None,
+            )
+            .await?;
+        let bad_key = || GhError::Api {
+            status: 502,
+            message: "GitHub returned no usable public key for Actions secrets".into(),
+        };
+        let encrypted =
+            seal_for_github(key["key"].as_str().ok_or_else(bad_key)?, value).ok_or_else(bad_key)?;
+        self.rest(
+            Method::PUT,
+            &format!("/repos/{o}/{r}/actions/secrets/{}", urlencode(name)),
+            Some(json!({ "encrypted_value": encrypted, "key_id": s(&key, "key_id") })),
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn comment_on_issue(
         &self,
         owner: &str,
@@ -890,6 +923,19 @@ pub fn urlencode(s: &str) -> String {
     out
 }
 
+/// Encrypt `value` with a repository's base64 Curve25519 public key, as a
+/// libsodium sealed box (what GitHub expects for Actions secrets).
+pub(crate) fn seal_for_github(public_key_b64: &str, value: &str) -> Option<String> {
+    use base64::Engine;
+    let engine = base64::engine::general_purpose::STANDARD;
+    let raw: [u8; 32] = engine.decode(public_key_b64).ok()?.try_into().ok()?;
+    let key = crypto_box::PublicKey::from(raw);
+    let sealed = key
+        .seal(&mut crypto_box::aead::OsRng, value.as_bytes())
+        .ok()?;
+    Some(engine.encode(sealed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -922,5 +968,18 @@ mod tests {
     #[test]
     fn encodes_query_values() {
         assert_eq!(urlencode("acme:agent/1-fix"), "acme%3Aagent%2F1-fix");
+    }
+
+    #[test]
+    fn actions_secrets_are_sealed_for_the_repository() {
+        use base64::Engine;
+        let engine = base64::engine::general_purpose::STANDARD;
+        let secret = crypto_box::SecretKey::generate(&mut crypto_box::aead::OsRng);
+        let public = engine.encode(secret.public_key().as_bytes());
+        let sealed = seal_for_github(&public, "s3cret-token").unwrap();
+        let opened = secret.unseal(&engine.decode(sealed).unwrap()).unwrap();
+        assert_eq!(opened, b"s3cret-token");
+        assert_eq!(seal_for_github("not base64!", "x"), None);
+        assert_eq!(seal_for_github(&engine.encode([1u8; 7]), "x"), None);
     }
 }

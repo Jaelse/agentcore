@@ -65,6 +65,39 @@ pub enum Capability {
     /// agentcore runs (only while a person reviews with the agent).
     #[serde(rename = "previews:review")]
     PreviewsReview,
+    /// Read the connected Cloudflare account: Workers, Pages, D1, KV, R2,
+    /// Queues, Hyperdrive, zones and DNS, deployments and build logs.
+    #[serde(rename = "cloudflare:read")]
+    CloudflareRead,
+    /// Create Cloudflare resources an application needs (D1 databases, KV
+    /// namespaces, R2 buckets, Queues, Pages projects).
+    #[serde(rename = "cloudflare:provision")]
+    CloudflareProvision,
+    /// Set secrets of Workers and Pages projects (values the agent passes,
+    /// or random ones agentcore generates and never shows).
+    #[serde(rename = "cloudflare:secrets")]
+    CloudflareSecrets,
+    /// DNS records and custom domains of Workers and Pages projects.
+    #[serde(rename = "cloudflare:domains")]
+    CloudflareDomains,
+    /// Give the repository's CI (GitHub Actions) the Cloudflare credentials
+    /// it deploys with, as encrypted Actions secrets.
+    #[serde(rename = "cloudflare:ci")]
+    CloudflareCi,
+}
+
+impl Capability {
+    /// Whether the capability uses the Cloudflare connection.
+    pub fn is_cloudflare(self) -> bool {
+        matches!(
+            self,
+            Capability::CloudflareRead
+                | Capability::CloudflareProvision
+                | Capability::CloudflareSecrets
+                | Capability::CloudflareDomains
+                | Capability::CloudflareCi
+        )
+    }
 }
 
 /// Board columns, mapped to the project's real column names per project.
@@ -375,6 +408,27 @@ pub fn tools_for(capability: Capability) -> &'static [&'static str] {
         Capability::DiscussionsWrite => &["github_comment_on_discussion"],
         Capability::PullRequestsPropose => &["propose_pull_request"],
         Capability::PreviewsReview => REVIEW_TOOLS,
+        Capability::CloudflareRead => &[
+            "cloudflare_get_account",
+            "cloudflare_get_worker",
+            "cloudflare_get_pages_project",
+            "cloudflare_get_pages_deployment_log",
+            "cloudflare_list_dns_records",
+            "cloudflare_list_secrets",
+        ],
+        Capability::CloudflareProvision => &[
+            "cloudflare_create_d1_database",
+            "cloudflare_create_kv_namespace",
+            "cloudflare_create_r2_bucket",
+            "cloudflare_create_queue",
+            "cloudflare_create_pages_project",
+        ],
+        Capability::CloudflareSecrets => &["cloudflare_set_secret"],
+        Capability::CloudflareDomains => &[
+            "cloudflare_create_dns_record",
+            "cloudflare_add_custom_domain",
+        ],
+        Capability::CloudflareCi => &["cloudflare_connect_repository"],
     }
 }
 
@@ -559,13 +613,48 @@ mod tests {
     #[test]
     fn bundled_roles_load() {
         let roles = bundled();
-        for name in ["developer", "project-manager", "marketing"] {
+        for name in [
+            "developer",
+            "project-manager",
+            "marketing",
+            "cloudflare-deployer",
+        ] {
             assert!(roles.get(name).is_some(), "missing role {name}");
         }
         let dev = roles.get("developer").unwrap();
         assert_eq!(dev.delivery.kind, DeliveryKind::PullRequest);
         assert!(dev.has(Capability::PullRequestsPropose));
         assert!(!roles.get("marketing").unwrap().has(Capability::IssuesWrite));
+    }
+
+    #[test]
+    fn cloudflare_deployer_gets_every_cloudflare_tool() {
+        let role = bundled().get("cloudflare-deployer").unwrap();
+        assert_eq!(role.delivery.kind, DeliveryKind::PullRequest);
+        let tools: Vec<&str> = role
+            .capabilities
+            .iter()
+            .filter(|c| c.is_cloudflare())
+            .flat_map(|c| tools_for(*c).iter().copied())
+            .collect();
+        for tool in [
+            "cloudflare_get_account",
+            "cloudflare_create_d1_database",
+            "cloudflare_set_secret",
+            "cloudflare_add_custom_domain",
+            "cloudflare_connect_repository",
+        ] {
+            assert!(tools.contains(&tool), "missing {tool}");
+        }
+        assert!(tools.iter().all(|t| t.starts_with("cloudflare_")));
+        assert!(
+            !bundled()
+                .get("developer")
+                .unwrap()
+                .capabilities
+                .iter()
+                .any(|c| c.is_cloudflare())
+        );
     }
 
     #[test]

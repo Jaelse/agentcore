@@ -202,13 +202,23 @@ install it with the system's package manager (`apt-get install chromium`).
 How the browser reaches a project's protected previews (Vercel's bypass
 secret, a reviewer login, other allowed sites) is set per project in the UI.
 
+## `[cloudflare]`
+
+Cloudflare's API, for the connection under **Settings → Cloudflare** and the
+`cloudflare_*` tools of agents (see [Deploying to Cloudflare](CLOUDFLARE.md)).
+The account and token are set in the UI.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `api_url` | `https://api.cloudflare.com/client/v4` | Cloudflare's API (change only for a proxy or tests) |
+
 ### Set in the web UI, not in the file
 
 Organisation settings live in PostgreSQL, so every node shares them, and are
 changed in the UI (or the API) by admins: limits and the company profile,
 goals and check-ins, business data sources, model prices, currency and
-budgets, outward channels, and which kinds of improvements are applied
-without asking. See [Multi-agent organisations](MULTI_AGENT.md) and the
+budgets, outward channels, which kinds of improvements are applied
+without asking, and the GitHub, Vercel and Cloudflare connections. See [Multi-agent organisations](MULTI_AGENT.md) and the
 [Guide](GUIDE.md).
 
 ## `[[agents]]`

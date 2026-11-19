@@ -31,7 +31,7 @@ flowchart LR
     end
     subgraph TRUSTED["Trusted: agentcore host"]
         AC["agentcore<br/>policy · approvals · audit"]
-        SEC[("Secrets<br/>master key · API keys ·<br/>GitHub token")]
+        SEC[("Secrets<br/>master key · API keys ·<br/>GitHub, Vercel, Cloudflare tokens")]
     end
     subgraph PEOPLE["Authenticated people"]
         OP["Operators<br/>viewer · operator · admin"]
@@ -39,7 +39,7 @@ flowchart LR
     AG -- "only via the gateways<br/>(session token, policy-checked)" --> AC
     OP -- "operator token" --> AC
     AC --- SEC
-    AC -- "secrets used here,<br/>never sent into the sandbox" --> EXT["GitHub · LLM providers"]
+    AC -- "secrets used here,<br/>never sent into the sandbox" --> EXT["GitHub · Cloudflare · LLM providers"]
 ```
 
 Prompt injection (malicious text in an issue, a file or a web page) is
@@ -69,6 +69,13 @@ do, and every attempt is recorded.
 * The GitHub token is encrypted at rest like provider keys. Agents use GitHub
   only through agentcore tools bound to the project's repository and board,
   limited by the role's capabilities and checked by the guardrail policy.
+* The Cloudflare token is encrypted the same way and used only by agentcore:
+  agents provision through `cloudflare_*` tools (policy-checked; creating or
+  changing anything needs approval under the bundled policies). It leaves
+  agentcore only when a person approves `cloudflare_connect_repository`, which
+  seals it into the project repository's GitHub Actions secrets for its deploy
+  workflow, so scope it to what deploys need. See
+  [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md#the-token-and-where-it-goes).
 * Git: the token is passed to git as an HTTP header through environment
   variables (never on the command line or in a config file); hooks, fsmonitor
   and credential helpers are disabled for every git command agentcore runs.
@@ -101,6 +108,10 @@ do, and every attempt is recorded.
 - [ ] Use a dedicated bot account or fine-grained token for GitHub with access
       only to the repositories and boards agents work on; protect `main` with
       branch protection and required reviews so agent PRs need human approval.
+- [ ] Scope the Cloudflare token (if connected) to the account and zones
+      agents deploy to, with only the permissions in
+      [docs/CLOUDFLARE.md](docs/CLOUDFLARE.md#setting-it-up); repositories
+      it is given to can use it from their workflows.
 - [ ] Store `data/` on an encrypted volume with backups; restrict who can read audit logs and terminal recordings (`data/recordings`): they contain whatever the agent printed.
 - [ ] Never use the `process` backend outside local development.
 - [ ] Several VMs: keep `internal_url` on a private network, use TLS and a

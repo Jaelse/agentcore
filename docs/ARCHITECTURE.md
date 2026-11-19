@@ -414,10 +414,21 @@ After every delivery, `pr_checks::watch` polls GitHub for the delivered
 commit's check runs, commit statuses and preview deployment, and records
 what it finds as `pull_request_checked` events. When the checks settle with
 failures the code can fix, it reads their logs (GitHub Actions job logs; Vercel
-build logs with the Vercel connection) and sends them to the agent (department
+build logs with the Vercel connection; Cloudflare Pages and Workers Builds
+logs with the Cloudflare connection, `cloudflare::failed_build_log`) and sends them to the agent (department
 agents through their inbox), up to `max_fix_attempts` per session; failures a
 person must resolve are only recorded. A new delivery of the session replaces
 its watch.
+
+Roles with Cloudflare capabilities also get `cloudflare::CloudflareTools`
+(`project_tools` composes them with the GitHub and review tools). Like the
+GitHub tools they run in agentcore, not in the sandbox: each call is a
+policy-checked `tool_call`, and agentcore calls Cloudflare's API with the
+token from the `integrations` table (kind `cloudflare`, read on every call).
+`cloudflare_connect_repository` is the only path by which the token leaves
+agentcore: sealed with the repository's public key
+(`github::seal_for_github`) into its GitHub Actions secrets. See
+[Deploying to Cloudflare](CLOUDFLARE.md).
 
 A person can then review the change with the agent (`review.rs`). The
 review belongs to the pull request's branch (project and branch, kept in

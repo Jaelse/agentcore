@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ApiError, api } from "../api";
-import type { GitHubConnection, Me, TeamRole, TokenConnection } from "../types";
+import type { CloudflareConnection, CloudflareTest, GitHubConnection, Me, TeamRole, TokenConnection } from "../types";
 
 export function GitHubSettings({
   me,
@@ -207,6 +207,168 @@ export function VercelSettings({ me, onError }: { me: Me; onError: (err: unknown
                 Disconnect
               </button>
             )}
+          </div>
+        </form>
+      )}
+    </section>
+  );
+}
+
+const CLOUDFLARE_PRODUCTS: [string, string][] = [
+  ["workers", "Workers"],
+  ["pages", "Pages"],
+  ["d1", "D1"],
+  ["kv", "KV"],
+  ["r2", "R2"],
+  ["queues", "Queues"],
+  ["zones", "DNS zones"],
+];
+
+/**
+ * Cloudflare: the account agents in the Cloudflare deployment role provision and deploy to. The token stays in
+ * agentcore; agents ask agentcore to act for them.
+ */
+export function CloudflareSettings({ me, onError }: { me: Me; onError: (err: unknown) => void }) {
+  const [conn, setConn] = useState<CloudflareConnection | null | undefined>(undefined);
+  const [accountId, setAccountId] = useState("");
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [test, setTest] = useState<CloudflareTest | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const isAdmin = me.role === "admin";
+
+  useEffect(() => {
+    api
+      .cloudflare()
+      .then((c) => {
+        setConn(c);
+        if (c) setAccountId(c.account_id);
+      })
+      .catch(onError);
+  }, [onError]);
+
+  const runTest = async () => {
+    setStatus(null);
+    setTest(null);
+    try {
+      const r = await api.testCloudflare();
+      setTest(r);
+      setStatus(`✓ Connected to ${r.account}`);
+    } catch (err) {
+      setStatus(`✗ ${err instanceof ApiError ? err.message : String(err)}`);
+    }
+  };
+
+  const validId = /^[0-9a-fA-F]{32}$/.test(accountId.trim());
+
+  return (
+    <section className="card pad">
+      <h2>Cloudflare</h2>
+      <p className="muted">
+        Lets agents in the <strong>Cloudflare deployment engineer</strong> role put applications on Cloudflare: they
+        read the account, create what an application needs (D1, KV, R2, Queues, Pages projects), set secrets, DNS
+        records and custom domains, and set up the repository so every pull request gets a preview and every merge
+        deploys to production. The token stays in agentcore (encrypted); agents never see it. Creating or changing
+        anything waits for a person's approval, and the token is copied into a repository's GitHub Actions secrets only
+        when a person approves it.
+      </p>
+      {conn === undefined ? (
+        <p className="muted">Loading…</p>
+      ) : conn ? (
+        <p>
+          Connected to <strong>{conn.account_name || conn.account_id}</strong> · token <code>{conn.token_hint}</code>{" "}
+          · changed {new Date(conn.updated_at).toLocaleString()} by {conn.updated_by}
+        </p>
+      ) : (
+        <p className="muted">Not connected: Cloudflare deployment agents cannot reach Cloudflare yet.</p>
+      )}
+      {test && (
+        <ul className="cf-access">
+          {CLOUDFLARE_PRODUCTS.map(([key, label]) => (
+            <li key={key} className={test.access[key] ? "ok-text" : "error-text"}>
+              {test.access[key] ? "✓" : "✗"} {label}
+            </li>
+          ))}
+        </ul>
+      )}
+      {isAdmin && (
+        <form
+          className="provider-edit"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setBusy(true);
+            setStatus(null);
+            try {
+              setConn(await api.saveCloudflare({ account_id: accountId.trim(), token: token.trim() || undefined }));
+              setToken("");
+              await runTest();
+            } catch (err) {
+              setStatus(`✗ ${err instanceof ApiError ? err.message : String(err)}`);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          <div className="grid-2">
+            <label>
+              Account ID
+              <input
+                value={accountId}
+                spellCheck={false}
+                placeholder="32 characters, from the dashboard URL"
+                onChange={(e) => setAccountId(e.target.value)}
+              />
+            </label>
+            <label>
+              {conn ? "New API token (leave empty to keep)" : "API token"}
+              <input
+                type="password"
+                autoComplete="off"
+                value={token}
+                placeholder="My Profile → API Tokens → Create Token"
+                onChange={(e) => setToken(e.target.value)}
+              />
+            </label>
+          </div>
+          <details className="muted">
+            <summary>Which permissions the token needs</summary>
+            <p>
+              Account: <em>Workers Scripts</em>, <em>Cloudflare Pages</em>, <em>D1</em>,{" "}
+              <em>Workers KV Storage</em>, <em>Workers R2 Storage</em>, <em>Queues</em> (Edit), <em>Account
+              Settings</em> (Read). Zone: <em>DNS</em> (Edit), <em>Workers Routes</em> (Edit), <em>Zone</em> (Read).
+              Agents use the same token, as a GitHub Actions secret, to deploy from CI, so give it nothing more.
+            </p>
+          </details>
+          <div className="row">
+            <button className="btn primary" disabled={busy || !validId || (!conn && !token.trim())}>
+              {busy ? "Checking…" : conn ? "Save" : "Connect"}
+            </button>
+            {conn && (
+              <>
+                <button type="button" className="btn ghost" disabled={busy} onClick={runTest}>
+                  Test connection
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  disabled={busy}
+                  onClick={async () => {
+                    try {
+                      await api.deleteCloudflare();
+                      setConn(null);
+                      setTest(null);
+                      setStatus(null);
+                      setAccountId("");
+                    } catch (err) {
+                      onError(err);
+                    }
+                  }}
+                >
+                  Disconnect
+                </button>
+              </>
+            )}
+            {status && <span className={status.startsWith("✓") ? "ok-text" : "error-text"}>{status}</span>}
           </div>
         </form>
       )}

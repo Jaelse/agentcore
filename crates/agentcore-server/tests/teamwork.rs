@@ -233,6 +233,19 @@ async fn issue_session(
     auto: bool,
     vercel_api: Option<&str>,
 ) -> IssueSession {
+    issue_session_with(dir, db, api, follow_up, auto, vercel_api, None).await
+}
+
+/// [`issue_session`], with Cloudflare's API at `cloudflare_api`.
+async fn issue_session_with(
+    dir: &Path,
+    db: String,
+    api: String,
+    follow_up: &str,
+    auto: bool,
+    vercel_api: Option<&str>,
+    cloudflare_api: Option<&str>,
+) -> IssueSession {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let mut config: Config = toml::from_str("").unwrap();
@@ -281,6 +294,16 @@ async fn issue_session(
         follow_up_args: vec!["-c".into(), follow_up.into(), "{task}".into()],
         ..Default::default()
     }];
+    if let Some(url) = cloudflare_api {
+        config.cloudflare.api_url = url.into();
+        config.agents.push(AgentSpec {
+            name: "cf-scripted".into(),
+            adapter: "command".into(),
+            command: Some("sh".into()),
+            args: vec!["-c".into(), CLOUDFLARE_TURN.into(), "{task}".into()],
+            ..Default::default()
+        });
+    }
     let state = AppState::new(config).await.unwrap();
     let app = router(state.clone());
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -1883,4 +1906,258 @@ async fn review_with_the_agent_on_the_preview() {
     )
     .await;
     assert_eq!(code, 409);
+}
+
+/// A Cloudflare deployment agent: looks at its tools and the account, then
+/// gives the repository's CI the credentials (after a person approves).
+const CLOUDFLARE_TURN: &str = r#"
+mcp() { curl -s -X POST "$AGENTCORE_GATEWAY_URL" -H "Authorization: Bearer $AGENTCORE_GATEWAY_TOKEN" -H 'Content-Type: application/json' -d "$1"; echo; }
+echo "tools: $(mcp '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | grep -o '"name":"[a-z_0-9]*"' | tr '\n' ' ')"
+mcp '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"cloudflare_get_account","arguments":{}}}'
+mcp '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"cloudflare_connect_repository","arguments":{}}}'
+echo "token in sandbox env: $(env | grep -c "cf_test_$(echo token)")"
+echo cloudflare turn done
+"#;
+
+const CF_ACCOUNT: &str = "0123456789abcdef0123456789abcdef";
+
+/// Cloudflare's API for one account, with nothing in it yet.
+async fn mock_cloudflare(log: Log) -> String {
+    fn ok(result: Value) -> Json<Value> {
+        Json(json!({ "success": true, "errors": [], "messages": [], "result": result }))
+    }
+    let auth_log = log.clone();
+    let app = axum::Router::new()
+        .route(
+            "/user/tokens/verify",
+            get(move |headers: axum::http::HeaderMap| {
+                let log = auth_log.clone();
+                async move {
+                    let auth = headers["authorization"].to_str().unwrap().to_string();
+                    log.lock().unwrap().push(("cloudflare verify".into(), json!(auth)));
+                    if auth == "Bearer cf_test_token" {
+                        ok(json!({ "status": "active" }))
+                    } else {
+                        Json(json!({ "success": false, "errors": [{ "code": 1000, "message": "Invalid API Token" }] }))
+                    }
+                }
+            }),
+        )
+        .route(
+            &format!("/accounts/{CF_ACCOUNT}"),
+            get(|| async { ok(json!({ "id": CF_ACCOUNT, "name": "Acme Inc" })) }),
+        )
+        .route(
+            &format!("/accounts/{CF_ACCOUNT}/workers/subdomain"),
+            get(|| async { ok(json!({ "subdomain": "acme" })) }),
+        )
+        .route(
+            &format!("/accounts/{CF_ACCOUNT}/d1/database"),
+            get(|| async { ok(json!([{ "name": "demo-db", "uuid": "d1-uuid" }])) }),
+        )
+        .route(
+            "/zones",
+            get(|| async { ok(json!([{ "id": "z1", "name": "acme.example", "status": "active" }])) }),
+        )
+        .fallback(|| async { ok(json!([])) });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+/// GitHub Actions secrets of acme/demo, sealed for this key pair.
+fn actions_secret_routes(r: axum::Router, log: Log, key: crypto_box::SecretKey) -> axum::Router {
+    use base64::Engine;
+    let public = base64::engine::general_purpose::STANDARD.encode(key.public_key().as_bytes());
+    r.route(
+        "/repos/acme/demo/actions/secrets/public-key",
+        get(move || {
+            let public = public.clone();
+            async move { Json(json!({ "key_id": "k1", "key": public })) }
+        }),
+    )
+    .route(
+        "/repos/acme/demo/actions/secrets/{name}",
+        axum::routing::put(
+            move |UrlPath(name): UrlPath<String>, Json(body): Json<Value>| {
+                let (log, key) = (log.clone(), key.clone());
+                async move {
+                    let sealed = base64::engine::general_purpose::STANDARD
+                        .decode(body["encrypted_value"].as_str().unwrap())
+                        .unwrap();
+                    let value = String::from_utf8(key.unseal(&sealed).unwrap()).unwrap();
+                    log.lock().unwrap().push((
+                        format!("actions secret {name}"),
+                        json!({ "value": value, "key_id": body["key_id"] }),
+                    ));
+                    axum::http::StatusCode::CREATED
+                }
+            },
+        ),
+    )
+}
+
+#[tokio::test]
+async fn cloudflare_engineer_reads_the_account_and_wires_ci_without_seeing_the_token() {
+    let Some((_, db)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    remote(dir.path());
+    let log: Log = Arc::default();
+    let key = crypto_box::SecretKey::generate(&mut crypto_box::aead::OsRng);
+    let api = mock_github_with(log.clone(), |r| actions_secret_routes(r, log.clone(), key)).await;
+    let cloudflare = mock_cloudflare(log.clone()).await;
+    let IssueSession { base, .. } = issue_session_with(
+        dir.path(),
+        db,
+        api,
+        TURN_TWO,
+        false,
+        None,
+        Some(&cloudflare),
+    )
+    .await;
+
+    // Only admins connect Cloudflare; a bad token or account id is refused
+    // before anything is stored; the token is never shown again.
+    let url = format!("{base}/integrations/cloudflare");
+    let conn = json!({ "account_id": CF_ACCOUNT, "token": "cf_test_token" });
+    assert_eq!(http("PUT", &url, "alice", Some(conn.clone())).await.0, 403);
+    let (code, body) = http(
+        "PUT",
+        &url,
+        "admin",
+        Some(json!({ "account_id": CF_ACCOUNT, "token": "wrong" })),
+    )
+    .await;
+    assert_eq!(code, 400, "{body}");
+    assert!(body.to_string().contains("Invalid API Token"), "{body}");
+    assert_eq!(
+        http(
+            "PUT",
+            &url,
+            "admin",
+            Some(json!({ "account_id": "nope", "token": "cf_test_token" }))
+        )
+        .await
+        .0,
+        400
+    );
+    assert_eq!(http("GET", &url, "alice", None).await.1, Value::Null);
+    let (code, body) = http("PUT", &url, "admin", Some(conn)).await;
+    assert_eq!(code, 200, "{body}");
+    assert_eq!(body["account_name"], "Acme Inc");
+    assert!(!body.to_string().contains("cf_test_token"));
+    let (code, body) = http("POST", &format!("{url}/test"), "admin", None).await;
+    assert_eq!(code, 200, "{body}");
+    assert_eq!(body["access"]["d1"], true);
+    // Changing the account without a new token keeps the stored one.
+    let (code, body) = http(
+        "PUT",
+        &url,
+        "admin",
+        Some(json!({ "account_id": CF_ACCOUNT })),
+    )
+    .await;
+    assert_eq!(code, 200, "{body}");
+
+    // A Cloudflare deployment engineer on the project.
+    let (_, projects) = http("GET", &format!("{base}/projects"), "alice", None).await;
+    let pid = projects[0]["id"].as_str().unwrap();
+    let (code, session) = http(
+        "POST",
+        &format!("{base}/projects/{pid}/sessions"),
+        "alice",
+        Some(json!({ "task": "Deploy this app to Cloudflare", "role": "cloudflare-deployer", "agent": "cf-scripted" })),
+    )
+    .await;
+    assert_eq!(code, 201, "{session}");
+    assert_eq!(session["context"]["role"], "cloudflare-deployer");
+    let sid = session["id"].as_str().unwrap().to_string();
+
+    // Giving CI the token waits for a person.
+    let mut approval = Value::Null;
+    for _ in 0..300 {
+        let (_, pending) = http(
+            "GET",
+            &format!("{base}/sessions/{sid}/approvals"),
+            "alice",
+            None,
+        )
+        .await;
+        if let Some(a) = pending.as_array().and_then(|a| a.first()) {
+            approval = a.clone();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        approval
+            .to_string()
+            .contains("cloudflare_connect_repository"),
+        "{approval}"
+    );
+    let (code, _) = http(
+        "POST",
+        &format!(
+            "{base}/sessions/{sid}/approvals/{}",
+            approval["approval_id"].as_str().unwrap()
+        ),
+        "alice",
+        Some(json!({ "approved": true })),
+    )
+    .await;
+    assert!(code < 300, "{code}");
+
+    let (mut text, mut all) = (String::new(), String::new());
+    for _ in 0..300 {
+        let (_, events) = http(
+            "GET",
+            &format!("{base}/sessions/{sid}/events"),
+            "alice",
+            None,
+        )
+        .await;
+        // Only what the agent printed (its script is in the events too).
+        text = events
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|e| e["event"] == "output" || e["event"] == "action_completed")
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if text.contains("cloudflare turn done") {
+            all = events.to_string();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(text.contains("cloudflare turn done"), "{text}");
+    // Its tools: Cloudflare and what the role grants on GitHub, nothing else.
+    assert!(text.contains("cloudflare_get_account"), "{text}");
+    assert!(text.contains("cloudflare_create_d1_database"), "{text}");
+    assert!(text.contains("propose_pull_request"), "{text}");
+    assert!(!text.contains("github_create_issue"), "{text}");
+    // It saw the account, never the token.
+    assert!(
+        text.contains("Acme Inc") && text.contains("d1-uuid"),
+        "{text}"
+    );
+    assert!(text.contains("acme.workers.dev"), "{text}");
+    assert!(text.contains("token in sandbox env: 0"), "{text}");
+    // Nowhere in the session (prompt, tool results, audit trail).
+    assert!(!all.contains("cf_test_token"), "{all}");
+
+    // The repository's Actions got the credentials, sealed.
+    let log = log.lock().unwrap().clone();
+    let secret = |name: &str| {
+        log.iter()
+            .find(|(what, _)| what == &format!("actions secret {name}"))
+            .map(|(_, v)| v["value"].clone())
+    };
+    assert_eq!(secret("CLOUDFLARE_API_TOKEN"), Some(json!("cf_test_token")));
+    assert_eq!(secret("CLOUDFLARE_ACCOUNT_ID"), Some(json!(CF_ACCOUNT)));
 }

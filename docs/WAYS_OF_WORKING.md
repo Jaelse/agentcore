@@ -106,9 +106,14 @@ optional = false                         # optional checks report but don't bloc
 | `board:read` / `board:write` | `github_list_board_items` (columns, sprint) / `github_set_board_status` |
 | `discussions:read` / `discussions:write` | `github_list_discussions`, `github_get_discussion` / `github_comment_on_discussion` |
 | `pull_requests:propose` | `propose_pull_request` |
+| `cloudflare:read` | `cloudflare_get_account`, `cloudflare_get_worker`, `cloudflare_get_pages_project`, `cloudflare_get_pages_deployment_log`, `cloudflare_list_dns_records`, `cloudflare_list_secrets` |
+| `cloudflare:provision` | `cloudflare_create_d1_database`, `cloudflare_create_kv_namespace`, `cloudflare_create_r2_bucket`, `cloudflare_create_queue`, `cloudflare_create_pages_project` |
+| `cloudflare:secrets` / `cloudflare:domains` / `cloudflare:ci` | `cloudflare_set_secret` / `cloudflare_create_dns_record`, `cloudflare_add_custom_domain` / `cloudflare_connect_repository` (see [Deploying to Cloudflare](CLOUDFLARE.md)) |
 | `previews:review` | `browser_open`, `browser_look`, `browser_click`, `browser_type`, `browser_select`, `browser_press`, `browser_scroll`, `browser_back`, `browser_device`, `browser_sign_in`, `review_show` (only work while a person [reviews with the agent](#reviewing-with-the-agent)) |
 
-Tools only ever act on the project's own repository and board. Every call
+GitHub tools only ever act on the project's own repository and board;
+Cloudflare tools act on the account connected under **Settings →
+Cloudflare**, with a token the agent never sees. Every call
 is still checked by the guardrail policy (e.g. the default policy lets a
 developer read freely but asks a human before commenting on GitHub) and
 lands in the audit log. Anything an agent publishes carries an "AI agent"
@@ -120,6 +125,7 @@ footer.
 |---|---|---|---|
 | `developer` | Implements issues: code, tests, commits | `default`: free in the workspace, approval for publishing and GitHub writes | Pull request (draft) |
 | `project-manager` | Triages and grooms issues, plans milestones and sprints, moves cards | `project-management`: manages issues/board; milestones and public posts need approval | Changes on GitHub + a summary |
+| `cloudflare-deployer` | Makes an application run on Cloudflare: provisions what it needs, preview on every pull request, production on merge | `default`: Cloudflare reads free; creating resources, secrets, DNS and CI credentials need approval | Pull request (draft) |
 | `marketing` | Release notes, announcements, community replies | `marketing`: writes drafts only under `/workspace/drafts/`; public posts need approval | Draft files + (approved) discussion replies |
 
 Copy one to start your own (`roles/qa.toml`, `roles/tech-writer.toml`,
@@ -208,7 +214,7 @@ agentcore watches those too, on the commit it delivered:
 flowchart TB
     D["Delivered: branch pushed,<br/>pull request opened"] --> W["agentcore asks GitHub every 30 s:<br/>check runs, commit statuses,<br/>preview deployment"]
     W -->|"all green"| P["✓ Checks passed<br/>+ Preview link on the session"]
-    W -->|"a build or test failed"| L["agentcore reads the log<br/>(GitHub Actions job log,<br/>Vercel build log)"]
+    W -->|"a build or test failed"| L["agentcore reads the log<br/>(GitHub Actions job log,<br/>Vercel or Cloudflare build log)"]
     L --> A["Message to the agent:<br/>what failed + the log"]
     A --> F["Agent fixes, commits,<br/>propose_pull_request"] --> D
     W -->|"blocked, no access, cancelled"| H["! Needs a person<br/>(not sent to the agent)"]
@@ -235,7 +241,9 @@ flowchart TB
 - **Logs.** The sandbox has no network, so agentcore reads the logs and
   hands the agent only the text: GitHub Actions logs with the GitHub token;
   Vercel build logs with a Vercel token an admin adds under **Settings →
-  Vercel** (read access is enough; it is encrypted and agents never see it).
+  Vercel** (read access is enough; it is encrypted and agents never see it);
+  Cloudflare Pages and Workers Builds logs with the Cloudflare connection
+  (**Settings → Cloudflare**).
   Without it, the agent learns which check failed and is asked to reproduce
   it in its sandbox.
 
