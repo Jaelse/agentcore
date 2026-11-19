@@ -3686,3 +3686,108 @@ async fn an_agent_on_a_deleted_provider_asks_for_another_before_it_starts() {
     node.ok("POST", &format!("/org/agents/{id}/stop"), None)
         .await;
 }
+
+#[tokio::test]
+async fn reset_starts_the_organisation_over() {
+    let Some((_, db_url)) = agentcore_store::testing::fresh_store().await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let node = start(dir.path(), &db_url, "n1", 10).await;
+
+    node.ok(
+        "PUT",
+        "/org/settings",
+        Some(json!({ "max_departments": 4, "max_agents_per_department": 3 })),
+    )
+    .await;
+    node.ok(
+        "PUT",
+        "/org/profile",
+        Some(json!({ "company_name": "Acme", "company_about": "Rockets." })),
+    )
+    .await;
+    let research = node
+        .ok(
+            "POST",
+            "/org/departments",
+            Some(department("Research", &["files"])),
+        )
+        .await;
+    let rid = research["id"].as_str().unwrap();
+    let writer = node
+        .ok(
+            "POST",
+            &format!("/org/departments/{rid}/agents"),
+            Some(json!({ "name": "writer", "agent": "idle-bot" })),
+        )
+        .await;
+    node.ok("POST", "/org/goals", Some(json!({ "title": "Ship v1" })))
+        .await;
+    node.ok("POST", &format!("/org/departments/{rid}/start"), None)
+        .await;
+    let writer = node
+        .wait_agent(writer["id"].as_str().unwrap(), "writer waiting", |a| {
+            a["status"] == "awaiting_input"
+        })
+        .await;
+    let session = writer["session_id"].as_str().unwrap().to_string();
+
+    // Admins only, and only with the phrase typed out.
+    let confirm = json!({ "confirm": "reset organisation" });
+    let (code, _) = node
+        .call("POST", "/org/reset", "alice-token", Some(confirm.clone()))
+        .await;
+    assert_eq!(code, 403);
+    let (code, err) = node
+        .call(
+            "POST",
+            "/org/reset",
+            "admin-token",
+            Some(json!({ "confirm": "yes" })),
+        )
+        .await;
+    assert_eq!(code, 400, "{err}");
+    assert_eq!(
+        node.ok("GET", "/org", None).await["departments"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let reset = node.ok("POST", "/org/reset", Some(confirm)).await;
+    assert_eq!(reset["departments"], 1, "{reset}");
+    assert_eq!(reset["agents"], 1, "{reset}");
+
+    // The running agent's session is over, and the organisation is empty.
+    node.wait_session(&session, |s| {
+        matches!(s, "stopped" | "completed" | "failed")
+    })
+    .await;
+    let org = node.ok("GET", "/org", None).await;
+    assert!(org["departments"].as_array().unwrap().is_empty(), "{org}");
+    assert!(
+        node.ok("GET", "/org/goals", None)
+            .await
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let profile = node.ok("GET", "/org/profile", None).await;
+    assert_eq!(profile["company_name"], "");
+    assert_eq!(profile["company_about"], "");
+
+    // The setup stays: limits are what they were.
+    let settings = node.ok("GET", "/org/settings", None).await;
+    assert_eq!(settings["max_departments"], 4, "{settings}");
+
+    // And it can be built again, under the same names.
+    node.ok(
+        "POST",
+        "/org/departments",
+        Some(department("Research", &["files"])),
+    )
+    .await;
+    node.cluster.cancel();
+}

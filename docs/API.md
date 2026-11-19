@@ -234,7 +234,11 @@ refetch what changed.
 Building from templates: `GET /org/templates` (categories, department
 templates, blueprints), `GET`/`PUT /org/profile` (company name, description,
 growth path), `GET /org/suggestions` (what to add next) and
-`POST /org/build` (admin):
+`POST /org/build` (admin). `POST /org/reset` (admin, body
+`{"confirm": "reset organisation"}`) stops every department agent and
+deletes the organisation, keeping the setup and history; see
+[Starting over](MULTI_AGENT.md#starting-over).
+`POST /org/build` takes:
 
 ```json
 { "profile": {"company_name": "Acme", "company_about": "...", "blueprint": "solo-developer"},

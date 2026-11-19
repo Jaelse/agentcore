@@ -789,3 +789,8 @@ fieldset.card { display: grid; gap: 6px; margin: 0; }
   .tree-row { padding: 9px 8px; }
 }
 .preview-access-state { margin: 0; padding-left: 18px; display: grid; gap: 2px; }
+
+.danger-zone { border-color: var(--danger); }
+.danger-zone h2 { color: var(--danger); }
+.danger-zone-confirm { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; max-width: 360px; }
+.danger-zone-confirm input { width: 100%; }

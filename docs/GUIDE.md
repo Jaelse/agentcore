@@ -224,6 +224,9 @@ you are away and do not want work to continue.
   own, with agents in the roles you choose. Raise the limits when asked.
 - Add agents to busy departments; keep departments small and focused.
 - More agents than one VM can run: add nodes ([Several VMs](DEPLOYMENT.md#several-vms)).
+- Starting over: **Settings → Reset the organisation** stops every agent and
+  deletes the departments and everything they made, keeping your providers,
+  connections and history ([Starting over](MULTI_AGENT.md#starting-over)).
 
 ## 10. Staying safe
 

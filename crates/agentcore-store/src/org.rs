@@ -21,6 +21,16 @@ pub const RESERVED_NAMES: [&str; 3] = ["communicator", "everyone", "all"];
 pub const MAX_FILE_BYTES: usize = 1024 * 1024;
 pub const MAX_FILES_PER_DEPARTMENT: i64 = 500;
 
+/// What [`Store::reset_organisation`] removed.
+#[derive(Debug, Clone, Serialize)]
+pub struct OrgReset {
+    pub departments: u64,
+    pub agents: u64,
+    /// Sessions the deleted agents last had; nodes still running one stop it.
+    #[serde(skip)]
+    pub sessions: Vec<SessionId>,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct DepartmentInput {
     pub name: String,
@@ -644,6 +654,90 @@ impl Store {
         .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Start the organisation over: delete every department and everything
+    /// the organisation made or said, and clear the company profile.
+    ///
+    /// Kept: the setup (model providers, Claude tokens, integrations,
+    /// installed agents, data sources, outbox channels, limits, currency),
+    /// released products with their releases and launch subscribers, and the
+    /// history (audit log, sessions, model calls). Refused while any agent
+    /// is still meant to run; stop them first.
+    pub async fn reset_organisation(&self, actor: &str) -> Result<OrgReset> {
+        let mut tx = self.pool.begin().await?;
+        // One reset at a time, and no settings changes while it runs.
+        sqlx::query("SELECT id FROM org_settings FOR UPDATE")
+            .execute(&mut *tx)
+            .await?;
+        let (live,): (i64,) =
+            sqlx::query_as("SELECT count(*) FROM org_agents WHERE desired <> 'stopped'")
+                .fetch_one(&mut *tx)
+                .await?;
+        if live > 0 {
+            return Err(StoreError::Conflict(format!(
+                "{live} agent(s) are still running; stop them first"
+            )));
+        }
+        let (departments, agents): (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM departments), (SELECT count(*) FROM org_agents)",
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        let sessions: Vec<(SessionId,)> =
+            sqlx::query_as("SELECT session_id FROM org_agents WHERE session_id IS NOT NULL")
+                .fetch_all(&mut *tx)
+                .await?;
+        // Children first where nothing cascades from departments.
+        for statement in [
+            "DELETE FROM org_announcement_acks",
+            "DELETE FROM org_announcements",
+            "DELETE FROM handoffs",
+            "DELETE FROM work_items",
+            "DELETE FROM org_inbox",
+            "DELETE FROM org_messages",
+            "DELETE FROM org_outbox",
+            "DELETE FROM org_proposals",
+            "DELETE FROM org_activity",
+            "DELETE FROM org_schedules",
+            "DELETE FROM org_goals",
+            "DELETE FROM budgets",
+            "DELETE FROM department_hours",
+            "DELETE FROM department_files",
+            "DELETE FROM org_agents",
+            "DELETE FROM departments",
+            "DELETE FROM projects",
+            // What is kept forgets the departments it was shared with.
+            "UPDATE data_sources SET departments = '{}' WHERE departments <> '{}'",
+            "UPDATE org_channels SET departments = '{}' WHERE departments <> '{}'",
+            "UPDATE release_products SET departments = '{}', announce_departments = '{}'
+             WHERE departments <> '{}' OR announce_departments <> '{}'",
+            "UPDATE org_settings SET company_name = '', company_about = '', blueprint = NULL,
+                 updated_at = now(), updated_by = $1",
+        ] {
+            let query = sqlx::query(statement);
+            let query = if statement.contains("$1") {
+                query.bind(actor)
+            } else {
+                query
+            };
+            query.execute(&mut *tx).await?;
+        }
+        let reset = OrgReset {
+            departments: departments as u64,
+            agents: agents as u64,
+            sessions: sessions.into_iter().map(|(id,)| id).collect(),
+        };
+        admin_event(
+            &mut tx,
+            actor,
+            "org.reset",
+            "organisation",
+            serde_json::json!(reset),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(reset)
     }
 
     /// Pause or reactivate one department (`Some`) or all of them (`None`).

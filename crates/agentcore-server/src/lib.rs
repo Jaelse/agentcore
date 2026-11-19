@@ -462,6 +462,7 @@ pub fn router(state: AppState) -> Router {
         .route("/org/agents/{id}/{control}", post(org::control_agent))
         .route("/org/pause-all", post(org::pause_all))
         .route("/org/resume-all", post(org::resume_all))
+        .route("/org/reset", post(org::reset))
         .route(
             "/org/messages",
             get(org::list_messages).post(org::post_message),
