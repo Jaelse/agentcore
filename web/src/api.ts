@@ -487,6 +487,8 @@ export const api = {
   testChannel: (id: string, to: string[]) => request<{ ok: boolean; error?: string }>("POST", `/org/channels/${id}/test`, { to }),
   pauseAll: () => request<void>("POST", "/org/pause-all"),
   resumeAll: () => request<void>("POST", "/org/resume-all"),
+  resetOrganisation: (confirm: string) =>
+    request<{ departments: number; agents: number; stopped_sessions: number }>("POST", "/org/reset", { confirm }),
   messages: (q: { department?: string; agent?: string; status?: OrgMessage["status"]; limit?: number } = {}) => {
     const params = new URLSearchParams();
     if (q.department) params.set("department", q.department);

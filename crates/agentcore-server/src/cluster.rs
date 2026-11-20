@@ -299,6 +299,15 @@ async fn on_notification(state: &AppState, payload: &Value) {
         let n = state.manager.stop_all(org::principal(by), reason).await;
         tracing::warn!(stopped = n, by, "emergency stop from another node");
     }
+    if payload["kind"] == "org_reset" && payload["origin"].as_str() != Some(&state.node) {
+        // The agents are gone from the database, so the reconciler would
+        // never stop their sessions: stop the ones running here now.
+        let by = payload["by"].as_str().unwrap_or("agentcore");
+        let ids: Vec<agentcore_core::SessionId> =
+            serde_json::from_value(payload["sessions"].clone()).unwrap_or_default();
+        let n = org::stop_sessions(state, &ids, by).await;
+        tracing::warn!(stopped = n, by, "organisation reset on another node");
+    }
     state.reconcile.notify_one();
 }
 

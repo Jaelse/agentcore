@@ -55,7 +55,7 @@ pub use launch::{
 pub use logs::{ActivityRecord, NodeInfo, NodeLog};
 pub use org::{
     AgentInput, AgentScope, DepartmentInput, FileInfo, MAX_FILE_BYTES, MessageFilter, NewMessage,
-    ORG_CHANNEL, RESERVED_NAMES, Reaped, WAITING_FOR_ROOM, valid_agent_name,
+    ORG_CHANNEL, OrgReset, RESERVED_NAMES, Reaped, WAITING_FOR_ROOM, valid_agent_name,
 };
 pub use outbox::{
     ChannelInput, ChannelUpdate, DEFAULT_DISCLOSURE, MAX_BODY_CHARS, NewOutboxItem, OutboxCounts,

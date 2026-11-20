@@ -20,7 +20,7 @@ use agentcore_core::org::{
 use agentcore_core::{
     AgentKind, DeliveredMessage, Delivery, Department, DepartmentId, DepartmentState, Desired,
     MessageScope, MessageStatus, OrgAgent, OrgAgentId, OrgMessage, OrgProfile, OrgSettings,
-    Principal, RouteVerdict, SessionContext, WorkItem, decide_route,
+    Principal, RouteVerdict, SessionContext, SessionId, WorkItem, decide_route,
 };
 use agentcore_runtime::{CreateSession, Session, SessionOptions, ToolHandler};
 use agentcore_store::{
@@ -3027,6 +3027,74 @@ pub async fn stop_all_agents(state: &AppState, by: &str, reason: &str) -> ApiRes
     )
     .await;
     Ok(stopped.len())
+}
+
+/// The phrase a person types to confirm [`reset`].
+pub const RESET_PHRASE: &str = "reset organisation";
+
+#[derive(Debug, Deserialize)]
+pub struct ResetRequest {
+    pub confirm: String,
+}
+
+/// Start the organisation over: stop every department agent, then delete
+/// the departments and everything the organisation made. The setup,
+/// released products and the history stay (see `Store::reset_organisation`).
+pub async fn reset(
+    State(state): State<AppState>,
+    caller: Caller,
+    Json(request): Json<ResetRequest>,
+) -> ApiResult<Json<Value>> {
+    caller.require_admin()?;
+    if request.confirm.trim().to_lowercase() != RESET_PHRASE {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!("type `{RESET_PHRASE}` to confirm"),
+        ));
+    }
+    let by = &caller.name;
+    state
+        .store
+        .set_desired(
+            AgentScope::All,
+            &[Desired::Running, Desired::Paused],
+            Desired::Stopped,
+            Some("the organisation was reset"),
+            by,
+        )
+        .await?;
+    let reset = state.store.reset_organisation(by).await?;
+    let stopped = stop_sessions(&state, &reset.sessions, by).await;
+    notify(
+        &state.store,
+        json!({
+            "kind": "org_reset", "origin": &*state.node, "by": by,
+            "sessions": reset.sessions,
+        }),
+    )
+    .await;
+    tracing::warn!(by, departments = reset.departments, "organisation reset");
+    Ok(Json(json!({
+        "departments": reset.departments,
+        "agents": reset.agents,
+        "stopped_sessions": stopped,
+    })))
+}
+
+/// Stop those of `ids` that still run on this node.
+pub async fn stop_sessions(state: &AppState, ids: &[SessionId], by: &str) -> usize {
+    let mut stopped = 0;
+    for id in ids {
+        if let Ok(session) = state.manager.get(*id)
+            && !session.status().is_terminal()
+        {
+            session
+                .stop(principal(by), "the organisation was reset")
+                .await;
+            stopped += 1;
+        }
+    }
+    stopped
 }
 
 #[derive(Debug, Default, Deserialize)]

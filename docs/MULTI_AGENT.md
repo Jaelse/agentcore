@@ -952,6 +952,32 @@ limit does not remove anything; it only blocks new additions. In addition,
 each node has a capacity (`[cluster].max_agents`): the number of agents it
 runs at the same time.
 
+## Starting over
+
+To clear the organisation and build a new one, an admin uses
+**Settings → Reset the organisation** (type `reset organisation` to confirm)
+or `POST /api/v1/org/reset` with `{"confirm": "reset organisation"}`.
+
+agentcore first stops every department agent, then deletes, in one
+transaction:
+
+* departments and their agents, messages and inboxes, department files,
+  working hours, check-ins and budgets;
+* goals, work items, handoffs, announcements, improvement proposals,
+  organisation activity and outbox messages;
+* projects (with their preview access);
+* the company profile (name, description, growth path).
+
+It keeps the setup and the history: model providers and Claude tokens,
+installed agents, the GitHub, Vercel and Cloudflare connections, data
+sources and outbox channels (no longer shared with any department), limits
+and currency, released products with their releases and launch
+subscribers, and the audit log, sessions, model calls and spending. The
+reset itself is recorded as `org.reset` in the change history. Sessions of
+the deleted agents still running on other nodes are stopped there too.
+There is no undo: export the logs first (Settings → Logs) if you may
+need them.
+
 ## Running on several VMs
 
 Every VM runs the same `agentcore serve` binary with its own
@@ -1402,6 +1428,7 @@ an admin.
 | `POST /org/departments/{id}/start` · `pause` · `resume` · `stop` | Control every agent in a department. |
 | `POST /org/pause-all` · `resume-all` | Pause or resume every department. |
 | `POST /stop-all` | Stop everything, on every node. |
+| `POST /org/reset` | [Start the organisation over](#starting-over) (admin): `{"confirm": "reset organisation"}` → `{departments, agents, stopped_sessions}`. `400` without the phrase. |
 | `GET /org/messages?department=&agent=&after=&limit=` | Message feed (organisation, department or agent). |
 | `POST /org/messages` | A person sends a message: `{"to": {"agent": id} \| {"department": id} \| "all_departments", "text": ...}`. |
 | `GET /org/departments/{id}/files` · `GET`/`PUT /org/departments/{id}/files/{*path}` | Department files (`PUT` body `{"content": ...}`, operators). |

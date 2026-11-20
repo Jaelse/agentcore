@@ -125,7 +125,69 @@ export function Settings({
           )}
         </section>
       )}
+
+      {isAdmin && <ResetOrganisation onDone={refresh} onError={onError} />}
     </div>
+  );
+}
+
+const RESET_PHRASE = "reset organisation";
+
+/** Start the organisation over, keeping the setup. */
+function ResetOrganisation({ onDone, onError }: { onDone: () => void; onError: (err: unknown) => void }) {
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  const ready = typed.trim().toLowerCase() === RESET_PHRASE;
+
+  const reset = async () => {
+    setBusy(true);
+    try {
+      const r = await api.resetOrganisation(typed);
+      setTyped("");
+      setResult(
+        `Removed ${r.departments} department${r.departments === 1 ? "" : "s"} and ${r.agents} agent${r.agents === 1 ? "" : "s"}. The organisation is empty.`,
+      );
+      onDone();
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="card pad danger-zone">
+      <h2>Reset the organisation</h2>
+      <p className="muted">
+        Start over with an empty organisation. Every department agent is stopped, then these are deleted for good:
+        departments and their agents, messages, files, goals, check-ins, work items, handoffs, announcements,
+        proposals, outbox messages, budgets, working hours, projects, and the company profile.
+      </p>
+      <p className="muted">
+        <strong>Kept:</strong> model providers and tokens, installed agents, GitHub, Vercel and Cloudflare, data
+        sources, outbox channels, limits, released products, and all history (audit log, sessions, spending).
+      </p>
+      {result && <div className="banner">{result}</div>}
+      <label className="danger-zone-confirm">
+        <span>
+          Type <code>{RESET_PHRASE}</code> to confirm
+        </span>
+        <input
+          value={typed}
+          onChange={(e) => {
+            setTyped(e.target.value);
+            setResult(null);
+          }}
+          placeholder={RESET_PHRASE}
+          autoComplete="off"
+          spellCheck={false}
+        />
+      </label>
+      <button className="btn danger" disabled={!ready || busy} onClick={reset}>
+        {busy ? "Resetting…" : "Reset organisation"}
+      </button>
+    </section>
   );
 }
 
